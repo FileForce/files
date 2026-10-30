@@ -1,0 +1,328 @@
+//! Previews for image formats GPUI cannot decode itself (HEIC, HEIF, AVIF)
+//! and Quick Look renderings (PDF, Office, video…). They are converted once,
+//! in the background, to a cached image. Every conversion runs through the
+//! event journal with a timeout, so a hanging converter can never leave a
+//! preview "generating" forever.
+
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Mutex, OnceLock};
+
+/// Longest edge of a cached preview, in pixels.
+const PREVIEW_SIZE: u32 = 1024;
+/// A converter taking longer than this is stopped and the preview given up.
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Journal source for conversions.
+const SOURCE: &str = "preview";
+
+pub fn needs_conversion(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(extension.to_ascii_lowercase().as_str(), "heic" | "heif" | "hif" | "avif")
+        })
+}
+
+/// What to hand to `img()`: the file itself, a ready cached conversion, or
+/// `None` while (or because) a conversion is not available.
+pub fn source(path: &Path) -> Option<PathBuf> {
+    if !needs_conversion(path) {
+        return Some(path.to_path_buf());
+    }
+    let cached = cache_path(path)?;
+    if cached.is_file() {
+        return Some(cached);
+    }
+    enqueue(path, cached);
+    None
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Preview {
+    Ready(PathBuf),
+    Pending,
+    /// Why there is no preview.
+    Unavailable(String),
+}
+
+/// Quick Look rendering state for the preview panel.
+pub fn quick_look_preview(path: &Path) -> Preview {
+    if !cfg!(target_os = "macos") {
+        return Preview::Unavailable("Quick Look previews need macOS".to_string());
+    }
+    let Some(target) = cache_path(path).map(|cached| cached.with_extension("ql.png")) else {
+        return Preview::Unavailable("The file cannot be read".to_string());
+    };
+    if let Some(reason) = state().failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&target) {
+        return Preview::Unavailable(reason.clone());
+    }
+    match quick_look(path) {
+        Some(ready) => Preview::Ready(ready),
+        None => Preview::Pending,
+    }
+}
+
+/// A large Quick Look rendering of any file macOS can preview (PDF, Office,
+/// video, fonts…), for the Quick Look panel. `None` until it is ready or when
+/// the system cannot preview the file.
+pub fn quick_look(path: &Path) -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let cached = cache_path(path)?.with_extension("ql.png");
+    if cached.is_file() {
+        return Some(cached);
+    }
+    enqueue(path, cached);
+    None
+}
+
+fn enqueue(path: &Path, cached: PathBuf) {
+    let state = state();
+    let mut queued = state.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if queued.insert(cached.clone()) {
+        // Quick Look (the big preview the user is looking at) has its own
+        // worker, so it never waits behind a folder full of thumbnails.
+        let queue = if cached.to_string_lossy().ends_with(".ql.png") { &state.quick_look } else { &state.queue };
+        let _ = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).send((path.to_path_buf(), cached));
+    }
+}
+
+/// Bumped whenever a conversion finishes, so views know to repaint.
+pub fn generation() -> u64 {
+    state().generation.load(Ordering::Relaxed)
+}
+
+struct State {
+    queue: Mutex<Sender<(PathBuf, PathBuf)>>,
+    quick_look: Mutex<Sender<(PathBuf, PathBuf)>>,
+    queued: Mutex<HashSet<PathBuf>>,
+    /// Targets whose conversion failed, and why, so callers stop waiting.
+    failed: Mutex<HashMap<PathBuf, String>>,
+    generation: AtomicU64,
+}
+
+fn worker(name: &str) -> Sender<(PathBuf, PathBuf)> {
+    let (sender, receiver) = channel::<(PathBuf, PathBuf)>();
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            while let Ok((source, target)) = receiver.recv() {
+                if let Err(error) = convert(&source, &target) {
+                    state()
+                        .failed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .insert(target, error.to_string());
+                }
+                state().generation.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .expect("failed to spawn a preview worker");
+    sender
+}
+
+fn state() -> &'static State {
+    static STATE: OnceLock<State> = OnceLock::new();
+    STATE.get_or_init(|| State {
+        // One worker each: converters are heavy and previews are only for what is visible.
+        queue: Mutex::new(worker("thumbnails")),
+        quick_look: Mutex::new(worker("quick-look")),
+        queued: Mutex::new(HashSet::new()),
+        failed: Mutex::new(HashMap::new()),
+        generation: AtomicU64::new(0),
+    })
+}
+
+/// Cache file keyed by path, size and modification time, so an edited image
+/// gets a fresh preview.
+fn cache_path(path: &Path) -> Option<PathBuf> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    metadata.modified().ok().hash(&mut hasher);
+    Some(cache_dir()?.join(format!("{:016x}.jpg", hasher.finish())))
+}
+
+fn cache_dir() -> Option<PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = dirs::cache_dir()?.join("file-force").join("thumbnails");
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    })
+    .clone()
+}
+
+/// Converts with the OS tool, writing through a temp file so a half-written
+/// JPEG is never picked up as a finished preview.
+fn convert(source: &Path, target: &Path) -> std::io::Result<()> {
+    // Cloud placeholders would block the worker until they time out.
+    if crate::model::is_online_only(source) {
+        return Err(std::io::Error::other("online-only file"));
+    }
+    if target.to_string_lossy().ends_with(".ql.png") {
+        return quick_look_render(source, target);
+    }
+    let partial = target.with_extension("partial.jpg");
+    let output = converter(source, &partial)?;
+    if !output.status.success() || !partial.is_file() {
+        let _ = std::fs::remove_file(&partial);
+        return Err(std::io::Error::other(format!("converter exited with {}", output.status)));
+    }
+    std::fs::rename(&partial, target)
+}
+
+/// PDFs render fastest (and most reliably) with `sips`, which draws the
+/// first page; everything else goes through Quick Look's `qlmanage -t`,
+/// which writes `<name>.png` into a folder that is then moved into the cache.
+#[cfg(target_os = "macos")]
+fn quick_look_render(source: &Path, target: &Path) -> std::io::Result<()> {
+    let is_pdf = source.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+    if is_pdf {
+        let partial = target.with_extension("partial.png");
+        let mut sips = std::process::Command::new("/usr/bin/sips");
+        sips.args(["-s", "format", "png", "-Z", "1600"]).arg(source).arg("--out").arg(&partial);
+        let rendered = files_sdk::log::run_with_timeout(SOURCE, &mut sips, TIMEOUT);
+        if rendered.is_ok_and(|output| output.status.success()) && partial.is_file() {
+            return std::fs::rename(&partial, target);
+        }
+        let _ = std::fs::remove_file(&partial);
+    }
+    let scratch = target.with_extension("ql-dir");
+    std::fs::create_dir_all(&scratch)?;
+    let mut qlmanage = std::process::Command::new("/usr/bin/qlmanage");
+    qlmanage.args(["-t", "-s", "1200", "-o"]).arg(&scratch).arg(source);
+    let output = files_sdk::log::run_with_timeout(SOURCE, &mut qlmanage, TIMEOUT);
+    let rendered = std::fs::read_dir(&scratch)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "png"));
+    let result = match (output, rendered) {
+        (Err(error), _) if error.kind() == std::io::ErrorKind::TimedOut => {
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Quick Look took too long and was stopped"))
+        }
+        (Ok(output), Some(rendered)) if output.status.success() => std::fs::rename(rendered, target),
+        (Err(error), _) => Err(error),
+        _ => Err(std::io::Error::other("Quick Look cannot preview this file")),
+    };
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+fn quick_look_render(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Quick Look is macOS-only"))
+}
+
+#[cfg(target_os = "macos")]
+fn converter(source: &Path, target: &Path) -> std::io::Result<std::process::Output> {
+    let mut sips = std::process::Command::new("/usr/bin/sips");
+    sips.args(["-s", "format", "jpeg", "-Z", &PREVIEW_SIZE.to_string()]).arg(source).arg("--out").arg(target);
+    files_sdk::log::run_with_timeout(SOURCE, &mut sips, TIMEOUT)
+}
+
+/// Linux: libheif's `heif-convert` (package libheif-examples / libheif-tools).
+#[cfg(all(unix, not(target_os = "macos")))]
+fn converter(source: &Path, target: &Path) -> std::io::Result<std::process::Output> {
+    let _ = PREVIEW_SIZE;
+    let mut convert = std::process::Command::new("heif-convert");
+    convert.args(["-q", "85"]).arg(source).arg(target);
+    files_sdk::log::run_with_timeout(SOURCE, &mut convert, TIMEOUT)
+}
+
+/// Windows has no converter we can count on; previews fall back to the icon.
+#[cfg(not(unix))]
+fn converter(_: &Path, _: &Path) -> std::io::Result<std::process::Output> {
+    let _ = PREVIEW_SIZE;
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no HEIC converter"))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_undecodable_formats_are_converted() {
+        assert!(needs_conversion(Path::new("IMG_0001.HEIC")));
+        assert!(needs_conversion(Path::new("a.avif")));
+        assert!(!needs_conversion(Path::new("a.webp")), "GPUI decodes WebP itself");
+        assert!(!needs_conversion(Path::new("a.jpg")));
+        assert_eq!(source(Path::new("/x/a.webp")), Some(PathBuf::from("/x/a.webp")));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn heic_is_converted_to_a_cached_jpeg() {
+        let dir = std::env::temp_dir().join(format!("file-force-heic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let heic = dir.join("photo.heic");
+        let jpg = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/images/facade.jpg");
+        let made = std::process::Command::new("/usr/bin/sips")
+            .args(["-s", "format", "heic"])
+            .arg(&jpg)
+            .arg("--out")
+            .arg(&heic)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(made.success());
+
+        assert_eq!(source(&heic), None, "first call only queues the conversion");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let cached = loop {
+            if let Some(cached) = source(&heic) {
+                break cached;
+            }
+            assert!(std::time::Instant::now() < deadline, "conversion never finished");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let bytes = std::fs::read(&cached).unwrap();
+        assert_eq!(&bytes[..3], &[0xFF, 0xD8, 0xFF], "cached preview is a JPEG");
+        assert!(generation() > 0);
+        let _ = std::fs::remove_file(cached);
+    }
+
+    /// The smallest valid one-page PDF.
+    const PDF: &str = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
+
+    fn wait_for_preview(path: &Path) -> Preview {
+        for _ in 0..400 {
+            match quick_look_preview(path) {
+                Preview::Pending => std::thread::sleep(std::time::Duration::from_millis(50)),
+                done => return done,
+            }
+        }
+        Preview::Pending
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn pdf_previews_finish_and_failures_say_why() {
+        let dir = std::env::temp_dir().join(format!("file-force-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pdf = dir.join("one page.pdf");
+        std::fs::write(&pdf, PDF).unwrap();
+        assert!(matches!(wait_for_preview(&pdf), Preview::Ready(_)), "the PDF preview never finished");
+        // The conversion is in the journal (Settings → Developer → Console).
+        assert!(files_sdk::log::events().iter().any(|event| event.source == SOURCE && event.message.contains("one page.pdf")));
+
+        // Something Quick Look cannot draw ends with a reason, not "generating" forever.
+        let junk = dir.join("noise.zzqq");
+        std::fs::write(&junk, [0u8, 159, 146, 150].repeat(64)).unwrap();
+        match wait_for_preview(&junk) {
+            Preview::Unavailable(reason) => assert!(!reason.is_empty()),
+            other => panic!("expected a failure, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Not sandboxed: a file manager must reach every folder the user opens. -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    <!-- Extensions run ssh, git and agent CLIs, and connect to servers. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- Lets the hardened runtime load the user's own helpers (askpass scripts). -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,15 @@
+# Build output
+/target/
+# Screenshots taken while developing (not part of the app)
+/artifacts/
+# Never commit signing material: the license key lives in ~/.config/files-license
+*.pk8
+*.p12
+*.pem
+.env*
+.DS_Store
+# Website
+/website/node_modules/
+/website/.next/
+/website/.vercel/
+/website/out/

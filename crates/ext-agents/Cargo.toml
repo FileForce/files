@@ -1,0 +1,10 @@
+[package]
+name = "files-ext-agents"
+version = "0.1.0"
+edition = "2024"
+description = "Agents extension for Files: Claude Code, Codex and OpenCode sessions, chats and usage."
+license = "FSL-1.1-MIT"
+
+[dependencies]
+files-sdk = { path = "../sdk" }
+serde_json = "1"

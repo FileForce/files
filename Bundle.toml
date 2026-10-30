@@ -1,0 +1,44 @@
+# How Files is packaged, signed and published — one file, like Tauri's
+# `bundle` section. `cargo xtask bundle` reads it.
+#
+# Secrets never go here: the signing identity can also come from
+# FILES_SIGNING_IDENTITY, and notarization uses a Keychain profile created once
+# with `xcrun notarytool store-credentials <profile> --apple-id … --team-id …`.
+
+[app]
+name = "Files"
+# Reverse-DNS id: also where macOS keeps the app's preferences.
+identifier = "dev.fileforce.files"
+# "cargo" = the version in Cargo.toml.
+version = "cargo"
+icon = "packaging/icon/icon.svg"
+copyright = "© 2026 Vitali Haradkou"
+category = "public.app-category.developer-tools"
+# The binary cargo builds.
+binary = "file-force"
+
+[macos]
+minimum_system_version = "13.0"
+# "-" signs ad hoc: runs on this Mac, but Gatekeeper blocks it elsewhere.
+# To publish, use your "Developer ID Application: Name (TEAMID)" certificate.
+signing_identity = "-"
+entitlements = "packaging/macos/entitlements.plist"
+hardened_runtime = true
+# Needs a Developer ID identity and a stored notarytool profile.
+notarize = false
+notary_profile = "files-notary"
+dmg = true
+
+[linux]
+appimage = true
+categories = "Utility;FileManager;"
+
+[updates]
+# Where Files looks for new versions: a latest.json on your site, written by
+# `cargo xtask bundle` next to the .dmg (upload both, plus the .dmg.sig).
+# Empty: GitHub releases of `repository` in Cargo.toml, if set.
+url = ""
+# Where the .dmg will be downloadable, for latest.json (e.g. https://files.dev/download).
+download_base = ""
+# Shown in About.
+website = ""

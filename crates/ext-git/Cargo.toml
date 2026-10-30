@@ -1,0 +1,9 @@
+[package]
+name = "files-ext-git"
+version = "1.0.0"
+edition = "2024"
+description = "Git extension for Files: commit, log, diff, sync, branches, stash, clone."
+license = "FSL-1.1-MIT"
+
+[dependencies]
+files-sdk = { path = "../sdk" }

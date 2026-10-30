@@ -1,0 +1,9 @@
+[package]
+name = "files-ext-ssh"
+version = "1.0.0"
+edition = "2024"
+description = "SSH extension for Files: browse servers through the system ssh client."
+license = "FSL-1.1-MIT"
+
+[dependencies]
+files-sdk = { path = "../sdk" }

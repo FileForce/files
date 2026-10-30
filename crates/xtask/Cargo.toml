@@ -1,0 +1,14 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Packaging for Files: cargo xtask icons | bundle | doctor"
+
+[dependencies]
+resvg = "0.45"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "0.8.23"
+files-sdk = { path = "../sdk" }
+libloading = "0.8"
+serde_json = "1"

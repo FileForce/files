@@ -1,0 +1,14 @@
+[package]
+name = "files-ext-archive"
+version = "1.2.0"
+edition = "2024"
+description = "Archives extension for Files: browse, extract and create ZIP, TAR, TAR.GZ, GZ, 7z and RAR."
+license = "FSL-1.1-MIT"
+
+[dependencies]
+files-sdk = { path = "../sdk" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+flate2 = "1"
+sevenz-rust2 = { version = "0.24", default-features = false, features = ["compress"] }
+tar = "0.4"
+zip = { version = "9", default-features = false, features = ["deflate"] }

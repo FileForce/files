@@ -1,0 +1,51 @@
+[workspace]
+members = ["crates/*"]
+
+[package]
+name = "file-force"
+version = "0.1.0"
+edition = "2024"
+description = "Files: a fast file explorer for macOS and Linux with Git, SSH, AI agents and extensions."
+license = "FSL-1.1-MIT"
+repository = "https://github.com/FileForce/files"
+homepage = "https://github.com/FileForce/files"
+
+[dependencies]
+files-sdk = { path = "crates/sdk" }
+files-ext-archive = { path = "crates/ext-archive" }
+files-ext-ssh = { path = "crates/ext-ssh" }
+files-ext-forks = { path = "crates/ext-forks" }
+files-ext-agents = { path = "crates/ext-agents" }
+files-ext-git = { path = "crates/ext-git" }
+libloading = "0.8"
+libc = "0.2"
+gpui-kit = "=0.8.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "6"
+nucleo = "=0.5.0"
+rust-embed = { version = "8.7", features = ["include-exclude"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+trash = "5"
+sysinfo = { version = "0.31", default-features = false, features = ["disk"] }
+toml = "0.8.23"
+unicode-normalization = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+plist = "1"
+xattr = "1"
+
+[dev-dependencies]
+# Archive fixtures in tests.
+flate2 = "1"
+tar = "0.4"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+gpui-pre = { version = "=0.3.10", features = ["test-support"] }
+
+# Smaller binaries that are harder to read and patch: no symbols, whole-crate
+# optimization across dependencies.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

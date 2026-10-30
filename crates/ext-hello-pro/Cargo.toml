@@ -1,0 +1,13 @@
+[package]
+name = "files-ext-hello-pro"
+version = "1.0.0"
+edition = "2024"
+publish = false
+description = "Example Pro plugin for Files: shows how a paid extension is built, packaged and signed."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+files-sdk = { path = "../sdk" }
+serde_json = "1"

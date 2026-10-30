@@ -1,0 +1,60 @@
+# Push a tag like v0.2.0 → signed, notarized Files.dmg (and an AppImage) on
+# the GitHub release. Everything comes from Bundle.toml; CI only supplies the
+# secrets:
+#   MACOS_CERTIFICATE           base64 of your "Developer ID Application" .p12
+#   MACOS_CERTIFICATE_PASSWORD  its export password
+#   MACOS_SIGNING_IDENTITY      "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   (app-specific password)
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Import the signing certificate into a temporary keychain
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          echo "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p ci "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k ci "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+      - name: Store the notarization profile
+        run: xcrun notarytool store-credentials files-notary --apple-id "${{ secrets.APPLE_ID }}" --team-id "${{ secrets.APPLE_TEAM_ID }}" --password "${{ secrets.APPLE_APP_PASSWORD }}"
+      - name: Bundle, sign, notarize
+        env:
+          FILES_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: cargo xtask bundle --notarize
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: target/dist/*.dmg
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build dependencies and appimagetool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev libssl-dev libfuse2
+          curl -L -o /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
+      - run: cargo xtask bundle
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: target/dist/*.AppImage
