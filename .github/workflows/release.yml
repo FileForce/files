@@ -19,10 +19,15 @@ permissions:
 jobs:
   macos:
     runs-on: macos-14
+    env:
+      # Without a Developer ID certificate the app is signed ad hoc: it runs
+      # after "Open Anyway" (see the downloads page).
+      HAS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Import the signing certificate into a temporary keychain
+        if: env.HAS_CERTIFICATE == 'true'
         env:
           CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -36,11 +41,16 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k ci "$keychain"
           security list-keychains -d user -s "$keychain" login.keychain-db
       - name: Store the notarization profile
+        if: env.HAS_CERTIFICATE == 'true'
         run: xcrun notarytool store-credentials files-notary --apple-id "${{ secrets.APPLE_ID }}" --team-id "${{ secrets.APPLE_TEAM_ID }}" --password "${{ secrets.APPLE_APP_PASSWORD }}"
       - name: Bundle, sign, notarize
+        if: env.HAS_CERTIFICATE == 'true'
         env:
           FILES_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: cargo xtask bundle --notarize
+      - name: Bundle (signed ad hoc)
+        if: env.HAS_CERTIFICATE != 'true'
+        run: cargo xtask bundle
       - uses: softprops/action-gh-release@v2
         with:
           files: target/dist/*.dmg
