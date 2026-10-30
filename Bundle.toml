@@ -52,4 +52,4 @@ url = ""
 # Where the .dmg will be downloadable, for latest.json (e.g. https://files.dev/download).
 download_base = ""
 # Shown in About.
-website = ""
+website = "https://fileforce.vercel.app"
