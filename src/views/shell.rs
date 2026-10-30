@@ -56,7 +56,7 @@ impl FileExplorer {
                                 div()
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child("files"),
+                                    .child("file"),
                             )
                             .child(
                                 div()
@@ -67,7 +67,7 @@ impl FileExplorer {
                                     .text_color(palette.accent)
                                     .text_size(px(9.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child("CONCEPT"),
+                                    .child("FORCE"),
                             ),
                     )
                     .child(
