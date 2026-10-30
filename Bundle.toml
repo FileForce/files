@@ -33,6 +33,17 @@ dmg = true
 appimage = true
 categories = "Utility;FileManager;"
 
+[windows]
+msi = true
+manufacturer = "FileForce"
+# Never change it: Windows recognises new versions of Files by it and
+# upgrades in place instead of installing a second copy.
+upgrade_code = "19AA9B07-97BA-4974-8C44-B9AEBB87A56E"
+# A code-signing certificate (.pfx) from FILES_WINDOWS_PFX and its password
+# from FILES_WINDOWS_PFX_PASSWORD; without one the MSI is unsigned and
+# SmartScreen warns on first run.
+timestamp_url = "http://timestamp.digicert.com"
+
 [updates]
 # Where Files looks for new versions: a latest.json on your site, written by
 # `cargo xtask bundle` next to the .dmg (upload both, plus the .dmg.sig).

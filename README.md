@@ -22,7 +22,7 @@ every day, as extensions you can turn on and off.
 
 ```sh
 cargo run                    # debug build
-cargo xtask bundle           # release Files.app + .dmg (see Bundle.toml)
+cargo xtask bundle           # release: Files.app + .dmg, AppImage, or .msi (see Bundle.toml)
 cargo xtask doctor           # what is left before publishing
 ```
 
@@ -31,6 +31,11 @@ cargo xtask doctor           # what is left before publishing
 Extensions are written against [`files-sdk`](crates/sdk). Built-in ones live
 in `crates/ext-*`; paid ones ship as signed plugin packages
 (`cargo xtask package-extension <crate>`), see `crates/ext-hello-pro`.
+
+## Marketplace
+
+Built an extension others would pay for? [Apply to publish it](https://github.com/FileForce/files/issues/new?template=marketplace.yml):
+we review, sign and sell it with a license key, and you get a share of every sale.
 
 ## License
 

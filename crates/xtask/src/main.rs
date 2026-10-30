@@ -23,6 +23,23 @@ struct Config {
     linux: Linux,
     #[serde(default)]
     updates: Updates,
+    #[serde(default)]
+    windows: Windows,
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct Windows {
+    msi: bool,
+    manufacturer: String,
+    upgrade_code: String,
+    timestamp_url: String,
+}
+
+impl Default for Windows {
+    fn default() -> Self {
+        Self { msi: true, manufacturer: String::new(), upgrade_code: String::new(), timestamp_url: "http://timestamp.digicert.com".into() }
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -193,9 +210,119 @@ fn bundle(root: &Path, mut config: Config, flags: &[String]) -> Result {
         bundle_macos(root, &config, &version, &icons, &dist)
     } else if cfg!(target_os = "linux") {
         bundle_linux(root, &config, &version, &icons, &dist)
+    } else if cfg!(windows) {
+        bundle_windows(root, &config, &version, &icons, &dist)
     } else {
-        Err("bundling is set up for macOS and Linux".to_string())
+        Err("bundling is set up for macOS, Linux and Windows".to_string())
     }
+}
+
+/// An .ico holding PNG images (Windows Vista and later read them as is).
+fn write_ico(pngs: &[(u32, Vec<u8>)], target: &Path) -> Result {
+    let mut ico = Vec::new();
+    ico.extend([0u8, 0, 1, 0]);
+    ico.extend((pngs.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * pngs.len() as u32;
+    for (size, png) in pngs {
+        // 256 is written as 0.
+        let side = if *size >= 256 { 0 } else { *size as u8 };
+        ico.extend([side, side, 0, 0]);
+        ico.extend(1u16.to_le_bytes()); // colour planes
+        ico.extend(32u16.to_le_bytes()); // bits per pixel
+        ico.extend((png.len() as u32).to_le_bytes());
+        ico.extend(offset.to_le_bytes());
+        offset += png.len() as u32;
+    }
+    for (_, png) in pngs {
+        ico.extend(png);
+    }
+    std::fs::write(target, ico).map_err(|error| format!("{}: {error}", target.display()))
+}
+
+fn escape_xml(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The WiX v4+ source for the installer: Program Files, a Start menu entry,
+/// in-place upgrades.
+fn wix_source(config: &Config, version: &str, exe: &str) -> String {
+    let name = escape_xml(&config.app.name);
+    format!(
+        r#"<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="{name}" Manufacturer="{manufacturer}" Version="{version}" UpgradeCode="{upgrade}" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of {name} is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="AppIcon" SourceFile="icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="{homepage}" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="{name}">
+        <Component Id="MainExecutable">
+          <File Id="AppExe" Source="{exe}" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="StartMenu" Name="{name}" Target="[INSTALLFOLDER]{exe}" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+        <RegistryValue Root="HKLM" Key="Software\{manufacturer}\{name}" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+    <Feature Id="Main">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>
+"#,
+        manufacturer = escape_xml(&config.windows.manufacturer),
+        upgrade = config.windows.upgrade_code,
+        homepage = "https://github.com/FileForce/files",
+    )
+}
+
+fn bundle_windows(root: &Path, config: &Config, version: &str, icons: &Path, dist: &Path) -> Result {
+    if config.windows.upgrade_code.is_empty() {
+        return Err("set [windows] upgrade_code in Bundle.toml (a GUID that never changes)".to_string());
+    }
+    let staging = dist.join("msi");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
+    let exe = format!("{}.exe", config.app.binary);
+    std::fs::copy(root.join("target/release").join(&exe), staging.join(&exe)).map_err(|error| format!("{exe}: {error}"))?;
+    let pngs = [16, 32, 48, 256]
+        .into_iter()
+        .map(|size| {
+            let path = icons.join(format!("ico-{size}.png"));
+            let svg = std::fs::read(root.join(&config.app.icon)).map_err(|error| error.to_string())?;
+            render(&svg, size, &path)?;
+            Ok((size, std::fs::read(&path).map_err(|error| error.to_string())?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    write_ico(&pngs, &staging.join("icon.ico"))?;
+    sign_windows(config, &staging.join(&exe))?;
+    std::fs::write(staging.join("Files.wxs"), wix_source(config, version, &exe)).map_err(|error| error.to_string())?;
+    if !config.windows.msi {
+        return Ok(());
+    }
+    let msi = dist.join(format!("{}-{version}-x64.msi", config.app.name));
+    run(Command::new("wix").current_dir(&staging).args(["build", "-arch", "x64", "-o"]).arg(&msi).arg("Files.wxs"))
+        .map_err(|error| format!("{error} · install WiX: dotnet tool install --global wix"))?;
+    sign_windows(config, &msi)?;
+    println!("Installer → {}", msi.display());
+    publish_update(config, version, &msi, "windows")
+}
+
+/// signtool with the .pfx in FILES_WINDOWS_PFX (skipped when it is not set).
+fn sign_windows(config: &Config, file: &Path) -> Result {
+    let Ok(pfx) = std::env::var("FILES_WINDOWS_PFX") else {
+        println!("Not signing {} (no FILES_WINDOWS_PFX): SmartScreen will warn on first run", file.display());
+        return Ok(());
+    };
+    let password = std::env::var("FILES_WINDOWS_PFX_PASSWORD").unwrap_or_default();
+    run(Command::new("signtool")
+        .args(["sign", "/fd", "sha256", "/td", "sha256", "/tr", &config.windows.timestamp_url, "/f", &pfx, "/p", &password])
+        .arg(file))
 }
 
 fn info_plist(config: &Config, version: &str) -> String {
@@ -561,6 +688,32 @@ fn doctor(root: &Path, config: &Config) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_installer_source_and_icon() {
+        let (root, config) = load().unwrap();
+        let wxs = wix_source(&config, "1.2.3", "file-force.exe");
+        assert!(wxs.contains(r#"Version="1.2.3""#) && wxs.contains(&config.windows.upgrade_code), "{wxs}");
+        assert!(wxs.contains(r#"Source="file-force.exe""#) && wxs.contains("ProgramFiles64Folder") && wxs.contains("MajorUpgrade"));
+        let svg = std::fs::read(root.join(&config.app.icon)).unwrap();
+        let dir = std::env::temp_dir().join(format!("xtask-ico-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pngs: Vec<(u32, Vec<u8>)> = [16, 256]
+            .into_iter()
+            .map(|size| {
+                render(&svg, size, &dir.join("p.png")).unwrap();
+                (size, std::fs::read(dir.join("p.png")).unwrap())
+            })
+            .collect();
+        write_ico(&pngs, &dir.join("icon.ico")).unwrap();
+        let ico = std::fs::read(dir.join("icon.ico")).unwrap();
+        assert_eq!(&ico[..6], &[0, 0, 1, 0, 2, 0], "ICO header with two images");
+        assert_eq!(ico[6], 16);
+        assert_eq!(ico[22], 0, "256 is stored as 0");
+        let first = u32::from_le_bytes(ico[18..22].try_into().unwrap()) as usize;
+        assert_eq!(&ico[first + 1..first + 4], b"PNG");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_config_parses_and_the_icon_renders() {

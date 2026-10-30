@@ -56,6 +56,8 @@ pub struct LatestJson {
     pub macos: Option<Download>,
     #[serde(default)]
     pub linux: Option<Download>,
+    #[serde(default)]
+    pub windows: Option<Download>,
     /// A page about the release.
     #[serde(default)]
     pub page: Option<String>,
@@ -127,7 +129,13 @@ pub fn check() -> Result<UpdateStatus, String> {
 
 pub fn parse_latest_json(body: &str) -> Result<UpdateStatus, String> {
     let latest: LatestJson = serde_json::from_str(body).map_err(|error| format!("Unexpected latest.json: {error}"))?;
-    let download = if cfg!(target_os = "macos") { latest.macos } else { latest.linux };
+    let download = if cfg!(target_os = "macos") {
+        latest.macos
+    } else if cfg!(windows) {
+        latest.windows
+    } else {
+        latest.linux
+    };
     Ok(if is_newer(&latest.version, CURRENT_VERSION) {
         UpdateStatus::Available { latest: latest.version, notes: latest.notes, page: latest.page, download }
     } else {

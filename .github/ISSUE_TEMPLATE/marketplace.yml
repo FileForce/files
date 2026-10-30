@@ -1,0 +1,66 @@
+name: Publish an extension in the marketplace
+description: Apply to sell (or share) your Files extension in the marketplace.
+title: "[Marketplace] "
+labels: ["marketplace"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for building on Files! Tell us about your extension; we review
+        every application and reply here. Paid extensions are signed by the
+        Files publisher and sold with a license key — you get a share of every sale.
+  - type: input
+    id: name
+    attributes:
+      label: Extension name
+      placeholder: Kubernetes
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What does it do?
+      description: Who is it for, and what does it add to Files (context menu, sidebar, windows…)?
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Source repository
+      description: Public or private (we will ask for access); it must build with files-sdk.
+      placeholder: https://github.com/you/files-kubernetes
+    validations:
+      required: true
+  - type: dropdown
+    id: pricing
+    attributes:
+      label: Pricing
+      options:
+        - Free
+        - Paid, one-time
+        - Paid, subscription
+    validations:
+      required: true
+  - type: checkboxes
+    id: permissions
+    attributes:
+      label: Permissions it needs
+      options:
+        - label: Read files
+        - label: Write files
+        - label: Network
+        - label: Launch applications
+        - label: Passwords & keys (Keychain)
+        - label: Run in the background
+  - type: input
+    id: contact
+    attributes:
+      label: Contact email
+      description: For payouts and review questions (not shown publicly if you prefer — say so).
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Agreement
+      options:
+        - label: The extension is my own work (or I have the rights to sell it), and it only does what its permissions declare.
+          required: true
