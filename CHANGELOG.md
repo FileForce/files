@@ -7,6 +7,9 @@ version's notes under `## Unreleased`, then rename it when you tag.
 
 ## Unreleased
 
+- Settings → General → Check now: look for an update any time, with
+  Download & Install and the release notes right there.
+
 - "Download & Install" in Check for Updates: every release is signed in CI
   and Files checks the signature before opening the installer.
 

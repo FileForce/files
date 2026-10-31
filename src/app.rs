@@ -4092,4 +4092,13 @@ mod tests {
         assert_eq!(shown(cx), Some(2), "a swipe right goes back");
         *crate::model::TEST_DISKS.lock().unwrap() = None;
     }
+
+    #[test]
+    fn settings_general_has_check_now() {
+        let (_view, cx) = rooted_window(&std::env::temp_dir());
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-," });
+        cx.run_until_parked();
+        // Not clicked here: it would ask the real GitHub.
+        assert!(cx.debug_bounds("settings-check-updates").is_some(), "no Check now button in Settings → General");
+    }
 }

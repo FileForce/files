@@ -39,6 +39,12 @@ actions!(
 pub struct SettingsWindow {
     /// Settings → Extensions → License: where the key is pasted.
     license_input: Entity<InputState>,
+    /// Settings → General → Check now: `None` until asked, then the answer.
+    update_check: Option<Result<crate::updates::UpdateStatus, String>>,
+    checking_updates: bool,
+    /// What "Download & Install" did.
+    update_install: Option<Result<std::path::PathBuf, String>>,
+    installing_update: bool,
     /// Installed plugin packages and what happened to them.
     plugins: Vec<crate::plugins::Installed>,
     installing: bool,
@@ -144,6 +150,10 @@ impl SettingsWindow {
         Self {
             license_input: cx.new(|cx| InputState::new(window, cx).placeholder("FILES1.…  (license key)")),
             plugins: crate::plugins::load_installed(&current),
+            update_check: None,
+            checking_updates: false,
+            update_install: None,
+            installing_update: false,
             installing: false,
             install_message: None,
             shell_input,
@@ -414,6 +424,7 @@ impl SettingsWindow {
                     .child(div().flex_1())
                     .child(div().text_xs().text_color(palette.faint).child(format!("Version {}", crate::updates::CURRENT_VERSION))),
             )
+            .child(self.render_update_check(palette, cx))
             .child(
                 Switch::new("updates-automatic")
                     .label(tr(language, "Check for updates automatically (once a day)", "Проверять обновления автоматически (раз в день)"))
@@ -1009,6 +1020,120 @@ impl SettingsWindow {
             Some(index) => self.render_extension_page(index, palette, cx),
             None => self.render_extensions_overview(palette, cx),
         }
+    }
+
+    /// Asks for the newest version now (the daily check runs on its own).
+    fn check_updates_now(&mut self, cx: &mut Context<Self>) {
+        if self.checking_updates {
+            return;
+        }
+        self.checking_updates = true;
+        self.update_install = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async { crate::updates::check() }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.checking_updates = false;
+                this.update_check = Some(result);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn install_update(&mut self, download: crate::updates::Download, cx: &mut Context<Self>) {
+        self.installing_update = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::updates::download(&download, &crate::licensing::trusted_updates()) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.installing_update = false;
+                if let Ok(path) = &result {
+                    // Opens the .dmg / .msi / AppImage folder for the last step.
+                    cx.open_url(&path.display().to_string());
+                }
+                this.update_install = Some(result);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The Check now button and what it found.
+    fn render_update_check(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        use crate::updates::UpdateStatus;
+        let language = self.draft.language;
+        let mut actions = Vec::new();
+        let status: Option<(IconName, gpui_kit::Hsla, String)> = match self.update_check.clone() {
+            None => None,
+            Some(Ok(UpdateStatus::UpToDate { latest })) => {
+                Some((IconName::CircleCheck, palette.code, format!("Files is up to date · the newest is {latest}")))
+            }
+            Some(Ok(UpdateStatus::Available { latest, page, download, .. })) => {
+                if let Some(download) = download.filter(|download| download.signature.is_some()) {
+                    actions.push(
+                        Button::new("settings-update-install")
+                            .primary()
+                            .small()
+                            .icon(IconName::Download)
+                            .label(tr(language, "Download & Install", "Скачать и установить"))
+                            .loading(self.installing_update)
+                            .disabled(self.installing_update)
+                            .on_click(cx.listener(move |this, _, _, cx| this.install_update(download.clone(), cx)))
+                            .into_any_element(),
+                    );
+                }
+                if let Some(page) = page {
+                    actions.push(
+                        Button::new("settings-update-page")
+                            .ghost()
+                            .small()
+                            .label(tr(language, "Release notes", "Что нового"))
+                            .on_click(move |_, _, cx| cx.open_url(&page))
+                            .into_any_element(),
+                    );
+                }
+                Some((IconName::Download, palette.accent, format!("Files {latest} is available · you have {}", crate::updates::CURRENT_VERSION)))
+            }
+            Some(Ok(UpdateStatus::NoReleases)) => Some((IconName::Info, palette.muted, "No releases yet".to_string())),
+            Some(Ok(UpdateStatus::NotConfigured)) => Some((IconName::Info, palette.muted, "Update checks are not set up for this build".to_string())),
+            Some(Err(error)) => Some((IconName::TriangleAlert, palette.video, format!("Could not check: {error}"))),
+        };
+        let install = self.update_install.clone().map(|result| match result {
+            Ok(path) => (palette.code, format!("Verified and opened {} · drag Files to Applications (or run the installer), then reopen it", path.display())),
+            Err(error) => (palette.video, error),
+        });
+        v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div().debug_selector(|| "settings-check-updates".into()).child(Button::new("settings-check-updates")
+                            .secondary()
+                            .small()
+                            .icon(IconName::RefreshCw)
+                            .label(tr(language, "Check now", "Проверить сейчас"))
+                            .loading(self.checking_updates)
+                            .disabled(self.checking_updates)
+                            .on_click(cx.listener(|this, _, _, cx| this.check_updates_now(cx)))),
+                    )
+                    .children(status.map(|(icon, color, text)| {
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .text_xs()
+                            .child(Icon::new(icon).small().text_color(color))
+                            .child(div().text_color(color).child(text))
+                    })),
+            )
+            .when(!actions.is_empty(), |this| this.child(h_flex().gap_2().children(actions)))
+            .children(install.map(|(color, text)| div().text_xs().text_color(color).whitespace_normal().child(text)))
+            .into_any_element()
     }
 
     /// Installs the package at the path or URL in the field (in the background).
