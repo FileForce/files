@@ -3,7 +3,9 @@
 //! the returned guard is dropped.
 
 use std::io;
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::process::{Command, Stdio};
 
 use crate::permissions::{Permission, check};
 

@@ -406,6 +406,7 @@ fn bundle_macos(root: &Path, config: &Config, version: &str, icons: &Path, dist:
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
         run(Command::new("ditto").arg(&app).arg(staging.join(format!("{}.app", config.app.name))))?;
+        #[cfg(unix)]
         std::os::unix::fs::symlink("/Applications", staging.join("Applications")).map_err(|error| error.to_string())?;
         run(Command::new("hdiutil")
             .args(["create", "-volname", &config.app.name, "-fs", "HFS+", "-format", "UDZO", "-ov", "-srcfolder"])
