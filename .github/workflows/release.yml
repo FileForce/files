@@ -83,7 +83,8 @@ jobs:
         with:
           dotnet-version: "8.0.x"
       - name: Install WiX
-        run: dotnet tool install --global wix
+        # v5: open source (MS-RL). v7 needs the paid OSMF EULA accepted.
+        run: dotnet tool install --global wix --version 5.0.2
       - name: Decode the signing certificate (if one is set)
         if: env.HAS_CERTIFICATE == 'true'
         shell: pwsh

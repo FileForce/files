@@ -307,7 +307,7 @@ fn bundle_windows(root: &Path, config: &Config, version: &str, icons: &Path, dis
     }
     let msi = dist.join(format!("{}-{version}-x64.msi", config.app.name));
     run(Command::new("wix").current_dir(&staging).args(["build", "-arch", "x64", "-o"]).arg(&msi).arg("Files.wxs"))
-        .map_err(|error| format!("{error} · install WiX: dotnet tool install --global wix"))?;
+        .map_err(|error| format!("{error} · install WiX 5: dotnet tool install --global wix --version 5.0.2"))?;
     sign_windows(config, &msi)?;
     println!("Installer → {}", msi.display());
     publish_update(config, version, &msi, "windows")
