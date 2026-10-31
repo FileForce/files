@@ -341,75 +341,149 @@ impl FileExplorer {
     }
 
     /// The volume of the active folder (home for Recents and Remote).
+    /// Which disk the carousel shows: the one picked, or else the one
+    /// holding the active folder.
+    fn disk_carousel_index(&self, disks: &[(std::path::PathBuf, crate::model::DiskUsage)]) -> usize {
+        if let Some(index) = self.disk_index.filter(|index| *index < disks.len()) {
+            return index;
+        }
+        let path = self.active_location().path().or_else(|| Location::Home.path()).unwrap_or_default();
+        disks
+            .iter()
+            .enumerate()
+            .filter(|(_, (mount, _))| path.starts_with(mount))
+            .max_by_key(|(_, (mount, _))| mount.components().count())
+            .map_or(0, |(index, _)| index)
+    }
+
+    /// Shows the next (`1`) or previous (`-1`) disk, wrapping around.
+    pub(crate) fn step_disk(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let disks = crate::model::user_disks();
+        if disks.len() < 2 {
+            return;
+        }
+        let current = self.disk_carousel_index(&disks) as isize;
+        self.disk_index = Some((current + delta).rem_euclid(disks.len() as isize) as usize);
+        self.disk_direction = delta.signum() as f32;
+        cx.notify();
+    }
+
+    /// The disks at the bottom of the sidebar, one card at a time: arrows,
+    /// dots and horizontal swipes move between them; a click opens the disk.
     fn render_disk_usage(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let path = self
-            .active_location()
-            .path()
-            .or_else(|| Location::Home.path())?;
-        let disk = crate::model::disk_usage(&path)?;
+        let disks = crate::model::user_disks();
+        if disks.is_empty() {
+            return None;
+        }
+        let index = self.disk_carousel_index(&disks);
+        let (mount, disk) = disks[index].clone();
+        let many = disks.len() > 1;
         let human = self.appearance.read(cx).human_sizes;
-        let fraction = if disk.total > 0 {
-            disk.used() as f32 / disk.total as f32
-        } else {
-            0.
-        };
+        let fraction = if disk.total > 0 { disk.used() as f32 / disk.total as f32 } else { 0. };
         let format = |bytes| crate::settings::format_size(bytes, human);
-        Some(
-                v_flex()
-                    .p_3()
-                    .gap_3()
-                    .rounded_lg()
-                    .bg(palette.surface)
-                    .border_1()
-                    .border_color(palette.border)
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                Icon::new(IconName::HardDrive)
-                                    .small()
-                                    .text_color(palette.muted),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(disk.name.clone()),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .w_full()
-                                    .h(px(3.))
-                                    .rounded_full()
-                                    .bg(palette.border)
-                                    .child(
-                                        div()
-                                            .w(gpui_kit::relative(fraction.clamp(0., 1.)))
-                                            .h_full()
-                                            .rounded_full()
-                                            // Nearly full disks are flagged like Finder does.
-                                            .bg(if fraction > 0.9 { palette.video } else { palette.accent }),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.))
-                                    .text_color(palette.muted)
-                                    .child(format!(
-                                        "{} of {} used · {} free",
-                                        format(disk.used()),
-                                        format(disk.total),
-                                        format(disk.available)
-                                    )),
-                            ),
-                    )
-                    .into_any_element(),
-        )
+        let location = Location::from_path(&mount);
+        let arrow = |id: &'static str, icon: IconName, delta: isize, cx: &mut Context<Self>| {
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .icon(icon)
+                .tooltip(if delta < 0 { "Previous disk" } else { "Next disk" })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.step_disk(delta, cx);
+                }))
+        };
+        let body = v_flex()
+            .gap_2()
+            .child(
+                div().w_full().h(px(3.)).rounded_full().bg(palette.border).child(
+                    div()
+                        .w(gpui_kit::relative(fraction.clamp(0., 1.)))
+                        .h_full()
+                        .rounded_full()
+                        // Nearly full disks are flagged like Finder does.
+                        .bg(if fraction > 0.9 { palette.video } else { palette.accent }),
+                ),
+            )
+            .child(div().text_size(px(10.)).text_color(palette.muted).child(format!(
+                "{} of {} used · {} free",
+                format(disk.used()),
+                format(disk.total),
+                format(disk.available)
+            )));
+        // The new disk slides in from the side it was swiped from.
+        let direction = self.disk_direction;
+        let animated = gpui_kit::AnimationExt::with_animation(
+            v_flex()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(Icon::new(IconName::HardDrive).small().text_color(palette.muted))
+                        .child(div().flex_1().min_w_0().truncate().text_xs().font_weight(FontWeight::MEDIUM).child(disk.name.clone())),
+                )
+                .child(body),
+            ("disk-slide", index),
+            gpui_kit::Animation::new(std::time::Duration::from_millis(220)).with_easing(gpui_kit::ease_out_quint()),
+            move |card, delta| card.ml(px((1. - delta) * 24. * direction)).opacity(0.3 + 0.7 * delta),
+        );
+        let card = v_flex()
+            .id("disk-carousel")
+            .debug_selector(|| "disk-carousel".into())
+            .p_3()
+            .gap_2()
+            .rounded_lg()
+            .bg(palette.surface)
+            .border_1()
+            .border_color(palette.border)
+            .cursor_pointer()
+            .overflow_hidden()
+            .aria_label(format!("Disk {} of {}: {}", index + 1, disks.len(), disk.name))
+            .on_click(cx.listener(move |this, _, window, cx| this.navigate(location, window, cx)))
+            // Two-finger swipes (or shift + wheel): one disk per ~60 px.
+            .on_scroll(cx.listener(|this, event: &gpui_kit::ScrollEvent, _, cx| {
+                let delta = event.delta.pixel_delta(px(16.));
+                if delta.x.abs() <= delta.y.abs() {
+                    return;
+                }
+                this.disk_swipe += f32::from(delta.x);
+                if this.disk_swipe.abs() >= 60. {
+                    let step = if this.disk_swipe < 0. { 1 } else { -1 };
+                    this.disk_swipe = 0.;
+                    this.step_disk(step, cx);
+                }
+            }))
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .when(many, |row| row.child(arrow("disk-previous", IconName::ChevronLeft, -1, cx)))
+                    .child(div().flex_1().min_w_0().child(animated))
+                    .when(many, |row| row.child(arrow("disk-next", IconName::ChevronRight, 1, cx))),
+            )
+            .when(many, |card| {
+                card.child(h_flex().justify_center().gap_1p5().children((0..disks.len()).map(|dot| {
+                    let dot_view = div()
+                        .id(("disk-dot", dot))
+                        .size(px(if dot == index { 7. } else { 5. }))
+                        .rounded_full()
+                        .bg(if dot == index { palette.accent } else { palette.border })
+                        .cursor_pointer()
+                        .hover(|style| style.bg(palette.muted))
+                        .aria_label(format!("Disk {}", dot + 1))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.disk_direction = if dot > this.disk_index.unwrap_or(0) { 1. } else { -1. };
+                            this.disk_index = Some(dot);
+                            cx.notify();
+                        }));
+                    #[cfg(test)]
+                    let dot_view = dot_view.debug_selector(move || format!("disk-dot-{dot}"));
+                    dot_view
+                })))
+            });
+        Some(card.into_any_element())
     }
 
     /// Only the exact folder is highlighted: being inside Documents/git must

@@ -1,3 +1,7 @@
+// A GUI app on Windows: no console window next to it (debug builds keep
+// one for logs).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod archive;
 mod assets;

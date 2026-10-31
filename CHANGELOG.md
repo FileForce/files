@@ -10,6 +10,10 @@ version's notes under `## Unreleased`, then rename it when you tag.
 - After an update, a notification says what version you now have, with a
   button that opens its release notes.
 - Notifications can carry an action button (for extensions too).
+- Windows: no console window opens next to Files.
+- The disk card at the bottom of the sidebar is a carousel of every disk
+  (C:, D:, USB drives, network shares): arrows, dots, and two-finger swipes.
+  Clicking a disk opens it.
 
 ## 0.1.1
 

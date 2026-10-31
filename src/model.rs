@@ -450,6 +450,43 @@ impl DiskUsage {
 
 /// The volume holding `path` (longest matching mount point), refreshed every 30 s.
 pub fn disk_usage(path: &Path) -> Option<DiskUsage> {
+    mounted_disks()
+        .into_iter()
+        .filter(|(mount, _)| path.starts_with(mount))
+        .max_by_key(|(mount, _)| mount.components().count())
+        .map(|(_, usage)| usage)
+}
+
+/// System volumes macOS mounts for itself (APFS Data, VM, Preboot…) and
+/// Linux pseudo mounts: not disks a user thinks of.
+fn is_system_mount(mount: &Path) -> bool {
+    let text = mount.to_string_lossy();
+    ["/System/Volumes/", "/private/var/vm", "/boot", "/snap/", "/run/", "/dev", "/proc", "/sys", "/var/lib/"]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+}
+
+/// The disks shown in the sidebar: the startup disk, other internal disks,
+/// USB drives and network shares (C:, D:, … on Windows), largest first after
+/// the startup disk; duplicates of one volume are shown once.
+pub fn user_disks() -> Vec<(PathBuf, DiskUsage)> {
+    #[cfg(test)]
+    if let Some(disks) = TEST_DISKS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone() {
+        return disks;
+    }
+    let mut disks: Vec<(PathBuf, DiskUsage)> = mounted_disks().into_iter().filter(|(mount, usage)| usage.total > 0 && !is_system_mount(mount)).collect();
+    let mut seen = std::collections::HashSet::new();
+    disks.retain(|(_, usage)| seen.insert((usage.name.clone(), usage.total)));
+    // The startup disk ("/" or C:\) first, then the rest by path.
+    disks.sort_by_key(|(mount, _)| (mount.components().count() > 1, mount.clone()));
+    disks
+}
+
+/// Tests show these disks instead of this computer's.
+#[cfg(test)]
+pub(crate) static TEST_DISKS: std::sync::Mutex<Option<Vec<(PathBuf, DiskUsage)>>> = std::sync::Mutex::new(None);
+
+fn mounted_disks() -> Vec<(PathBuf, DiskUsage)> {
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
@@ -479,12 +516,7 @@ pub fn disk_usage(path: &Path) -> Option<DiskUsage> {
             .collect();
         *cache = Some((Instant::now(), disks));
     }
-    let (_, disks) = cache.as_ref()?;
-    disks
-        .iter()
-        .filter(|(mount, _)| path.starts_with(mount))
-        .max_by_key(|(mount, _)| mount.components().count())
-        .map(|(_, usage)| usage.clone())
+    cache.as_ref().map(|(_, disks)| disks.clone()).unwrap_or_default()
 }
 
 /// Recursive folder size in bytes, computed on background threads.
@@ -1705,6 +1737,18 @@ mod tests {
         let cyrillic = trim_middle("Лукина - Бизнес и_или любовь.zip.zip", 20);
         assert!(cyrillic.ends_with(".zip") && cyrillic.chars().count() == 20, "{cyrillic}");
         assert_eq!(trim_middle("x".repeat(30).as_str(), 4).len(), 30, "tiny budgets leave names alone");
+    }
+
+    #[test]
+    fn only_disks_people_know_are_listed() {
+        assert!(is_system_mount(Path::new("/System/Volumes/Data")));
+        assert!(is_system_mount(Path::new("/private/var/vm")));
+        assert!(!is_system_mount(Path::new("/")));
+        assert!(!is_system_mount(Path::new("/Volumes/USB")));
+        let disks = user_disks();
+        assert!(!disks.is_empty(), "the startup disk is always there");
+        assert_eq!(disks[0].0.components().count(), 1, "startup disk first: {:?}", disks[0].0);
+        assert!(disks.iter().all(|(mount, usage)| !is_system_mount(mount) && usage.total > 0));
     }
 
     #[test]

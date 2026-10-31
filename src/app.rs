@@ -187,6 +187,12 @@ pub struct FileExplorer {
     /// The last status message written to the journal.
     pub(crate) journaled_notice: Option<String>,
     pub(crate) low_disk_warned: bool,
+    /// The disk shown at the bottom of the sidebar (`None`: the active folder's).
+    pub(crate) disk_index: Option<usize>,
+    /// Horizontal swipe distance not turned into a step yet.
+    pub(crate) disk_swipe: f32,
+    /// Which way the last step went (for the slide animation).
+    pub(crate) disk_direction: f32,
     /// Toasts closed with × before they faded.
     pub(crate) hidden_toasts: std::collections::HashSet<u64>,
     pub(crate) agents_scanning: bool,
@@ -316,6 +322,9 @@ impl FileExplorer {
             journal_generation: 0,
             journaled_notice: None,
             low_disk_warned: false,
+            disk_index: None,
+            disk_swipe: 0.,
+            disk_direction: 1.,
             hidden_toasts: Default::default(),
             agents_scanning: false,
             _search_subscription: search_subscription,
@@ -4043,5 +4052,44 @@ mod tests {
         cx.run_until_parked();
         let after = cx.debug_bounds("settings-menu-items").unwrap();
         assert!(after.origin.y < before.origin.y, "the settings menu did not scroll: {before:?} → {after:?}");
+    }
+
+    #[test]
+    fn the_disk_carousel_moves_with_arrows_dots_and_swipes() {
+        use crate::model::DiskUsage;
+        let disk = |path: &str, name: &str| (std::path::PathBuf::from(path), DiskUsage { name: name.into(), total: 100 << 30, available: 40 << 30 });
+        *crate::model::TEST_DISKS.lock().unwrap() = Some(vec![disk("C:\\", "System"), disk("D:\\", "Data"), disk("E:\\", "Backup")]);
+        let (view, cx) = pro_window();
+        view.update(cx, |this, _| this.disk_index = Some(0));
+        cx.run_until_parked();
+        let shown = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).disk_index);
+
+        // Dots: one per disk; a click jumps there.
+        let third = cx.debug_bounds("disk-dot-2").expect("no dots for three disks");
+        cx.simulate_click(third.center(), gpui_kit::Modifiers::none());
+        assert_eq!(shown(cx), Some(2));
+        // Arrows and wrap-around.
+        view.update(cx, |this, cx| this.step_disk(1, cx));
+        assert_eq!(shown(cx), Some(0), "next after the last wraps to the first");
+        view.update(cx, |this, cx| this.step_disk(-1, cx));
+        assert_eq!(shown(cx), Some(2));
+
+        // A two-finger swipe left shows the next disk; small moves do nothing.
+        let card = cx.debug_bounds("disk-carousel").unwrap();
+        let swipe = |cx: &mut VisualTestContext, x: f32| {
+            cx.simulate_event(gpui_kit::ScrollEvent {
+                position: card.center(),
+                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(x), gpui_kit::px(0.))),
+                ..Default::default()
+            });
+            cx.run_until_parked();
+        };
+        swipe(cx, -20.);
+        assert_eq!(shown(cx), Some(2), "a small move is not a swipe");
+        swipe(cx, -50.);
+        assert_eq!(shown(cx), Some(0));
+        swipe(cx, 70.);
+        assert_eq!(shown(cx), Some(2), "a swipe right goes back");
+        *crate::model::TEST_DISKS.lock().unwrap() = None;
     }
 }
