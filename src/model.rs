@@ -1347,7 +1347,7 @@ mod fs_index {
                             tags: &[],
                             preview: None,
                             path: None,
-                            cloud: CloudState::Local,
+                            cloud: super::CloudState::Local,
                         }));
                         entry
                     })
