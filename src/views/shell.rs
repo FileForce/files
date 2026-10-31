@@ -233,20 +233,15 @@ impl FileExplorer {
                             .justify_center()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("P"),
+                            .child(crate::model::user_initial()),
                     )
                     .child(
                         v_flex()
                             .gap_0p5()
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(
-                                crate::settings::localized(settings.language, "Personal", "Личное"),
-                            ))
+                            .min_w_0()
+                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(crate::model::user_name()))
                             .child(div().text_xs().text_color(palette.muted).child(
-                                crate::settings::localized(
-                                    settings.language,
-                                    "Demo workspace",
-                                    "Demo-рабочая область",
-                                ),
+                                crate::settings::localized(settings.language, "Local workspace", "Локальная рабочая область"),
                             )),
                     )
                     .child(div().flex_1())

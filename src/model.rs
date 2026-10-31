@@ -319,6 +319,30 @@ pub fn mounted_volumes() -> Vec<PathBuf> {
     volumes
 }
 
+/// The account name, as `whoami` prints it.
+pub fn user_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let from_env = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).ok().filter(|name| !name.trim().is_empty());
+        #[cfg(unix)]
+        let from_system = || {
+            // SAFETY: getpwuid returns static storage or null; copied out at once.
+            unsafe {
+                let entry = libc::getpwuid(libc::getuid());
+                (!entry.is_null()).then(|| std::ffi::CStr::from_ptr((*entry).pw_name).to_string_lossy().into_owned())
+            }
+        };
+        #[cfg(not(unix))]
+        let from_system = || None::<String>;
+        from_env.or_else(from_system).unwrap_or_else(|| "Local".to_string())
+    })
+}
+
+/// The first letter of [`user_name`], for the avatar.
+pub fn user_initial() -> String {
+    user_name().chars().next().map_or_else(|| "?".to_string(), |letter| letter.to_uppercase().collect())
+}
+
 pub fn folder_entry(location: Location) -> Option<&'static FileEntry> {
     match location {
         Location::Recents | Location::Trash | Location::Tag(_) => Some(&RECENTS_FOLDER),
@@ -1681,6 +1705,16 @@ mod tests {
         let cyrillic = trim_middle("Лукина - Бизнес и_или любовь.zip.zip", 20);
         assert!(cyrillic.ends_with(".zip") && cyrillic.chars().count() == 20, "{cyrillic}");
         assert_eq!(trim_middle("x".repeat(30).as_str(), 4).len(), 30, "tiny budgets leave names alone");
+    }
+
+    #[test]
+    fn the_workspace_shows_the_account_name() {
+        let whoami = std::process::Command::new("whoami").output().map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+        if let Some(whoami) = whoami.ok().filter(|name| !name.is_empty()) {
+            assert_eq!(user_name(), whoami);
+        }
+        assert_eq!(user_initial().chars().count(), 1);
+        assert!(user_initial().chars().all(|letter| !letter.is_lowercase()));
     }
 
     #[test]
