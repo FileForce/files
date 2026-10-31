@@ -21,8 +21,11 @@ pub fn release_notes_url(version: &str) -> String {
 
 /// After an update (a newer version than last time): what to announce.
 /// `None` on the first run ever and when nothing changed.
-pub fn just_updated(last_version: &str) -> Option<String> {
-    (!last_version.is_empty() && is_newer(CURRENT_VERSION, last_version)).then(|| CURRENT_VERSION.to_string())
+/// `ran_before`: settings existed — versions before 0.1.2 did not record
+/// their number, so an empty one then means "updated from an older one".
+pub fn just_updated(last_version: &str, ran_before: bool) -> Option<String> {
+    let updated = if last_version.is_empty() { ran_before } else { is_newer(CURRENT_VERSION, last_version) };
+    updated.then(|| CURRENT_VERSION.to_string())
 }
 
 /// Checked automatically at most this often.
@@ -223,10 +226,11 @@ mod tests {
 
     #[test]
     fn an_update_is_announced_once() {
-        assert_eq!(just_updated(""), None, "first run: nothing to announce");
-        assert_eq!(just_updated(CURRENT_VERSION), None, "same version");
-        assert_eq!(just_updated("0.0.1").as_deref(), Some(CURRENT_VERSION));
-        assert_eq!(just_updated("999.0.0"), None, "a downgrade is not an update");
+        assert_eq!(just_updated("", false), None, "first run: nothing to announce");
+        assert_eq!(just_updated("", true).as_deref(), Some(CURRENT_VERSION), "from a version that did not record itself");
+        assert_eq!(just_updated(CURRENT_VERSION, true), None, "same version");
+        assert_eq!(just_updated("0.0.1", true).as_deref(), Some(CURRENT_VERSION));
+        assert_eq!(just_updated("999.0.0", true), None, "a downgrade is not an update");
         assert!(release_notes_url("0.2.0").ends_with("/releases/tag/v0.2.0"));
         assert!(release_notes_url("v0.2.0").ends_with("/releases/tag/v0.2.0"));
     }

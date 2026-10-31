@@ -737,9 +737,20 @@ fn migrate_legacy_folder(path: &Path) {
     }
 }
 
+/// Whether settings.toml was already there when the app started (so this is
+/// not the first run, even if an older version did not record its number).
+pub fn existed_at_start() -> bool {
+    EXISTED_AT_START.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static EXISTED_AT_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn load() -> AppSettings {
     if let Some(path) = settings_path().filter(|_| !cfg!(test)) {
         migrate_legacy_folder(&path);
+        if path.exists() {
+            EXISTED_AT_START.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     let Some(path) = settings_path() else {
         set_load_error(Some(

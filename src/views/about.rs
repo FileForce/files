@@ -248,12 +248,13 @@ impl FileExplorer {
         if last == CURRENT_VERSION {
             return;
         }
-        if let Some(version) = crate::updates::just_updated(&last) {
+        if let Some(version) = crate::updates::just_updated(&last, crate::settings::existed_at_start()) {
+            let from = if last.is_empty() { "From an earlier version".to_string() } else { format!("From {last}") };
             files_sdk::log::notify_with(
                 "files",
                 files_sdk::log::Level::Success,
                 format!("Updated to Files {version}"),
-                Some(format!("From {last}. See what is new.")),
+                Some(format!("{from}. See what is new.")),
                 Some(files_sdk::log::Action { label: "Open release notes".into(), url: crate::updates::release_notes_url(&version) }),
             );
         }

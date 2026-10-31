@@ -7,6 +7,8 @@ version's notes under `## Unreleased`, then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.2
+
 - After an update, a notification says what version you now have, with a
   button that opens its release notes.
 - Notifications can carry an action button (for extensions too).
