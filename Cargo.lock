@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "file-force"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
@@ -1654,6 +1654,7 @@ dependencies = [
  "libc",
  "serde",
  "toml 0.8.23",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

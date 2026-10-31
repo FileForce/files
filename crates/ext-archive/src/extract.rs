@@ -58,6 +58,7 @@ pub fn describe_error(path: &Path, error: &std::io::Error) -> String {
     }
 }
 /// One archive member, already made safe: relative, `/`-separated, no `..`.
+#[derive(Clone)]
 pub struct Item {
     pub name: String,
     pub dir: bool,

@@ -3640,6 +3640,29 @@ mod tests {
     }
 
     #[test]
+    fn quick_look_on_archives_lists_their_members() {
+        let dir = std::env::temp_dir().join(format!("file-force-quick-look-archive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/ext-archive/tests/data/solid.rar"), dir.join("solid.rar")).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(dir.join("docs.zip")).unwrap());
+        zip.start_file("readme.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, b"hello").unwrap();
+        zip.finish().unwrap();
+        let (view, cx) = rooted_window(&dir);
+        for name in ["docs.zip", "solid.rar"] {
+            let archive = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id);
+            view.update(cx, |this, cx| this.select_entry(archive, cx));
+            if !cx.update(|window, cx| window.has_active_dialog(cx)) {
+                cx.simulate_keystrokes("space");
+            }
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("quick-look-archive").is_some(), "{name}: no archive listing in Quick Look");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn git_window_commits_the_ticked_files_and_shows_the_log() {
         use crate::views::git::GitPage;
         files_sdk::permissions::declare(&files_ext_git::MANIFEST);

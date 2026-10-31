@@ -98,6 +98,9 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
     {
         return image(source, palette);
     }
+    if crate::archive::is_supported(file) {
+        return archive(path, palette, settings);
+    }
     if let Some(text) = read_text(path, file.kind) {
         return div()
             .id("quick-look-text")
@@ -121,6 +124,81 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
         crate::thumbnails::Preview::Pending => placeholder("Generating preview…"),
         crate::thumbnails::Preview::Unavailable(reason) => placeholder(&format!("No preview · {reason}")),
     }
+}
+
+/// Items shown in an archive preview; the rest are counted.
+const ARCHIVE_ITEMS: usize = 300;
+
+/// An archive's listing, read once per file version (the view redraws often).
+fn archive_items(path: &Path) -> Result<Vec<files_ext_archive::extract::Item>, String> {
+    type Listing = (Option<std::time::SystemTime>, Result<Vec<files_ext_archive::extract::Item>, String>);
+    static CACHE: std::sync::Mutex<Option<(std::path::PathBuf, Listing)>> = std::sync::Mutex::new(None);
+    let modified = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+    let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached, (time, listing))) = cache.as_ref()
+        && cached == path
+        && *time == modified
+    {
+        return listing.clone();
+    }
+    let listing = files_ext_archive::extract::list_items(path)
+        .map_err(|error| files_ext_archive::extract::describe_error(path, &error));
+    *cache = Some((path.to_path_buf(), (modified, listing.clone())));
+    listing
+}
+
+/// What an archive holds: a summary and its members, folders first.
+fn archive(path: &Path, palette: Palette, settings: &crate::settings::AppSettings) -> AnyElement {
+    let mut items = match archive_items(path) {
+        Ok(items) => items,
+        Err(reason) => {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(div().text_sm().text_color(palette.muted).child(format!("No preview · {reason}")))
+                .into_any_element();
+        }
+    };
+    items.sort_by(|a, b| (!a.dir, a.name.to_lowercase()).cmp(&(!b.dir, b.name.to_lowercase())));
+    let files = items.iter().filter(|item| !item.dir).count();
+    let total: u64 = items.iter().map(|item| item.size).sum();
+    let summary = format!(
+        "{files} {} · {} unpacked",
+        if files == 1 { "file" } else { "files" },
+        crate::settings::format_size(total, settings.human_sizes)
+    );
+    let more = items.len().saturating_sub(ARCHIVE_ITEMS);
+    let rows = items.into_iter().take(ARCHIVE_ITEMS).map(|item| {
+        h_flex()
+            .gap_2()
+            .py_0p5()
+            .child(Icon::new(if item.dir { IconName::Folder } else { IconName::File }).small().text_color(if item.dir { palette.folder } else { palette.muted }))
+            .child(div().flex_1().min_w_0().truncate().text_xs().text_color(palette.text).child(item.name))
+            .child(div().w(px(80.)).text_right().text_xs().text_color(palette.faint).child(if item.dir {
+                String::new()
+            } else {
+                crate::settings::format_size(item.size, settings.human_sizes)
+            }))
+    });
+    v_flex()
+        .size_full()
+        .gap_3()
+        .child(div().debug_selector(|| "quick-look-archive".into()).text_sm().text_color(palette.muted).child(summary))
+        .child(
+            div()
+                .id("quick-look-archive-list")
+                .flex_1()
+                .min_h_0()
+                .p_3()
+                .rounded_md()
+                .bg(palette.surface)
+                .overflow_y_scrollbar()
+                .child(v_flex().children(rows).when(more > 0, |list| {
+                    list.child(div().pt_2().text_xs().text_color(palette.faint).child(format!("+{more} more")))
+                })),
+        )
+        .into_any_element()
 }
 
 /// What a folder holds: a summary and a grid of its items with thumbnails.

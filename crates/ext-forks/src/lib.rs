@@ -2,8 +2,9 @@
 //! of `git worktree`, Btrfs snapshots and Nix. A fork is a real folder, so a
 //! terminal, an editor or a build works inside it. It is made with a
 //! copy-on-write clone where the file system supports one (APFS `clonefile`
-//! on macOS, reflinks on Btrfs/XFS), so it is instant and takes no extra
-//! space until files change; elsewhere it falls back to a plain copy.
+//! on macOS, reflinks on Btrfs/XFS, block cloning on Windows ReFS / Dev
+//! Drive), so it is instant and takes no extra space until files change;
+//! elsewhere it falls back to a plain copy.
 //!
 //! The original is never touched until the fork is applied: Apply copies
 //! added and modified files back and removes what the fork removed (to the
@@ -176,6 +177,93 @@ pub fn storage_dir() -> Option<PathBuf> {
     Some(config_dir()?.join("forks"))
 }
 
+/// Forks kept at the top of a ReFS volume, next to what they fork.
+const VOLUME_STORE: &str = ".file-force-forks";
+
+/// Where a fork of `base` is made, and whether copies there are block clones.
+/// Windows clones only within one volume, so on ReFS (Dev Drive) the fork
+/// goes to that volume's `.file-force-forks`; everywhere else (and when that
+/// folder cannot be made) to the settings folder.
+fn storage_for(base: &Path) -> Option<(PathBuf, bool)> {
+    #[cfg(windows)]
+    if let Some(root) = refs::volume_root(base)
+        && refs::is_refs(&root)
+    {
+        let store = root.join(VOLUME_STORE);
+        if std::fs::create_dir_all(&store).is_ok() {
+            return Some((store, refs::copy_clones_blocks()));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = base;
+    Some((storage_dir()?, false))
+}
+
+/// A fork container this app made: under the settings folder or a volume store.
+fn is_fork_container(container: &Path) -> bool {
+    storage_dir().is_some_and(|storage| container.starts_with(storage))
+        || container.parent().and_then(Path::file_name).is_some_and(|name| name == VOLUME_STORE)
+}
+
+#[cfg(windows)]
+mod refs {
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+    use std::path::{Path, PathBuf};
+
+    use windows_sys::Win32::Storage::FileSystem::{GetVolumeInformationW, GetVolumePathNameW};
+    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+
+    fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
+        text.encode_wide().chain(Some(0)).collect()
+    }
+
+    fn until_nul(buffer: &[u16]) -> &[u16] {
+        &buffer[..buffer.iter().position(|&unit| unit == 0).unwrap_or(buffer.len())]
+    }
+
+    /// `D:\` for `D:\code\app` (or the mount folder it lives under).
+    pub fn volume_root(path: &Path) -> Option<PathBuf> {
+        let path = wide(path.as_os_str());
+        let mut root = [0u16; 512];
+        // SAFETY: `path` is NUL-terminated, `root` is a writable buffer of the given length.
+        let ok = unsafe { GetVolumePathNameW(path.as_ptr(), root.as_mut_ptr(), root.len() as u32) };
+        (ok != 0).then(|| PathBuf::from(std::ffi::OsString::from_wide(until_nul(&root))))
+    }
+
+    pub fn is_refs(root: &Path) -> bool {
+        let root = wide(root.as_os_str());
+        let mut file_system = [0u16; 64];
+        // SAFETY: `root` is NUL-terminated; the optional outputs are null; `file_system` is writable.
+        let ok = unsafe {
+            GetVolumeInformationW(
+                root.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                file_system.as_mut_ptr(),
+                file_system.len() as u32,
+            )
+        };
+        ok != 0 && String::from_utf16_lossy(until_nul(&file_system)).eq_ignore_ascii_case("ReFS")
+    }
+
+    /// Windows 11 24H2 (build 26100) and later block-clone in `CopyFile`,
+    /// which `std::fs::copy` uses; older builds make full copies.
+    pub fn copy_clones_blocks() -> bool {
+        let key = wide(std::ffi::OsStr::new(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"));
+        let value = wide(std::ffi::OsStr::new("CurrentBuildNumber"));
+        let mut data = [0u16; 32];
+        let mut size = std::mem::size_of_val(&data) as u32;
+        // SAFETY: key and value are NUL-terminated; `data` holds `size` bytes.
+        let status = unsafe {
+            RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), data.as_mut_ptr().cast(), &mut size)
+        };
+        status == 0 && String::from_utf16_lossy(until_nul(&data)).parse::<u32>().is_ok_and(|build| build >= 26100)
+    }
+}
+
 fn load(path: &Path) -> Vec<Fork> {
     std::fs::read_to_string(path)
         .ok()
@@ -267,7 +355,7 @@ pub fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
 
 /// Makes a fork of `base` and returns its id and folder.
 pub fn create(base: &Path) -> io::Result<(u32, PathBuf, CloneKind)> {
-    let storage = storage_dir().ok_or_else(|| io::Error::other("no settings folder"))?;
+    let (storage, block_clone) = storage_for(base).ok_or_else(|| io::Error::other("no settings folder"))?;
     let folder = base
         .file_name()
         .map_or_else(|| "root".to_string(), |name| name.to_string_lossy().into_owned());
@@ -284,6 +372,8 @@ pub fn create(base: &Path) -> io::Result<(u32, PathBuf, CloneKind)> {
     std::fs::create_dir_all(&container)?;
     let dir = container.join(&folder);
     let kind = match clone_tree(base, &dir) {
+        // A copy on ReFS is a block clone: shared data, like copy-on-write.
+        Ok(CloneKind::Copy) if block_clone => CloneKind::CopyOnWrite,
         Ok(kind) => kind,
         Err(error) => {
             let _ = std::fs::remove_dir_all(&container);
@@ -488,7 +578,7 @@ pub fn discard(id: u32) -> Option<PathBuf> {
         fork
     };
     if let Some(container) = fork.dir.parent()
-        && storage_dir().is_some_and(|storage| container.starts_with(storage))
+        && is_fork_container(container)
     {
         let _ = std::fs::remove_dir_all(container);
     }

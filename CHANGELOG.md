@@ -7,6 +7,13 @@ version's notes under `## Unreleased`, then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.5
+
+- Quick Look (Space) on ZIP, RAR, TAR and GZ archives lists what is inside.
+- Windows: forks of folders on a ReFS volume (Dev Drive) are kept on that
+  volume in `.file-force-forks`, so Windows 11 24H2+ makes them as block
+  clones: instant and taking no extra space. NTFS still makes a full copy.
+
 ## 0.1.4
 
 - RAR archives: preview, browse and extract on every system (no `unrar`
