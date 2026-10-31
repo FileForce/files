@@ -74,7 +74,7 @@ impl UpdateDialog {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { crate::updates::download(&download, &crate::licensing::trusted()) })
+                .spawn(async move { crate::updates::download(&download, &crate::licensing::trusted_updates()) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.install = match result {

@@ -7,6 +7,9 @@ version's notes under `## Unreleased`, then rename it when you tag.
 
 ## Unreleased
 
+- "Download & Install" in Check for Updates: every release is signed in CI
+  and Files checks the signature before opening the installer.
+
 ## 0.1.2
 
 - After an update, a notification says what version you now have, with a

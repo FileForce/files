@@ -48,7 +48,7 @@ timestamp_url = "http://timestamp.digicert.com"
 # Where Files looks for new versions: a latest.json on your site, written by
 # `cargo xtask bundle` next to the .dmg (upload both, plus the .dmg.sig).
 # Empty: GitHub releases of `repository` in Cargo.toml, if set.
-url = ""
+url = "https://github.com/FileForce/files/releases/latest/download/latest.json"
 # Where the .dmg will be downloadable, for latest.json (e.g. https://files.dev/download).
 download_base = ""
 # Shown in About.

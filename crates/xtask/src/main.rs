@@ -87,6 +87,7 @@ fn main() -> ExitCode {
         Some("doctor") => load().and_then(|(root, config)| doctor(&root, &config)),
         Some("license") => license(&workspace_root(), &args[1..]),
         Some("package-extension") => package_extension(&workspace_root(), &args[1..]),
+        Some("updates") => updates(&workspace_root(), &args[1..]),
         _ => {
             eprintln!(
                 "usage: cargo xtask <icons | bundle [--sign IDENTITY] [--notarize] [--no-dmg] | doctor\n\
@@ -429,8 +430,8 @@ fn bundle_macos(root: &Path, config: &Config, version: &str, icons: &Path, dist:
 /// Signs an update with the publisher key (the one that signs licenses)
 /// and writes `latest.json` next to it: upload both to the website.
 fn publish_update(config: &Config, version: &str, file: &Path, platform: &str) -> Result {
-    let Ok(private) = read_private_key() else {
-        println!("No publisher key: the update is not signed, Files will only show a download link (cargo xtask license keygen)");
+    let Ok(private) = read_update_key() else {
+        println!("No update key: the update is not signed, Files will only show a download link (cargo xtask updates keygen)");
         return Ok(());
     };
     let bytes = std::fs::read(file).map_err(|error| error.to_string())?;
@@ -499,6 +500,63 @@ fn bundle_linux(root: &Path, config: &Config, version: &str, icons: &Path, dist:
 fn private_key_path() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     home.join(".config/files-license/private.pk8")
+}
+
+/// The key that signs updates — separate from the license key, so the CI
+/// that holds it cannot mint licenses. From FILES_UPDATE_KEY (base64, CI) or
+/// `~/.config/files-license/updates.pk8`.
+fn update_key_path() -> PathBuf {
+    private_key_path().with_file_name("updates.pk8")
+}
+
+fn read_update_key() -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    if let Ok(encoded) = std::env::var("FILES_UPDATE_KEY") {
+        if !encoded.trim().is_empty() {
+            return base64::engine::general_purpose::STANDARD.decode(encoded.trim()).map_err(|error| format!("FILES_UPDATE_KEY: {error}"));
+        }
+    }
+    let path = update_key_path();
+    std::fs::read(&path).map_err(|_| format!("no update key at {} · run: cargo xtask updates keygen", path.display()))
+}
+
+/// `cargo xtask updates keygen`: the update signing key pair.
+fn updates(root: &Path, args: &[String]) -> Result {
+    use base64::Engine as _;
+    match args.first().map(String::as_str) {
+        Some("keygen") => {
+            let path = update_key_path();
+            if path.exists() {
+                return Err(format!("{} already exists · refusing to replace it (installed copies would refuse new updates)", path.display()));
+            }
+            let (private, public) = files_sdk::license::generate_keys()?;
+            std::fs::create_dir_all(path.parent().expect("parent")).map_err(|error| error.to_string())?;
+            std::fs::write(&path, &private).map_err(|error| error.to_string())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|error| error.to_string())?;
+            }
+            let keys = root.join("packaging/license/updates.keys");
+            let mut text = std::fs::read_to_string(&keys).unwrap_or_default();
+            text.push_str(&format!("{public}\n"));
+            std::fs::write(&keys, text).map_err(|error| error.to_string())?;
+            println!("Private key → {} (back it up)", path.display());
+            println!("Public key  → {} (built into the app)", keys.display());
+            println!("For CI: the base64 below goes into the FILES_UPDATE_KEY secret");
+            println!("{}", base64::engine::general_purpose::STANDARD.encode(&private));
+            Ok(())
+        }
+        Some("sign") => {
+            let file = args.get(1).ok_or("usage: cargo xtask updates sign FILE")?;
+            let bytes = std::fs::read(file).map_err(|error| format!("{file}: {error}"))?;
+            let signature = files_sdk::package::sign(&bytes, &read_update_key()?)?;
+            std::fs::write(format!("{file}.sig"), &signature).map_err(|error| error.to_string())?;
+            println!("{file}.sig");
+            Ok(())
+        }
+        _ => Err("usage: cargo xtask updates <keygen | sign FILE>".to_string()),
+    }
 }
 
 fn read_private_key() -> Result<Vec<u8>> {

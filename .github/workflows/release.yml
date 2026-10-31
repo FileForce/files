@@ -13,6 +13,11 @@ on:
   push:
     tags: ["v*"]
 
+# Signs every installer with the update key (not the license key), so the
+# app can download and verify updates itself.
+env:
+  FILES_UPDATE_KEY: ${{ secrets.FILES_UPDATE_KEY }}
+
 permissions:
   contents: write
 
@@ -53,7 +58,9 @@ jobs:
         run: cargo xtask bundle
       - uses: softprops/action-gh-release@v2
         with:
-          files: target/dist/*.dmg
+          files: |
+            target/dist/*.dmg
+            target/dist/*.dmg.sig
 
   linux:
     runs-on: ubuntu-22.04
@@ -90,7 +97,9 @@ jobs:
         with:
           name: Files ${{ github.ref_name }}
           body_path: release-notes.md
-          files: target/dist/*.AppImage
+          files: |
+            target/dist/*.AppImage
+            target/dist/*.AppImage.sig
 
   windows:
     runs-on: windows-latest
@@ -124,4 +133,43 @@ jobs:
         run: cargo xtask bundle
       - uses: softprops/action-gh-release@v2
         with:
-          files: target/dist/*.msi
+          files: |
+            target/dist/*.msi
+            target/dist/*.msi.sig
+
+  # latest.json, which Files reads at releases/latest/download/latest.json:
+  # the version, its notes and each platform's installer with its signature.
+  update-manifest:
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write latest.json
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          mkdir sigs
+          gh release download "$GITHUB_REF_NAME" --pattern '*.sig' --dir sigs
+          notes=$(awk -v version="$version" '
+            $0 == "## " version { keep = 1; next }
+            keep && /^## / { exit }
+            keep { print }
+          ' CHANGELOG.md)
+          entry() {
+            sig=$(ls sigs | grep -E "$1" | head -n1)
+            [ -z "$sig" ] && { echo null; return; }
+            jq -n --arg url "$base/${sig%.sig}" --arg signature "$(cat "sigs/$sig")" '{url: $url, signature: $signature}'
+          }
+          jq -n \
+            --arg version "$version" \
+            --arg notes "$notes" \
+            --arg page "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" \
+            --arg published "$(date +%s)" \
+            --argjson macos "$(entry '\.dmg\.sig$')" \
+            --argjson windows "$(entry '\.msi\.sig$')" \
+            --argjson linux "$(entry '\.AppImage\.sig$')" \
+            '{version: $version, notes: $notes, page: $page, published: $published, macos: $macos, windows: $windows, linux: $linux}' > latest.json
+          cat latest.json
+          gh release upload "$GITHUB_REF_NAME" latest.json --clobber

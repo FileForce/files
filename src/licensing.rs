@@ -10,6 +10,13 @@ use crate::settings::AppSettings;
 
 const TRUSTED: &str = include_str!("../packaging/license/public.keys");
 
+const UPDATES: &str = include_str!("../packaging/license/updates.keys");
+
+/// Keys that may sign updates (a separate key the release CI holds).
+pub(crate) fn trusted_updates() -> Vec<&'static str> {
+    UPDATES.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect()
+}
+
 pub(crate) fn trusted() -> Vec<&'static str> {
     TRUSTED.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect()
 }
