@@ -13,6 +13,18 @@ pub const UPDATE_URL: &str = env!("FILES_UPDATE_URL");
 pub const WEBSITE: &str = env!("FILES_WEBSITE");
 pub const COPYRIGHT: &str = env!("FILES_COPYRIGHT");
 
+/// The release notes of a version, on GitHub.
+pub fn release_notes_url(version: &str) -> String {
+    let repository = github_repository().unwrap_or_else(|| "FileForce/files".to_string());
+    format!("https://github.com/{repository}/releases/tag/v{}", version.trim_start_matches('v'))
+}
+
+/// After an update (a newer version than last time): what to announce.
+/// `None` on the first run ever and when nothing changed.
+pub fn just_updated(last_version: &str) -> Option<String> {
+    (!last_version.is_empty() && is_newer(CURRENT_VERSION, last_version)).then(|| CURRENT_VERSION.to_string())
+}
+
 /// Checked automatically at most this often.
 pub const AUTO_CHECK_EVERY: i64 = 24 * 3600;
 
@@ -207,6 +219,16 @@ mod tests {
         assert_eq!(parse_github("git@github.com:owner/files.git"), Some("owner/files".into()));
         assert_eq!(parse_github("https://gitlab.com/owner/files"), None);
         assert_eq!(parse_github(""), None);
+    }
+
+    #[test]
+    fn an_update_is_announced_once() {
+        assert_eq!(just_updated(""), None, "first run: nothing to announce");
+        assert_eq!(just_updated(CURRENT_VERSION), None, "same version");
+        assert_eq!(just_updated("0.0.1").as_deref(), Some(CURRENT_VERSION));
+        assert_eq!(just_updated("999.0.0"), None, "a downgrade is not an update");
+        assert!(release_notes_url("0.2.0").ends_with("/releases/tag/v0.2.0"));
+        assert!(release_notes_url("v0.2.0").ends_with("/releases/tag/v0.2.0"));
     }
 
     #[test]

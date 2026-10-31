@@ -67,8 +67,29 @@ jobs:
           curl -L -o /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           sudo chmod +x /usr/local/bin/appimagetool
       - run: cargo xtask bundle
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # The section "## <version>", up to the next "## ".
+          awk -v version="$version" '
+            $0 == "## " version { keep = 1; next }
+            keep && /^## / { exit }
+            keep { print }
+          ' CHANGELOG.md > release-notes.md
+          {
+            echo
+            echo "**Installing:** the builds are not signed by Apple or Microsoft yet."
+            echo "macOS: open it once, then System Settings → Privacy & Security → Open Anyway."
+            echo "Windows: SmartScreen → More info → Run anyway."
+            echo "Linux: \`chmod +x\` the AppImage."
+          } >> release-notes.md
+          if [ ! -s release-notes.md ] || ! grep -q '[^[:space:]]' <(head -n -6 release-notes.md); then
+            echo "::warning::CHANGELOG.md has no section for $version"
+          fi
       - uses: softprops/action-gh-release@v2
         with:
+          name: Files ${{ github.ref_name }}
+          body_path: release-notes.md
           files: target/dist/*.AppImage
 
   windows:

@@ -218,7 +218,8 @@ impl FileExplorer {
     /// Once a day (Settings → General → Check for updates automatically):
     /// a notification when a newer version is out.
     pub(crate) fn auto_check_updates(&mut self, cx: &mut Context<Self>) {
-        let updates = self.appearance.read(cx).updates;
+        self.announce_update(cx);
+        let updates = self.appearance.read(cx).updates.clone();
         if !crate::updates::auto_check_due(&updates) {
             return;
         }
@@ -238,6 +239,28 @@ impl FileExplorer {
             }
         })
         .detach();
+    }
+
+    /// First run of a new version: "Updated to Files X" with a button that
+    /// opens its release notes. Remembered, so it shows once.
+    fn announce_update(&mut self, cx: &mut Context<Self>) {
+        let last = self.appearance.read(cx).updates.last_version.clone();
+        if last == CURRENT_VERSION {
+            return;
+        }
+        if let Some(version) = crate::updates::just_updated(&last) {
+            files_sdk::log::notify_with(
+                "files",
+                files_sdk::log::Level::Success,
+                format!("Updated to Files {version}"),
+                Some(format!("From {last}. See what is new.")),
+                Some(files_sdk::log::Action { label: "Open release notes".into(), url: crate::updates::release_notes_url(&version) }),
+            );
+        }
+        self.appearance.update(cx, |settings, _| {
+            settings.updates.last_version = CURRENT_VERSION.to_string();
+            let _ = crate::settings::save(settings);
+        });
     }
 
     pub fn open_about_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {

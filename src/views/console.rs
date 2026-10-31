@@ -46,6 +46,16 @@ fn level_icon(level: Level, palette: Palette) -> Icon {
     }
 }
 
+/// A notification's button: opens its link (release notes…).
+fn action_button(id: impl Into<gpui_kit::ElementId>, action: files_sdk::log::Action) -> Button {
+    let url = action.url.clone();
+    let button = Button::new(id).primary().xsmall().label(action.label).on_click(move |_, _, cx| {
+        cx.stop_propagation();
+        cx.open_url(&url);
+    });
+    button
+}
+
 impl FileExplorer {
     /// Redraws when the journal changes, and checks the free disk space.
     pub(crate) fn watch_journal(cx: &mut Context<Self>) {
@@ -393,7 +403,8 @@ impl FileExplorer {
                         .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.text).whitespace_normal().child(notification.title.clone()))
                         .children(notification.body.clone().map(|body| {
                             div().text_xs().text_color(palette.muted).whitespace_normal().line_clamp(2).child(body)
-                        })),
+                        }))
+                        .children(notification.action.clone().map(|action| action_button(("toast-action", id as usize), action))),
                 )
                 .child(Button::new(("toast-close", id as usize)).ghost().xsmall().icon(IconName::X).on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
@@ -443,6 +454,7 @@ impl FileExplorer {
                         .gap_0p5()
                         .child(div().text_sm().text_color(palette.text).whitespace_normal().child(notification.title.clone()))
                         .children(notification.body.clone().map(|body| div().text_xs().text_color(palette.muted).whitespace_normal().child(body)))
+                        .children(notification.action.clone().map(|action| action_button(("notification-action", id as usize), action)))
                         .child(div().text_size(px(9.)).text_color(palette.faint).child(format!(
                             "{} · {}",
                             notification.source,

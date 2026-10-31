@@ -90,6 +90,16 @@ pub struct Notification {
     pub title: String,
     pub body: Option<String>,
     pub read: bool,
+    /// A button on the toast and in the list, e.g. "Open release notes".
+    pub action: Option<Action>,
+}
+
+/// What a notification's button does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Action {
+    pub label: String,
+    /// Opened in the browser.
+    pub url: String,
 }
 
 #[derive(Default)]
@@ -326,6 +336,11 @@ pub fn describe(command: &Command) -> String {
 
 /// Posts a notification (and records it in the journal).
 pub fn notify(source: &str, level: Level, title: impl Into<String>, body: Option<String>) -> u64 {
+    notify_with(source, level, title, body, None)
+}
+
+/// [`notify`] with a button.
+pub fn notify_with(source: &str, level: Level, title: impl Into<String>, body: Option<String>, action: Option<Action>) -> u64 {
     let title = title.into();
     record(source, Kind::Notification, title.clone(), body.clone());
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -333,7 +348,7 @@ pub fn notify(source: &str, level: Level, title: impl Into<String>, body: Option
     if journal.notifications.len() >= NOTIFICATIONS {
         journal.notifications.pop_front();
     }
-    journal.notifications.push_back(Notification { id, time: now_ms(), source: source.to_string(), level, title, body, read: false });
+    journal.notifications.push_back(Notification { id, time: now_ms(), source: source.to_string(), level, title, body, read: false, action });
     drop(journal);
     GENERATION.fetch_add(1, Ordering::Relaxed);
     id

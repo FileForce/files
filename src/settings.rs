@@ -43,18 +43,20 @@ pub struct AppSettings {
 }
 
 /// `[updates]` in settings.toml.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateSettings {
     /// Look for a new version once a day and post a notification.
     pub automatic: bool,
     /// When the last automatic check ran (seconds since the Unix epoch).
     pub last_check: i64,
+    /// The version that ran last time: a newer one means "just updated".
+    pub last_version: String,
 }
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        Self { automatic: true, last_check: 0 }
+        Self { automatic: true, last_check: 0, last_version: String::new() }
     }
 }
 
