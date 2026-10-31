@@ -7,6 +7,18 @@ version's notes under `## Unreleased`, then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.4
+
+- RAR archives: preview, browse and extract on every system (no `unrar`
+  needed).
+- PDF previews on Windows and Linux (Linux needs poppler-utils).
+- Windows: the context menu opens instantly, programs no longer flash a
+  console window, "Choose app" in Default apps opens a file dialog, and
+  Terminal offers Windows Terminal, PowerShell and Command Prompt.
+- Terminal lists only the apps installed on this computer.
+- An empty folder says "This folder is empty" instead of "No matching files".
+- Accessibility settings say "System: on/off" instead of "macOS".
+
 ## 0.1.3
 
 - "Files X is available" notification with Install (signed download),

@@ -1423,11 +1423,11 @@ impl SettingsWindow {
                 .into_any_element(),
             "terminal" => setting_row(
                 tr(language, "Terminal app", "Приложение терминала"),
-                h_flex().gap_1().children(crate::settings::TerminalApp::ALL.map(|app| {
+                h_flex().gap_1().flex_wrap().children(crate::settings::TerminalApp::available().into_iter().map(|app| {
                     option_button(
                         gpui_kit::ElementId::Name(format!("terminal-app-{}", app.app_name()).into()),
                         app.app_name(),
-                        self.draft.extensions.terminal_app == app,
+                        self.draft.extensions.terminal_app.effective() == app,
                     )
                     .icon(IconName::SquareTerminal)
                     .xsmall()
@@ -1741,6 +1741,24 @@ impl SettingsWindow {
 
     /// "Other app…": the native chooser runs off the UI thread.
     fn choose_other_app(&mut self, extension: String, cx: &mut Context<Self>) {
+        // Windows and Linux: the system file dialog, pointed at a program.
+        if !cfg!(target_os = "macos") {
+            let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some("Default app".into()),
+            });
+            cx.spawn(async move |this, cx| {
+                if let Ok(Ok(Some(paths))) = picked.await
+                    && let Some(app) = paths.into_iter().next()
+                {
+                    let _ = this.update(cx, |this, cx| this.set_default_app(&extension, Some(app), cx));
+                }
+            })
+            .detach();
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let chosen = cx
                 .background_executor()
@@ -2536,9 +2554,9 @@ impl SettingsWindow {
                     .child(div().pl(px(28.)).text_xs().text_color(palette.muted).child(format!(
                         "{hint} {}",
                         if from_os {
-                            tr(language, "(macOS: on)", "(macOS: вкл.)")
+                            tr(language, "(System: on)", "(Система: вкл.)")
                         } else {
-                            tr(language, "(macOS: off)", "(macOS: выкл.)")
+                            tr(language, "(System: off)", "(Система: выкл.)")
                         }
                     ))),
             );

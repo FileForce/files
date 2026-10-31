@@ -143,6 +143,18 @@ fn push(mut event: Event) -> u64 {
     id
 }
 
+/// Windows: no console window flashing up for every program the app runs
+/// (the app itself has none, so each child would get its own).
+pub fn hide_window(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// Records an event.
 pub fn record(source: &str, kind: Kind, message: impl Into<String>, detail: Option<String>) -> u64 {
     push(Event {
@@ -175,7 +187,7 @@ pub fn run(source: &str, command: &mut Command) -> io::Result<Output> {
     let line = describe(command);
     let shell = shell_line(command);
     let started = Instant::now();
-    let result = command.output();
+    let result = hide_window(command).output();
     let duration_ms = started.elapsed().as_millis() as u64;
     let (ok, detail) = match &result {
         Ok(output) => {
@@ -216,7 +228,7 @@ pub fn run_with_timeout(source: &str, command: &mut Command, timeout: std::time:
     let line = describe(command);
     let shell = shell_line(command);
     let started = Instant::now();
-    let child = command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn();
+    let child = hide_window(command).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn();
     let mut child = match child {
         Ok(child) => child,
         Err(error) => {

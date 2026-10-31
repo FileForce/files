@@ -166,7 +166,7 @@ impl SshDialog {
         let user = self.user.read(cx).value().trim().to_string();
         let port = self.port.read(cx).value().trim().parse::<u16>().unwrap_or(22);
         let endpoint = SshConnection { host, user, port };
-        let app = self.appearance.read(cx).extensions.terminal_app;
+        let app = self.appearance.read(cx).extensions.terminal_app.effective();
         let command = format!(
             "exec ssh -t -p {} {}",
             endpoint.port,

@@ -474,6 +474,21 @@ impl FileExplorer {
 
     fn render_empty_state(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let language = self.appearance.read(cx).language;
+        // Nothing typed: the folder itself is empty, there is no filter to clear.
+        let searching = !self.query.trim().is_empty();
+        let (icon, title, hint) = if searching {
+            (
+                IconName::Search,
+                crate::settings::localized(language, "No matching files", "Файлы не найдены"),
+                crate::settings::localized(language, "Try a different name or clear the current filter.", "Измените запрос или очистите текущий фильтр."),
+            )
+        } else {
+            (
+                IconName::FolderOpen,
+                crate::settings::localized(language, "This folder is empty", "Папка пуста"),
+                crate::settings::localized(language, "Drop files here or create something new.", "Перетащите сюда файлы или создайте новый."),
+            )
+        };
         v_flex()
             .flex_1()
             .size_full()
@@ -489,26 +504,11 @@ impl FileExplorer {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(
-                        Icon::new(IconName::Search)
-                            .large()
-                            .text_color(palette.accent),
-                    ),
+                    .child(Icon::new(icon).large().text_color(palette.accent)),
             )
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(
-                crate::settings::localized(language, "No matching files", "Файлы не найдены"),
-            ))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(palette.muted)
-                    .child(crate::settings::localized(
-                        language,
-                        "Try a different name or clear the current filter.",
-                        "Измените запрос или очистите текущий фильтр.",
-                    )),
-            )
-            .child(
+            .child(div().debug_selector(|| "empty-state-title".into()).text_lg().font_weight(FontWeight::SEMIBOLD).child(title))
+            .child(div().text_sm().text_color(palette.muted).child(hint))
+            .when(searching, |this| this.child(div().debug_selector(|| "clear-search".into()).child(
                 Button::new("clear-search")
                     .secondary()
                     .small()
@@ -522,7 +522,7 @@ impl FileExplorer {
                         this.clear_search(window, cx);
                         cx.notify();
                     })),
-            )
+            )))
             .into_any_element()
     }
 }

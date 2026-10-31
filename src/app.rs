@@ -3888,6 +3888,26 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_folder_says_so_instead_of_no_matching_files() {
+        let dir = std::env::temp_dir().join(format!("file-force-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (view, cx) = rooted_window(&dir);
+        view.update(cx, |this, cx| this.set_mode(ViewMode::Expressive, cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("empty-state-title").is_some(), "no empty state");
+        assert!(cx.debug_bounds("clear-search").is_none(), "nothing to clear in an empty folder");
+        // A search with no hits still offers to clear it.
+        view.update(cx, |this, cx| {
+            this.query = "nothing-here".into();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("clear-search").is_some(), "a search should offer Clear search");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn dragging_the_list_scrollbar_scrolls_and_selects_nothing() {
         let dir = std::env::temp_dir().join(format!("file-force-scrollbar-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

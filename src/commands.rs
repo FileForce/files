@@ -217,7 +217,7 @@ impl FileExplorer {
             cx.notify();
             return;
         };
-        let app = self.appearance.read(cx).extensions.terminal_app;
+        let app = self.appearance.read(cx).extensions.terminal_app.effective();
         match spawn_terminal(&current_dir, app) {
             Ok(mut child) => {
                 self.notice = Some(format!("Terminal launched · {}", current_dir.display()));
@@ -318,20 +318,29 @@ fn spawn_terminal(
 }
 
 #[cfg(target_os = "windows")]
-fn spawn_terminal(current_dir: &Path, _: crate::settings::TerminalApp) -> std::io::Result<std::process::Child> {
-    Command::new("cmd")
-        .args(["/C", "start", "", "/D"])
-        .arg(current_dir)
-        .arg("cmd")
-        .current_dir(current_dir)
-        .spawn()
+fn spawn_terminal(current_dir: &Path, app: crate::settings::TerminalApp) -> std::io::Result<std::process::Child> {
+    use crate::settings::TerminalApp;
+    let mut command = if app == TerminalApp::WindowsTerminal {
+        let mut command = Command::new("wt");
+        command.arg("-d").arg(current_dir);
+        command
+    } else {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", "/D"]).arg(current_dir);
+        if app == TerminalApp::PowerShell {
+            command.args(["powershell", "-NoExit"]);
+        } else {
+            command.arg("cmd");
+        }
+        command
+    };
+    files_sdk::log::hide_window(&mut command).current_dir(current_dir).spawn()
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn spawn_terminal(current_dir: &Path, _: crate::settings::TerminalApp) -> std::io::Result<std::process::Child> {
-    Command::new("x-terminal-emulator")
-        .current_dir(current_dir)
-        .spawn()
+fn spawn_terminal(current_dir: &Path, app: crate::settings::TerminalApp) -> std::io::Result<std::process::Child> {
+    let program = if app == crate::settings::TerminalApp::Ghostty { "ghostty" } else { "x-terminal-emulator" };
+    Command::new(program).current_dir(current_dir).spawn()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]

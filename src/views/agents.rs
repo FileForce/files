@@ -290,7 +290,7 @@ impl FileExplorer {
     /// "Open in Agents": a new session in Files, the agent's CLI in the
     /// terminal, or the agent's desktop app (its CLI when there is none).
     pub(crate) fn open_in_agents(&mut self, target: AgentTarget, folder: PathBuf, cx: &mut Context<Self>) {
-        let app = self.appearance.read(cx).extensions.terminal_app;
+        let app = self.appearance.read(cx).extensions.terminal_app.effective();
         let terminal = |agent: Agent| {
             files_ext_agents::terminal_command(agent, &folder)
                 .and_then(|command| crate::views::ssh::run_in_terminal(&command, agent.short(), app))

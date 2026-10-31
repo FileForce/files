@@ -78,11 +78,23 @@ pub fn installed() -> bool {
 }
 
 /// The top folder of the repository `path` is in.
+///
+/// Found by looking for `.git` up the tree, not by running git: it is asked
+/// every time a context menu opens, and starting git takes long on Windows.
 pub fn repo_root(path: &Path) -> Option<PathBuf> {
     let dir = if path.is_dir() { path } else { path.parent()? };
-    let root = run(dir, &["rev-parse", "--show-toplevel"]).ok()?;
-    let root = root.trim();
-    (!root.is_empty()).then(|| PathBuf::from(root))
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let root = dir.ancestors().find(|folder| folder.join(".git").exists())?;
+    Some(strip_verbatim(root))
+}
+
+/// `\\?\C:\repo` (what canonicalize gives on Windows) → `C:\repo`.
+fn strip_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// `path` relative to `root`, as git wants it.

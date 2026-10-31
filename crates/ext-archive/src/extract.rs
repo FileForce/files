@@ -1,4 +1,4 @@
-//! Reading and extracting ZIP, TAR, TAR.GZ and GZ. Every member path is
+//! Reading and extracting ZIP, TAR, TAR.GZ, GZ and RAR. Every member path is
 //! made safe first: nothing is written outside the target folder, links and
 //! devices are skipped, and set-uid/set-gid bits are dropped.
 
@@ -15,9 +15,12 @@ pub enum ArchiveKind {
     TarGz,
     /// A single gzip-compressed file (not a tarball), e.g. `dump.dmw.gz`.
     Gz,
+    /// Read-only: RARLAB's unrar library lists and extracts, never creates.
+    Rar,
 }
 impl ArchiveKind {
-    pub const SUFFIXES: [(&'static str, Self); 5] = [
+    pub const SUFFIXES: [(&'static str, Self); 6] = [
+        (".rar", Self::Rar),
         (".tar.gz", Self::TarGz),
         (".tgz", Self::TarGz),
         (".tar", Self::Tar),
@@ -167,6 +170,21 @@ pub fn list_items(path: &Path) -> std::io::Result<Vec<Item>> {
                     size: header.size().unwrap_or(0),
                     modified: header.mtime().ok().and_then(unix_time),
                 });
+            }
+        }
+        ArchiveKind::Rar => {
+            let mut archive = open_rar(path)?.open_for_listing().map_err(rar_error)?;
+            while let Some(header) = archive.read_header().map_err(rar_error)? {
+                let entry = header.entry();
+                if let Some(name) = sanitize(&entry.filename) {
+                    items.push(Item {
+                        name: slash_name(&name),
+                        dir: entry.is_directory(),
+                        size: entry.unpacked_size,
+                        modified: dos_time(entry.file_time),
+                    });
+                }
+                archive = header.skip().map_err(rar_error)?;
             }
         }
         ArchiveKind::Gz => {
@@ -319,6 +337,26 @@ pub fn extract_archive(
                 extractor.entry(&relative, entry_type.is_dir(), &mut entry, mode)?;
             }
         }
+        ArchiveKind::Rar => {
+            let mut rar = open_rar(archive)?.open_for_processing().map_err(rar_error)?;
+            while let Some(header) = rar.read_header().map_err(rar_error)? {
+                let entry = header.entry();
+                let is_dir = entry.is_directory();
+                let Some(relative) = sanitize(&entry.filename).filter(|_| is_dir || entry.is_file()) else {
+                    extractor.report.skipped += 1;
+                    rar = header.skip().map_err(rar_error)?;
+                    continue;
+                };
+                if is_dir {
+                    extractor.entry(&relative, true, &mut std::io::empty(), None)?;
+                    rar = header.skip().map_err(rar_error)?;
+                } else {
+                    let (bytes, next) = header.read().map_err(rar_error)?;
+                    extractor.entry(&relative, false, &mut bytes.as_slice(), None)?;
+                    rar = next;
+                }
+            }
+        }
         ArchiveKind::Gz => {
             let name = gz_member_name(archive)?;
             let mut decoder = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(
@@ -329,6 +367,24 @@ pub fn extract_archive(
     }
     Ok(extractor.report)
 }
+fn open_rar(path: &Path) -> std::io::Result<unrar::Archive<'_>> {
+    if !path.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} not found", path.display())));
+    }
+    Ok(unrar::Archive::new(path))
+}
+
+fn rar_error(error: unrar::error::UnrarError) -> std::io::Error {
+    std::io::Error::other(format!("RAR: {error}"))
+}
+
+/// RAR stores MS-DOS local time: date in the high 16 bits, time in the low.
+fn dos_time(value: u32) -> Option<chrono::NaiveDateTime> {
+    let (date, time) = (value >> 16, value & 0xffff);
+    chrono::NaiveDate::from_ymd_opt(1980 + (date >> 9) as i32, (date >> 5) & 0xf, date & 0x1f)?
+        .and_hms_opt(time >> 11, (time >> 5) & 0x3f, (time & 0x1f) * 2)
+}
+
 fn with_path(error: std::io::Error, path: &Path) -> std::io::Error {
     std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
@@ -388,4 +444,33 @@ pub fn parent_path(path: &str) -> &str {
     path.rsplit_once('/')
         .map(|(parent, _)| parent)
         .unwrap_or("")
+}
+
+#[cfg(test)]
+mod rar_tests {
+    use super::*;
+
+    /// `solid.rar` comes from the unrar crate's own test data.
+    fn fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/solid.rar")
+    }
+
+    #[test]
+    fn rar_archives_list_and_extract() {
+        assert_eq!(ArchiveKind::of(Path::new("Photos.RAR")), Some(ArchiveKind::Rar));
+        let items = list_items(&fixture()).unwrap();
+        assert!(!items.is_empty(), "nothing listed");
+        assert!(items.iter().all(|item| item.modified.is_some()), "a RAR date did not parse");
+
+        let target = std::env::temp_dir().join(format!("files-rar-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&target);
+        let report = extract_archive(&fixture(), &target, ConflictPolicy::Rename).unwrap();
+        let files = items.iter().filter(|item| !item.dir).count();
+        assert_eq!(report.files, files);
+        for item in items.iter().filter(|item| !item.dir) {
+            let written = std::fs::metadata(target.join(&item.name)).unwrap();
+            assert_eq!(written.len(), item.size, "{}", item.name);
+        }
+        std::fs::remove_dir_all(&target).unwrap();
+    }
 }

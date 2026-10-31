@@ -48,10 +48,15 @@ pub enum Preview {
     Unavailable(String),
 }
 
+/// macOS previews anything Quick Look can; elsewhere PDFs (first page).
+fn renderable(path: &Path) -> bool {
+    cfg!(target_os = "macos") || path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+}
+
 /// Quick Look rendering state for the preview panel.
 pub fn quick_look_preview(path: &Path) -> Preview {
-    if !cfg!(target_os = "macos") {
-        return Preview::Unavailable("Quick Look previews need macOS".to_string());
+    if !renderable(path) {
+        return Preview::Unavailable("No preview for this kind of file".to_string());
     }
     let Some(target) = cache_path(path).map(|cached| cached.with_extension("ql.png")) else {
         return Preview::Unavailable("The file cannot be read".to_string());
@@ -69,7 +74,7 @@ pub fn quick_look_preview(path: &Path) -> Preview {
 /// video, fonts…), for the Quick Look panel. `None` until it is ready or when
 /// the system cannot preview the file.
 pub fn quick_look(path: &Path) -> Option<PathBuf> {
-    if !cfg!(target_os = "macos") {
+    if !renderable(path) {
         return None;
     }
     let cached = cache_path(path)?.with_extension("ql.png");
@@ -217,9 +222,69 @@ fn quick_look_render(source: &Path, target: &Path) -> std::io::Result<()> {
     result
 }
 
+/// Windows: the first page through the built-in `Windows.Data.Pdf` API
+/// (Windows 10+), driven from PowerShell, so nothing has to be installed.
+#[cfg(windows)]
+fn quick_look_render(source: &Path, target: &Path) -> std::io::Result<()> {
+    const SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$await = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
+function Await($operation, [Type]$type) { $task = $await.MakeGenericMethod($type).Invoke($null, @($operation)); $task.Wait(-1) | Out-Null; $task.Result }
+$awaitAction = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncAction' } | Select-Object -First 1
+[void][Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+[void][Windows.Data.Pdf.PdfDocument, Windows.Data.Pdf, ContentType = WindowsRuntime]
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($env:FILES_PDF)) ([Windows.Storage.StorageFile])
+$pdf = Await ([Windows.Data.Pdf.PdfDocument]::LoadFromFileAsync($file)) ([Windows.Data.Pdf.PdfDocument])
+$page = $pdf.GetPage(0)
+$folder = Await ([Windows.Storage.StorageFolder]::GetFolderFromPathAsync($env:FILES_OUT_DIR)) ([Windows.Storage.StorageFolder])
+$out = Await ($folder.CreateFileAsync($env:FILES_OUT_NAME, [Windows.Storage.CreationCollisionOption]::ReplaceExisting)) ([Windows.Storage.StorageFile])
+$stream = Await ($out.OpenAsync([Windows.Storage.FileAccessMode]::ReadWrite)) ([Windows.Storage.Streams.IRandomAccessStream])
+$options = New-Object Windows.Data.Pdf.PdfPageRenderOptions
+$options.DestinationWidth = 1600
+$awaitAction.Invoke($null, @($page.RenderToStreamAsync($stream, $options))).Wait(-1) | Out-Null
+$stream.Dispose()
+"#;
+    let partial = target.with_extension("partial.png");
+    let folder = partial.parent().ok_or_else(|| std::io::Error::other("no cache folder"))?;
+    let name = partial.file_name().ok_or_else(|| std::io::Error::other("no file name"))?;
+    let mut powershell = std::process::Command::new("powershell");
+    powershell
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", SCRIPT])
+        .env("FILES_PDF", source)
+        .env("FILES_OUT_DIR", folder)
+        .env("FILES_OUT_NAME", name);
+    finish_render(files_sdk::log::run_with_timeout(SOURCE, &mut powershell, TIMEOUT), &partial, target)
+}
+
+/// Linux: poppler's `pdftoppm` (package poppler-utils), first page only.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn quick_look_render(source: &Path, target: &Path) -> std::io::Result<()> {
+    let partial = target.with_extension("partial");
+    let mut pdftoppm = std::process::Command::new("pdftoppm");
+    pdftoppm.args(["-png", "-singlefile", "-f", "1", "-l", "1", "-scale-to", "1600"]).arg(source).arg(&partial);
+    // pdftoppm adds `.png` itself.
+    finish_render(files_sdk::log::run_with_timeout(SOURCE, &mut pdftoppm, TIMEOUT), &partial.with_extension("partial.png"), target)
+}
+
+/// Moves a finished rendering into the cache, or says why there is none.
 #[cfg(not(target_os = "macos"))]
-fn quick_look_render(_: &Path, _: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Quick Look is macOS-only"))
+fn finish_render(output: std::io::Result<std::process::Output>, partial: &Path, target: &Path) -> std::io::Result<()> {
+    match output {
+        Ok(output) if output.status.success() && partial.is_file() => std::fs::rename(partial, target),
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+            let _ = std::fs::remove_file(partial);
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "The PDF took too long to render and was stopped"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Install poppler-utils (pdftoppm) to preview PDFs"))
+        }
+        Err(error) => Err(error),
+        Ok(_) => {
+            let _ = std::fs::remove_file(partial);
+            Err(std::io::Error::other("This PDF cannot be rendered"))
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

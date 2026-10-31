@@ -12,3 +12,4 @@ flate2 = "1"
 sevenz-rust2 = { version = "0.24", default-features = false, features = ["compress"] }
 tar = "0.4"
 zip = { version = "9", default-features = false, features = ["deflate"] }
+unrar = "0.5.8"

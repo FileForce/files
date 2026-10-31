@@ -505,25 +505,75 @@ pub struct ExtensionSettings {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalApp {
+    /// macOS Terminal, or the system terminal on Linux.
     #[default]
     Terminal,
     Iterm,
     Warp,
     Ghostty,
+    WindowsTerminal,
+    PowerShell,
+    Cmd,
 }
 
 impl TerminalApp {
-    pub const ALL: [Self; 4] = [Self::Terminal, Self::Iterm, Self::Warp, Self::Ghostty];
+    /// The ones this system can run.
+    #[cfg(target_os = "macos")]
+    const CANDIDATES: &[Self] = &[Self::Terminal, Self::Iterm, Self::Warp, Self::Ghostty];
+    #[cfg(windows)]
+    const CANDIDATES: &[Self] = &[Self::WindowsTerminal, Self::PowerShell, Self::Cmd];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const CANDIDATES: &[Self] = &[Self::Terminal, Self::Ghostty];
 
-    /// The macOS application name passed to `open -a`.
+    /// The macOS application name passed to `open -a`, or the label.
     pub fn app_name(self) -> &'static str {
         match self {
             Self::Terminal => "Terminal",
             Self::Iterm => "iTerm",
             Self::Warp => "Warp",
             Self::Ghostty => "Ghostty",
+            Self::WindowsTerminal => "Windows Terminal",
+            Self::PowerShell => "PowerShell",
+            Self::Cmd => "Command Prompt",
         }
     }
+
+    /// Terminals installed here, the built-in one first.
+    pub fn available() -> Vec<Self> {
+        Self::CANDIDATES.iter().copied().filter(|app| app.installed()).collect()
+    }
+
+    /// What "Open in Terminal" really uses: the chosen app, or the first
+    /// installed one when it is missing (a setting from another computer).
+    pub fn effective(self) -> Self {
+        let available = Self::available();
+        if available.contains(&self) { self } else { available.first().copied().unwrap_or(self) }
+    }
+
+    fn installed(self) -> bool {
+        match self {
+            Self::Terminal | Self::PowerShell | Self::Cmd => true,
+            #[cfg(target_os = "macos")]
+            Self::Iterm | Self::Warp | Self::Ghostty => {
+                let bundle = if self == Self::Iterm { "iTerm.app".to_string() } else { format!("{}.app", self.app_name()) };
+                let home = dirs::home_dir().map(|home| home.join("Applications").join(&bundle));
+                std::path::Path::new("/Applications").join(&bundle).exists() || home.is_some_and(|path| path.exists())
+            }
+            #[cfg(not(target_os = "macos"))]
+            Self::Ghostty => on_path("ghostty"),
+            #[cfg(windows)]
+            Self::WindowsTerminal => on_path("wt"),
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+}
+
+/// Whether `program` (`.exe` on Windows) is in a `PATH` folder.
+#[cfg(not(target_os = "macos"))]
+fn on_path(program: &str) -> bool {
+    let name = if cfg!(windows) { format!("{program}.exe") } else { program.to_string() };
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(&name).is_file()))
 }
 
 impl Default for ExtensionSettings {
