@@ -52,11 +52,13 @@ pub struct UpdateSettings {
     pub last_check: i64,
     /// The version that ran last time: a newer one means "just updated".
     pub last_version: String,
+    /// "Skip this release": not offered again (a newer one is).
+    pub skipped: String,
 }
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        Self { automatic: true, last_check: 0, last_version: String::new() }
+        Self { automatic: true, last_check: 0, last_version: String::new(), skipped: String::new() }
     }
 }
 

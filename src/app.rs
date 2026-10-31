@@ -3797,6 +3797,42 @@ mod tests {
     }
 
     #[test]
+    fn update_notification_offers_install_later_and_skip() {
+        use files_sdk::log;
+        let (view, cx) = pro_window();
+        let offered = |version: &str| {
+            let title = format!("Files {version} is available");
+            log::notifications().into_iter().find(|notification| notification.title == title)
+        };
+        let signed = crate::updates::Download { url: "https://example.com/Files.dmg".into(), signature: Some("sig".into()) };
+        view.update(cx, |this, cx| this.offer_update("9.9.1".into(), None, Some(signed), cx));
+        let notification = offered("9.9.1").expect("no update notification");
+        let labels: Vec<_> = notification.actions.iter().map(|action| action.label.as_str()).collect();
+        assert_eq!(labels, ["Install", "Later", "Skip this release"]);
+        assert_eq!(crate::updates::offered().as_ref().map(|(version, _)| version.clone()).as_deref(), Some("9.9.1"));
+
+        // Later: just dismissed, offered again by the next check.
+        view.update(cx, |this, cx| this.run_notification_command("update/later", notification.id, cx));
+        assert!(offered("9.9.1").is_none());
+        assert!(cx.read(|app| view.read(app).appearance.read(app).updates.skipped.is_empty()));
+
+        // Unsigned: a link to the release page instead of Install.
+        view.update(cx, |this, cx| this.offer_update("9.9.2".into(), Some("https://example.com/r".into()), None, cx));
+        let notification = offered("9.9.2").unwrap();
+        assert_eq!(notification.actions[0].url, "https://example.com/r");
+
+        // Skip: remembered, never offered again; a newer one still is.
+        let skip = notification.actions[2].url.strip_prefix("files:").unwrap().to_string();
+        view.update(cx, |this, cx| this.run_notification_command(&skip, notification.id, cx));
+        assert_eq!(cx.read(|app| view.read(app).appearance.read(app).updates.skipped.clone()), "9.9.2");
+        view.update(cx, |this, cx| this.offer_update("9.9.2".into(), None, None, cx));
+        assert!(offered("9.9.2").is_none(), "a skipped release came back");
+        view.update(cx, |this, cx| this.offer_update("9.9.3".into(), None, None, cx));
+        let newer = offered("9.9.3").expect("a newer release must still be offered");
+        log::dismiss(newer.id);
+    }
+
+    #[test]
     fn old_tortoise_git_settings_still_apply_to_git() {
         let old = "[extensions]\ntortoise_git = false\n\n[menu_colors]\ntortoise-git = \"blue\"\n\n[permissions]\ntortoise-git = [\"network\"]\n";
         let mut settings: crate::settings::AppSettings = toml::from_str(old).unwrap();

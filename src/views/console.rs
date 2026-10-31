@@ -46,14 +46,24 @@ fn level_icon(level: Level, palette: Palette) -> Icon {
     }
 }
 
-/// A notification's button: opens its link (release notes…).
-fn action_button(id: impl Into<gpui_kit::ElementId>, action: files_sdk::log::Action) -> Button {
-    let url = action.url.clone();
-    let button = Button::new(id).primary().xsmall().label(action.label).on_click(move |_, _, cx| {
-        cx.stop_propagation();
-        cx.open_url(&url);
-    });
-    button
+/// A notification's buttons: open their link (release notes…), or run an
+/// app command for `files:` links. The first one is the primary.
+fn action_buttons(prefix: &'static str, notification: &log::Notification, explorer: &gpui_kit::WeakEntity<FileExplorer>) -> gpui_kit::Div {
+    let id = notification.id;
+    h_flex().gap_1().flex_wrap().children(notification.actions.iter().enumerate().map(|(index, action)| {
+        let url = action.url.clone();
+        let button = Button::new((prefix, (id as usize) * 8 + index)).xsmall().label(action.label.clone());
+        let button = if index == 0 { button.primary() } else { button.ghost() };
+        let explorer = explorer.clone();
+        button.on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            if let Some(command) = url.strip_prefix("files:") {
+                let _ = explorer.update(cx, |this, cx| this.run_notification_command(command, id, cx));
+            } else {
+                cx.open_url(&url);
+            }
+        })
+    }))
 }
 
 impl FileExplorer {
@@ -352,6 +362,7 @@ impl FileExplorer {
     /// macOS-style banners in the top-right corner; they fade on their own.
     /// A click opens the notifications list, × closes just the toast.
     pub(crate) fn render_toasts(&mut self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let explorer = cx.entity().downgrade();
         let toasts = self.toasts();
         if toasts.is_empty() || self.notifications_open {
             return None;
@@ -404,7 +415,7 @@ impl FileExplorer {
                         .children(notification.body.clone().map(|body| {
                             div().text_xs().text_color(palette.muted).whitespace_normal().line_clamp(2).child(body)
                         }))
-                        .children(notification.action.clone().map(|action| action_button(("toast-action", id as usize), action))),
+                        .when(!notification.actions.is_empty(), |this| this.child(action_buttons("toast-action", &notification, &explorer))),
                 )
                 .child(Button::new(("toast-close", id as usize)).ghost().xsmall().icon(IconName::X).on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
@@ -432,6 +443,7 @@ impl FileExplorer {
 
     /// The notifications card above the bell.
     pub(crate) fn render_notifications(&mut self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let explorer = cx.entity().downgrade();
         if !self.notifications_open {
             return None;
         }
@@ -454,7 +466,7 @@ impl FileExplorer {
                         .gap_0p5()
                         .child(div().text_sm().text_color(palette.text).whitespace_normal().child(notification.title.clone()))
                         .children(notification.body.clone().map(|body| div().text_xs().text_color(palette.muted).whitespace_normal().child(body)))
-                        .children(notification.action.clone().map(|action| action_button(("notification-action", id as usize), action)))
+                        .when(!notification.actions.is_empty(), |this| this.child(action_buttons("notification-action", &notification, &explorer)))
                         .child(div().text_size(px(9.)).text_color(palette.faint).child(format!(
                             "{} · {}",
                             notification.source,

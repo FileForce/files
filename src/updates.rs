@@ -207,6 +207,12 @@ pub fn auto_check_due(settings: &crate::settings::UpdateSettings) -> bool {
     settings.automatic && now() - settings.last_check >= AUTO_CHECK_EVERY && (!UPDATE_URL.is_empty() || github_repository().is_some())
 }
 
+/// The update the last "is available" notification offers to install.
+pub fn offered() -> std::sync::MutexGuard<'static, Option<(String, Download)>> {
+    static OFFERED: std::sync::Mutex<Option<(String, Download)>> = std::sync::Mutex::new(None);
+    OFFERED.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn now_seconds() -> i64 {
     now()
 }

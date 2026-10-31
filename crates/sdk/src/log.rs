@@ -90,15 +90,16 @@ pub struct Notification {
     pub title: String,
     pub body: Option<String>,
     pub read: bool,
-    /// A button on the toast and in the list, e.g. "Open release notes".
-    pub action: Option<Action>,
+    /// Buttons on the toast and in the list, e.g. "Open release notes".
+    pub actions: Vec<Action>,
 }
 
 /// What a notification's button does.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Action {
     pub label: String,
-    /// Opened in the browser.
+    /// Opened in the browser; a `files:` link is a command the app runs
+    /// (`files:update/install`…).
     pub url: String,
 }
 
@@ -341,6 +342,11 @@ pub fn notify(source: &str, level: Level, title: impl Into<String>, body: Option
 
 /// [`notify`] with a button.
 pub fn notify_with(source: &str, level: Level, title: impl Into<String>, body: Option<String>, action: Option<Action>) -> u64 {
+    notify_actions(source, level, title, body, action.into_iter().collect())
+}
+
+/// [`notify`] with several buttons.
+pub fn notify_actions(source: &str, level: Level, title: impl Into<String>, body: Option<String>, actions: Vec<Action>) -> u64 {
     let title = title.into();
     record(source, Kind::Notification, title.clone(), body.clone());
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -348,7 +354,7 @@ pub fn notify_with(source: &str, level: Level, title: impl Into<String>, body: O
     if journal.notifications.len() >= NOTIFICATIONS {
         journal.notifications.pop_front();
     }
-    journal.notifications.push_back(Notification { id, time: now_ms(), source: source.to_string(), level, title, body, read: false, action });
+    journal.notifications.push_back(Notification { id, time: now_ms(), source: source.to_string(), level, title, body, read: false, actions });
     drop(journal);
     GENERATION.fetch_add(1, Ordering::Relaxed);
     id

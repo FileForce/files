@@ -227,18 +227,77 @@ impl FileExplorer {
             settings.updates.last_check = crate::updates::now_seconds();
             let _ = crate::settings::save(settings);
         });
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             let result = cx.background_executor().spawn(async { crate::updates::check() }).await;
-            if let Ok(UpdateStatus::Available { latest, .. }) = result {
-                files_sdk::log::notify(
-                    "files",
-                    files_sdk::log::Level::Info,
-                    format!("Files {latest} is available"),
-                    Some("Files → Check for Updates… to download it".to_string()),
-                );
+            if let Ok(UpdateStatus::Available { latest, page, download, .. }) = result {
+                let _ = this.update(cx, |this, cx| this.offer_update(latest, page, download, cx));
             }
         })
         .detach();
+    }
+
+    /// "Files X is available" with Install · Later · Skip this release.
+    /// A skipped version is not offered again; Later waits for the next check.
+    pub(crate) fn offer_update(&mut self, latest: String, page: Option<String>, download: Option<crate::updates::Download>, cx: &mut Context<Self>) {
+        if self.appearance.read(cx).updates.skipped == latest {
+            return;
+        }
+        use files_sdk::log::Action;
+        let signed = download.filter(|download| download.signature.is_some());
+        let install = match &signed {
+            Some(_) => Action { label: "Install".into(), url: "files:update/install".into() },
+            None => Action { label: "Open release page".into(), url: page.unwrap_or_else(|| crate::updates::release_notes_url(&latest)) },
+        };
+        *crate::updates::offered() = signed.map(|download| (latest.clone(), download));
+        files_sdk::log::notify_actions(
+            "files",
+            files_sdk::log::Level::Info,
+            format!("Files {latest} is available"),
+            Some(format!("You have {CURRENT_VERSION}.")),
+            vec![
+                install,
+                Action { label: "Later".into(), url: "files:update/later".into() },
+                Action { label: "Skip this release".into(), url: format!("files:update/skip/{latest}") },
+            ],
+        );
+    }
+
+    /// A `files:` button on a notification.
+    pub(crate) fn run_notification_command(&mut self, command: &str, notification: u64, cx: &mut Context<Self>) {
+        files_sdk::log::dismiss(notification);
+        if let Some(version) = command.strip_prefix("update/skip/") {
+            let version = version.to_string();
+            self.appearance.update(cx, |settings, _| {
+                settings.updates.skipped = version;
+                let _ = crate::settings::save(settings);
+            });
+        } else if command == "update/install" {
+            let Some((version, download)) = crate::updates::offered().take() else { return };
+            files_sdk::log::notify("files", files_sdk::log::Level::Info, format!("Downloading Files {version}…"), None);
+            cx.spawn(async move |_, cx| {
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { crate::updates::download(&download, &crate::licensing::trusted_updates()) })
+                    .await;
+                let _ = cx.update(|cx| match result {
+                    Ok(path) => {
+                        cx.open_url(&path.display().to_string());
+                        files_sdk::log::notify(
+                            "files",
+                            files_sdk::log::Level::Success,
+                            format!("Files {version} downloaded"),
+                            Some("Signature verified. Finish the installation in the window that opened.".to_string()),
+                        );
+                    }
+                    Err(error) => {
+                        files_sdk::log::notify("files", files_sdk::log::Level::Error, format!("Files {version} was not installed"), Some(error));
+                    }
+                });
+            })
+            .detach();
+        }
+        // "update/later": dismissed; the next check offers it again.
+        cx.notify();
     }
 
     /// First run of a new version: "Updated to Files X" with a button that

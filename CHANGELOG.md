@@ -7,6 +7,10 @@ version's notes under `## Unreleased`, then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.3
+
+- "Files X is available" notification with Install (signed download),
+  Later (asks again at the next check) and Skip this release.
 - Settings → General → Check now: look for an update any time, with
   Download & Install and the release notes right there.
 
