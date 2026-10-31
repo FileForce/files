@@ -75,6 +75,9 @@ impl FileExplorer {
                             .flex_shrink_0()
                             .items_center()
                             .gap_0p5()
+                            // Windows treats the title bar as the window's caption:
+                            // without this, clicks here would move the window instead.
+                            .occlude()
                             .child(
                                 Button::new("history-back")
                                     .ghost()
@@ -114,7 +117,7 @@ impl FileExplorer {
                             ),
                     )
                     .child(
-                        div().flex_1().min_w(px(160.)).max_w(px(500.)).child(
+                        div().flex_1().min_w(px(160.)).max_w(px(500.)).occlude().child(
                             Input::new(&self.search)
                                 .small()
                                 .cleanable(true)
@@ -138,6 +141,8 @@ impl FileExplorer {
                             .flex_shrink_0()
                             .items_center()
                             .gap_1()
+                            .occlude()
+                            .debug_selector(|| "title-bar-tools".into())
                             .child(
                                 Button::new("global-search")
                                     .ghost()
@@ -166,7 +171,7 @@ impl FileExplorer {
                                         this.open_new_window(cx);
                                     })),
                             )
-                            .child(
+                            .child(div().debug_selector(|| "toggle-inspector".into()).child(
                                 Button::new("toggle-inspector")
                                     .ghost()
                                     .xsmall()
@@ -182,7 +187,7 @@ impl FileExplorer {
                                         this.show_inspector = !this.show_inspector;
                                         cx.notify();
                                     })),
-                            ),
+                            )),
                     ),
             )
             .into_any_element()

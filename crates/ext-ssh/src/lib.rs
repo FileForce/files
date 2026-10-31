@@ -194,7 +194,7 @@ fn control_dir() -> PathBuf {
 }
 
 fn command(endpoint: &SshConnection, remote: &str) -> Command {
-    let mut command = Command::new(program());
+    let mut command = files_sdk::log::command(program());
     let control = control_dir().join("%C");
     command.args(["-p", &endpoint.port.to_string()]);
     // A saved password is answered by the keychain helper; otherwise never

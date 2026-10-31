@@ -131,7 +131,7 @@ pub fn execute(line: &str, settings: &crate::settings::AppSettings) -> String {
             let Some(program) = rest.first() else {
                 return "Usage: run <program> [args…]".to_string();
             };
-            let mut command = std::process::Command::new(program);
+            let mut command = files_sdk::log::command(program);
             command.args(&rest[1..]).stdin(std::process::Stdio::null());
             if let Some(home) = dirs::home_dir() {
                 command.current_dir(home);

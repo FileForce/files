@@ -845,6 +845,51 @@ enum Filter {
     Tag(String),
     /// Exact `rwxrwxrwx` permission bits, e.g. `mode:644` or `mode:rx-rx-rx`.
     Mode(u32),
+    /// A filter an extension adds, e.g. `git:main` (value lowercase).
+    Contributed(Contributor, String, String),
+}
+
+/// An extension answering a search filter.
+#[derive(Clone, Copy)]
+pub struct Contributor(&'static dyn files_sdk::Extension);
+
+impl std::fmt::Debug for Contributor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0.manifest().id)
+    }
+}
+
+impl PartialEq for Contributor {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.manifest().id == other.0.manifest().id
+    }
+}
+
+/// Extensions turned off in Settings: their search filters stay plain text.
+static SEARCH_OFF: std::sync::RwLock<Vec<&'static str>> = std::sync::RwLock::new(Vec::new());
+
+pub fn set_search_disabled(ids: Vec<&'static str>) {
+    *SEARCH_OFF.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = ids;
+}
+
+/// The enabled extension that answers `key:`.
+fn contributor(key: &str) -> Option<Contributor> {
+    let off = SEARCH_OFF.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::views::extension_ui::registry()
+        .into_iter()
+        .filter(|extension| !off.contains(&extension.manifest().id))
+        .find(|extension| extension.search_keys().iter().any(|search| search.key.eq_ignore_ascii_case(key)))
+        .map(Contributor)
+}
+
+/// `git: …` hints for the search placeholder, from enabled extensions.
+pub fn contributed_search_keys() -> Vec<files_sdk::SearchKey> {
+    let off = SEARCH_OFF.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    crate::views::extension_ui::registry()
+        .into_iter()
+        .filter(|extension| !off.contains(&extension.manifest().id))
+        .flat_map(|extension| extension.search_keys().iter().copied())
+        .collect()
 }
 
 /// A search box query: free text for fuzzy matching plus `key:value` filters.
@@ -902,6 +947,9 @@ impl SearchQuery {
             // Case-insensitive for any script (Зеленый = зеленый) and partial: tag:зел finds it.
             Filter::Tag(tag) => entry.tags.iter().any(|candidate| candidate.to_lowercase().contains(tag.as_str())),
             Filter::Mode(mode) => entry_mode(entry) == Some(*mode),
+            Filter::Contributed(extension, key, value) => {
+                entry.path.is_some_and(|path| extension.0.search_matches(key, value, path))
+            }
         })
     }
 }
@@ -952,7 +1000,7 @@ fn parse_filter(key: &str, value: &str) -> Option<Filter> {
         }
         "tag" => Some(Filter::Tag(value.to_lowercase())),
         "mode" | "perm" | "permissions" => parse_mode(value).map(Filter::Mode),
-        _ => None,
+        other => contributor(other).map(|extension| Filter::Contributed(extension, other.to_string(), value.to_lowercase())),
     }
 }
 
@@ -1753,7 +1801,7 @@ mod tests {
 
     #[test]
     fn the_workspace_shows_the_account_name() {
-        let whoami = std::process::Command::new("whoami").output().map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+        let whoami = files_sdk::log::command("whoami").output().map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
         if let Some(whoami) = whoami.ok().filter(|name| !name.is_empty()) {
             assert_eq!(user_name(), whoami);
         }

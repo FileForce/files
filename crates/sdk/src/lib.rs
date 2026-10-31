@@ -231,6 +231,28 @@ pub trait Extension: Send + Sync {
     fn on_event(&self, event: Event) {
         let _ = event;
     }
+
+    /// `key:value` filters this extension adds to search, e.g. `git:main`.
+    fn search_keys(&self) -> &'static [SearchKey] {
+        &[]
+    }
+
+    /// Whether `path` passes the filter `key:value` (`key` is one of
+    /// [`search_keys`](Self::search_keys), `value` is lowercase). Called for
+    /// every candidate, so it must be fast: cache anything slow.
+    fn search_matches(&self, key: &str, value: &str, path: &Path) -> bool {
+        let _ = (key, value, path);
+        false
+    }
+}
+
+/// A search filter an extension contributes, listed in the search hints.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SearchKey {
+    pub key: &'static str,
+    /// What it matches, e.g. "branch or status (modified, untracked…)".
+    pub summary: &'static str,
+    pub example: &'static str,
 }
 
 // ---------------------------------------------------------------- archives

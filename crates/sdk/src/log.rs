@@ -155,6 +155,14 @@ pub fn hide_window(command: &mut Command) -> &mut Command {
     command
 }
 
+/// `Command::new` with no console window on Windows. Every program the app
+/// starts goes through this (or [`run`]), so nothing flashes on screen.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    hide_window(&mut command);
+    command
+}
+
 /// Records an event.
 pub fn record(source: &str, kind: Kind, message: impl Into<String>, detail: Option<String>) -> u64 {
     push(Event {

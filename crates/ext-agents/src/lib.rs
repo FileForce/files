@@ -727,7 +727,7 @@ fn opencode_models() -> Vec<String> {
             let Some(program) = override_for(Agent::OpenCode).or_else(|| which("opencode")) else {
                 return Vec::new();
             };
-            Command::new(program)
+            files_sdk::log::command(program)
                 .arg("models")
                 .stdin(Stdio::null())
                 .output()
@@ -792,7 +792,7 @@ pub fn start(agent: Agent, cwd: &Path, prompt: &str, resume: Option<&str>, optio
     let program = override_for(agent)
         .or_else(|| which(agent.program()))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{} is not installed", agent.name())))?;
-    let mut command = Command::new(program);
+    let mut command = files_sdk::log::command(program);
     command.current_dir(cwd);
     match agent {
         Agent::Claude => {

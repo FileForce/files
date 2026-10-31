@@ -32,7 +32,7 @@ fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
     #[cfg(not(target_os = "macos"))]
-    let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(url).spawn();
+    let _ = files_sdk::log::command(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(url).spawn();
 }
 
 /// Where the update stands after "Download & Install".

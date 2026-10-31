@@ -248,7 +248,7 @@ $stream.Dispose()
     let partial = target.with_extension("partial.png");
     let folder = partial.parent().ok_or_else(|| std::io::Error::other("no cache folder"))?;
     let name = partial.file_name().ok_or_else(|| std::io::Error::other("no file name"))?;
-    let mut powershell = std::process::Command::new("powershell");
+    let mut powershell = files_sdk::log::command("powershell");
     powershell
         .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", SCRIPT])
         .env("FILES_PDF", source)

@@ -230,12 +230,19 @@ impl Render for GlobalSearch {
                     .text_size(px(10.))
                     .text_color(palette.faint)
                     .child(if self.query.trim().is_empty() {
-                        crate::settings::localized(
-                            settings.language,
-                            "Names + filters: kind: ext: size: modified: tag: mode:",
-                            "Имена + фильтры: kind: ext: size: modified: tag: mode:",
+                        // Extensions add their own, e.g. `git:main`.
+                        let contributed: String = crate::model::contributed_search_keys()
+                            .iter()
+                            .map(|search| format!(" {}:", search.key))
+                            .collect();
+                        format!(
+                            "{}{contributed}",
+                            crate::settings::localized(
+                                settings.language,
+                                "Names + filters: kind: ext: size: modified: tag: mode:",
+                                "Имена + фильтры: kind: ext: size: modified: tag: mode:",
+                            )
                         )
-                        .to_string()
                     } else if settings.language == crate::settings::Language::Russian {
                         format!("Глобальные совпадения для «{}»", self.query)
                     } else {

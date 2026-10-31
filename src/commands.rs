@@ -182,7 +182,7 @@ impl FileExplorer {
                     }
                     _ => return,
                 };
-                let result = Command::new(&application)
+                let result = files_sdk::log::command(&application)
                     .arg(path)
                     .spawn()
                     .map(|_| Some(application.display().to_string()));
@@ -296,7 +296,7 @@ fn choose_and_open(path: &Path) -> std::io::Result<Option<String>> {
 /// Shows the Windows "Open with" dialog, which opens the file itself.
 #[cfg(target_os = "windows")]
 fn choose_and_open(path: &Path) -> std::io::Result<Option<String>> {
-    Command::new("rundll32.exe")
+    files_sdk::log::command("rundll32.exe")
         .arg("shell32.dll,OpenAs_RunDLL")
         .arg(path)
         .spawn()?;

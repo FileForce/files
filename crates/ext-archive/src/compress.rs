@@ -393,7 +393,7 @@ fn write_rar(roots: &[PathBuf], output: &Path, settings: CompressSettings) -> io
     let tool = rar_tool().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "rar tool not found"))?;
     // rar picks the format from the extension, so give the temp file one.
     let named = output.with_extension("rar");
-    let status = std::process::Command::new(tool)
+    let status = files_sdk::log::command(tool)
         .arg("a")
         .arg(format!("-m{}", settings.single_level.rar()))
         .args(["-r", "-ep1", "-idq", "-y"])

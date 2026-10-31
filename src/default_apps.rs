@@ -236,19 +236,19 @@ mod platform {
 
     #[cfg_attr(test, allow(dead_code))]
     pub fn open_with(app: &Path, file: &Path) -> std::io::Result<()> {
-        Command::new(app).arg(file).spawn().map(drop)
+        files_sdk::log::command(app).arg(file).spawn().map(drop)
     }
 
     #[cfg_attr(test, allow(dead_code))]
     pub fn open_default(file: &Path) -> std::io::Result<()> {
         #[cfg(windows)]
         let mut command = {
-            let mut command = Command::new("cmd");
+            let mut command = files_sdk::log::command("cmd");
             command.args(["/C", "start", ""]);
             command
         };
         #[cfg(not(windows))]
-        let mut command = Command::new("xdg-open");
+        let mut command = files_sdk::log::command("xdg-open");
         command.arg(file).spawn().map(drop)
     }
 }

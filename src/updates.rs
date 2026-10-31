@@ -5,7 +5,6 @@
 //! swapped file on the server or in transit is refused.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// From Bundle.toml (see build.rs); empty when not set.
@@ -103,7 +102,7 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 fn curl(url: &str, extra: &[&str]) -> Result<(String, String), String> {
-    let mut command = Command::new("curl");
+    let mut command = files_sdk::log::command("curl");
     command
         .args(["--silent", "--show-error", "--location", "--max-time", "15"])
         .args(["--header", &format!("User-Agent: files/{CURRENT_VERSION}")])
@@ -183,7 +182,7 @@ pub fn download(download: &Download, keys: &[&str]) -> Result<PathBuf, String> {
     let folder = dirs::download_dir().ok_or("No Downloads folder")?;
     let target = files_sdk::fs::unique_path(&folder.join(name));
     let target = if folder.join(name).exists() { target } else { folder.join(name) };
-    let mut command = Command::new("curl");
+    let mut command = files_sdk::log::command("curl");
     command.args(["--fail", "--silent", "--show-error", "--location", "--output"]).arg(&target).arg(&download.url);
     let output = files_sdk::log::run_with_timeout("files", &mut command, std::time::Duration::from_secs(900)).map_err(|error| error.to_string())?;
     if !output.status.success() {

@@ -199,6 +199,17 @@ pub struct FileExplorer {
     _search_subscription: Subscription,
 }
 
+/// Search filters of extensions switched off in Settings stop applying.
+fn update_search_extensions(settings: &crate::settings::AppSettings) {
+    let off = crate::extensions::CATALOG
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !crate::licensing::active(settings, *index))
+        .map(|(_, manifest)| manifest.id)
+        .collect();
+    crate::model::set_search_disabled(off);
+}
+
 impl FileExplorer {
     pub fn new(
         window: &mut Window,
@@ -207,8 +218,10 @@ impl FileExplorer {
     ) -> Self {
         crate::host::install();
         let settings = appearance.read(cx).clone();
+        update_search_extensions(&settings);
         let appearance_subscription = cx.observe(&appearance, |this, appearance, cx| {
             let settings = appearance.read(cx).clone();
+            update_search_extensions(&settings);
             this.scheme = settings.scheme;
             this.accent = settings.accent;
             this.look = settings.look;
@@ -3908,6 +3921,58 @@ mod tests {
         assert!(cx.read(|app| view.read(app).toasts().iter().any(|toast| toast.id == fading)));
         std::thread::sleep(std::time::Duration::from_millis(6100));
         assert!(!cx.read(|app| view.read(app).toasts().iter().any(|toast| toast.id == fading)), "toasts fade after 6 s");
+    }
+
+    #[test]
+    fn git_search_filter_matches_branch_and_status() {
+        let dir = std::env::temp_dir().join(format!("file-force-git-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
+        std::fs::create_dir_all(dir.join("plain")).unwrap();
+        let repo = dir.join("repo");
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&repo).output().unwrap().status.success(), "git {args:?}");
+        git(&["init", "-q", "-b", "Branch-A"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "T"]);
+        std::fs::write(repo.join("kept.txt"), "1").unwrap();
+        git(&["add", "kept.txt"]);
+        git(&["commit", "-q", "-m", "first"]);
+        std::fs::write(repo.join("kept.txt"), "2").unwrap();
+        std::fs::write(repo.join("fresh.txt"), "new").unwrap();
+        std::fs::write(dir.join("plain").join("other.txt"), "x").unwrap();
+
+        crate::model::set_search_disabled(Vec::new());
+        let entries: Vec<&'static crate::model::FileEntry> = ["repo", "plain"]
+            .iter()
+            .flat_map(|folder| crate::model::entries(Location::from_path(&dir.join(folder)), ""))
+            .collect();
+        let found = |query: &str| {
+            let mut names: Vec<_> = crate::model::rank_entries(entries.clone(), query).iter().map(|entry| entry.name).collect();
+            names.sort();
+            names
+        };
+        assert_eq!(found("git:branch-a"), ["fresh.txt", "kept.txt"], "branch, partial and case-insensitive");
+        assert_eq!(found("git:main"), Vec::<&str>::new());
+        assert_eq!(found("git:modified"), ["kept.txt"]);
+        assert_eq!(found("git:untracked"), ["fresh.txt"]);
+        // Git turned off: `git:` is plain text again, which no name contains.
+        crate::model::set_search_disabled(vec!["git"]);
+        assert!(crate::model::SearchQuery::parse("git:main").text == "git:main");
+        crate::model::set_search_disabled(Vec::new());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_title_bar_button_closes_and_reopens_the_inspector() {
+        let (view, cx) = pro_window();
+        let shown = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).show_inspector);
+        assert!(shown(cx));
+        for expected in [false, true, false, true] {
+            cx.run_until_parked();
+            let button = cx.debug_bounds("toggle-inspector").expect("no inspector button");
+            cx.simulate_click(button.center(), gpui_kit::Modifiers::none());
+            assert_eq!(shown(cx), expected);
+        }
     }
 
     #[test]

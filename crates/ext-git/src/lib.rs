@@ -37,12 +37,120 @@ impl files_sdk::Extension for Git {
     fn manifest(&self) -> &'static Manifest {
         &MANIFEST
     }
+
+    fn search_keys(&self) -> &'static [files_sdk::SearchKey] {
+        &[files_sdk::SearchKey {
+            key: "git",
+            summary: "branch (partial) or status: modified, staged, untracked, conflicted, clean",
+            example: "git:main",
+        }]
+    }
+
+    fn search_matches(&self, key: &str, value: &str, path: &Path) -> bool {
+        key == "git" && search::matches(value, path)
+    }
+}
+
+/// `git:value` in search: the branch of the repository an item is in, or its
+/// status. Read from `.git` and a cached `git status`, never per item.
+mod search {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    use super::{Change, ChangeKind};
+
+    /// Search re-runs on every keystroke; git is asked at most this often.
+    const FRESH: Duration = Duration::from_secs(5);
+
+    struct Repo {
+        read: Instant,
+        branch: Option<String>,
+        changes: Vec<Change>,
+    }
+
+    #[derive(Default)]
+    struct Cache {
+        roots: HashMap<PathBuf, (Instant, Option<PathBuf>)>,
+        repos: HashMap<PathBuf, Repo>,
+    }
+
+    fn cache() -> std::sync::MutexGuard<'static, Cache> {
+        static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+        CACHE.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The current branch from `.git/HEAD` (a worktree's `.git` file points
+    /// to its own folder); `None` on a detached HEAD.
+    pub(super) fn head_branch(root: &Path) -> Option<String> {
+        let dot_git = root.join(".git");
+        let folder = if dot_git.is_file() {
+            let pointer = std::fs::read_to_string(&dot_git).ok()?;
+            let target = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
+            if target.is_absolute() { target } else { root.join(target) }
+        } else {
+            dot_git
+        };
+        let head = std::fs::read_to_string(folder.join("HEAD")).ok()?;
+        head.trim().strip_prefix("ref: refs/heads/").map(str::to_string)
+    }
+
+    fn status_matches(value: &str, changes: &[&Change]) -> Option<bool> {
+        let any = |test: &dyn Fn(&Change) -> bool| changes.iter().any(|change| test(change));
+        Some(match value {
+            "modified" | "changed" | "dirty" => !changes.is_empty() && any(&|change| change.kind != ChangeKind::Untracked),
+            "staged" => any(&|change| change.staged),
+            "untracked" | "new" => any(&|change| change.kind == ChangeKind::Untracked),
+            "conflicted" | "conflict" => any(&|change| change.kind == ChangeKind::Conflicted),
+            "clean" => changes.is_empty(),
+            _ => return None,
+        })
+    }
+
+    pub(super) fn matches(value: &str, path: &Path) -> bool {
+        let dir = if path.is_dir() { path.to_path_buf() } else { path.parent().map(Path::to_path_buf).unwrap_or_default() };
+        let now = Instant::now();
+        let root = {
+            let mut cache = cache();
+            match cache.roots.get(&dir) {
+                Some((read, root)) if now.duration_since(*read) < FRESH => root.clone(),
+                _ => {
+                    let root = super::repo_root(&dir);
+                    cache.roots.insert(dir.clone(), (now, root.clone()));
+                    root
+                }
+            }
+        };
+        let Some(root) = root else { return false };
+        let fresh = cache().repos.get(&root).is_some_and(|repo| now.duration_since(repo.read) < FRESH);
+        if !fresh {
+            // Outside the lock: git status can take a moment on big repositories.
+            let changes = super::status(&root).map(|status| status.changes).unwrap_or_default();
+            cache().repos.insert(root.clone(), Repo { read: now, branch: head_branch(&root), changes });
+        }
+        let cache = cache();
+        let Some(repo) = cache.repos.get(&root) else { return false };
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let relative = canonical
+            .strip_prefix(&root)
+            .or_else(|_| path.strip_prefix(&root))
+            .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let under: Vec<&Change> = repo
+            .changes
+            .iter()
+            .filter(|change| relative.is_empty() || change.path == relative || change.path.starts_with(&format!("{relative}/")))
+            .collect();
+        status_matches(value, &under)
+            .unwrap_or_else(|| repo.branch.as_deref().is_some_and(|branch| branch.to_lowercase().contains(value)))
+    }
 }
 
 // ------------------------------------------------------------ running git
 
 fn git(dir: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = files_sdk::log::command("git");
     command
         .current_dir(dir)
         // Never wait for a terminal prompt: credentials come from the helper.
@@ -74,7 +182,7 @@ fn network_allowed() -> io::Result<()> {
 }
 
 pub fn installed() -> bool {
-    Command::new("git").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|status| status.success())
+    files_sdk::log::command("git").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|status| status.success())
 }
 
 /// The top folder of the repository `path` is in.

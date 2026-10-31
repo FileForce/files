@@ -265,7 +265,7 @@ pub fn install(source: &str, folder: &Path, keys: &[&str]) -> Result<PluginManif
     let source = source.trim();
     let (bytes, signature) = if source.starts_with("https://") {
         let fetch = |url: &str| -> Result<Vec<u8>, String> {
-            let mut curl = std::process::Command::new("curl");
+            let mut curl = files_sdk::log::command("curl");
             curl.args(["--fail", "--silent", "--show-error", "--location", url]);
             let output = files_sdk::log::run_with_timeout("files", &mut curl, std::time::Duration::from_secs(120)).map_err(|error| error.to_string())?;
             if output.status.success() {

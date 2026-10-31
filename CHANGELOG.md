@@ -7,6 +7,16 @@ version's notes under `## Unreleased`, then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.6
+
+- Search filters from extensions. Git adds `git:`: `git:feature` finds
+  items in repositories on a matching branch, `git:modified`,
+  `git:untracked`, `git:staged`, `git:conflicted` and `git:clean` by status.
+- Windows: the title bar buttons (global search, new window, inspector)
+  work again, so a closed inspector can be reopened.
+- Windows: no console window flashes up when checking for or downloading
+  updates, or when any other program runs.
+
 ## 0.1.5
 
 - Quick Look (Space) on ZIP, RAR, TAR and GZ archives lists what is inside.
