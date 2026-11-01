@@ -479,6 +479,60 @@ impl SettingsWindow {
                 palette,
             ))
             .child(setting_row(
+                tr(language, "Global search folder", "Папка глобального поиска"),
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .max_w(px(260.))
+                            .truncate()
+                            .text_sm()
+                            .text_color(palette.muted)
+                            .child(self.draft.search_filters.global_root().map(|root| root.display().to_string()).unwrap_or_default()),
+                    )
+                    .child(
+                        Button::new("global-search-folder")
+                            .small()
+                            .icon(IconName::FolderOpen)
+                            .label(tr(language, "Choose…", "Выбрать…"))
+                            .on_click(cx.listener(|this, _, _, cx| this.choose_global_search_folder(cx))),
+                    )
+                    .when(self.draft.search_filters.global_folder.is_some(), |this| {
+                        this.child(Button::new("global-search-folder-home").ghost().small().label(tr(language, "Home", "Домашняя")).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.draft.search_filters.global_folder = None;
+                                cx.notify();
+                            },
+                        )))
+                    }),
+                palette,
+            ))
+            .child(note(
+                tr(language, "Where ⌘K searches. In the search window, Change… picks another folder just once.", "Где ищет ⌘K. В окне поиска «Сменить…» выбирает другую папку разово."),
+                palette,
+            ))
+            .child(setting_row(
+                tr(language, "Extension windows (Mail)", "Окна расширений (Почта)"),
+                h_flex().gap_2().children(
+                    [(crate::settings::OpenIn::Tab, "New tab", IconName::PanelTop), (crate::settings::OpenIn::Window, "New window", IconName::AppWindow)].map(
+                        |(open_in, label, icon)| {
+                            option_button(
+                                gpui_kit::ElementId::Name(format!("open-in-{label}").into()),
+                                label,
+                                self.draft.behavior.open_in == open_in,
+                            )
+                            .icon(icon)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.draft.behavior.open_in = open_in;
+                                cx.notify();
+                            }))
+                        },
+                    ),
+                ),
+                palette,
+            ))
+            .child(setting_row(
                 tr(language, "Dropping from another window", "Перетаскивание из другого окна"),
                 h_flex().gap_2().children(crate::settings::DropAction::ALL.map(|action| {
                     option_button(
@@ -711,6 +765,138 @@ impl SettingsWindow {
         swatches
     }
 
+    /// The `key:` filters an extension adds to search, with where each works.
+    fn render_search_filters(&mut self, extension: &'static files_sdk::Manifest, enabled: bool, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let keys: Vec<files_sdk::SearchKey> = crate::views::extension_ui::registry()
+            .into_iter()
+            .find(|candidate| candidate.manifest().id == extension.id)
+            .map(|candidate| candidate.search_keys().to_vec())
+            .unwrap_or_default();
+        if keys.is_empty() {
+            return None;
+        }
+        let language = self.draft.language;
+        let rows = keys.into_iter().map(|search| {
+            let key = search.key;
+            let folder_on = !self.draft.search_filters.folder_off.iter().any(|off| off == key);
+            let global_on = !self.draft.search_filters.global_off.iter().any(|off| off == key);
+            let toggle = |global: bool, checked: bool, label: &'static str, cx: &mut Context<Self>| {
+                Switch::new(gpui_kit::ElementId::Name(format!("search-filter-{key}-{}", if global { "global" } else { "folder" }).into()))
+                    .label(label)
+                    .small()
+                    .checked(checked && enabled)
+                    .disabled(!enabled)
+                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                        let list = if global { &mut this.draft.search_filters.global_off } else { &mut this.draft.search_filters.folder_off };
+                        list.retain(|off| off != key);
+                        if !*checked {
+                            list.push(key.to_string());
+                        }
+                        cx.notify();
+                    }))
+            };
+            v_flex()
+                .gap_1()
+                .py_1()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().px_1p5().rounded_sm().bg(palette.accent_soft).text_color(palette.accent).text_sm().font_family("Menlo").child(format!("{key}:")))
+                        .child(div().text_sm().text_color(palette.muted).child(search.summary))
+                        .child(div().text_xs().text_color(palette.faint).font_family("Menlo").child(format!("e.g. {}", search.example))),
+                )
+                .child(
+                    h_flex()
+                        .gap_4()
+                        .child(toggle(false, folder_on, tr(language, "Folder search (⌘F)", "Поиск в папке (⌘F)"), cx))
+                        .child(toggle(true, global_on, tr(language, "Global search (⌘K)", "Глобальный поиск (⌘K)"), cx)),
+                )
+        });
+        Some(
+            card(palette)
+                .child(section(IconName::Search, tr(language, "Search filters", "Фильтры поиска"), palette))
+                .child(note(
+                    tr(
+                        language,
+                        "Typed in a search box, these narrow files with what this extension knows. Switched off, the text is searched as a name.",
+                        "Набранные в строке поиска, они сужают файлы тем, что знает расширение. Выключенный фильтр ищется как обычный текст в имени.",
+                    ),
+                    palette,
+                ))
+                .children(rows)
+                .into_any_element(),
+        )
+    }
+
+    /// Settings → Extensions → Mail: each special folder's color, and
+    /// whether it is listed at all.
+    fn render_mail_settings(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        use files_ext_mail::Special;
+        let language = self.draft.language;
+        let rows = Special::ALL.map(|special| {
+            let key = special.key();
+            let current = self.draft.mail.folder_colors.get(key).cloned().unwrap_or_else(|| "none".to_string());
+            let shown = !self.draft.mail.hidden.iter().any(|hidden| hidden == key);
+            let swatch = |value: &'static str, cx: &mut Context<Self>| {
+                let fill = crate::menu_colors::parse(value);
+                div()
+                    .id(gpui_kit::ElementId::Name(format!("mail-color-{key}-{value}").into()))
+                    .size(px(16.))
+                    .rounded_full()
+                    .cursor_pointer()
+                    .border_2()
+                    .border_color(if current == value { palette.text } else { palette.border })
+                    .when_some(fill, |swatch, fill| swatch.bg(fill))
+                    .when(fill.is_none(), |swatch| {
+                        swatch.flex().items_center().justify_center().child(Icon::new(IconName::Slash).xsmall().text_color(palette.faint))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if value == "none" {
+                            this.draft.mail.folder_colors.remove(key);
+                        } else {
+                            this.draft.mail.folder_colors.insert(key.to_string(), value.to_string());
+                        }
+                        cx.notify();
+                    }))
+            };
+            let mut swatches = h_flex().gap_1p5().items_center().child(swatch("none", cx));
+            for value in crate::menu_colors::PRESETS {
+                swatches = swatches.child(swatch(value, cx));
+            }
+            let color = self.draft.mail.folder_colors.get(key).and_then(|name| crate::menu_colors::parse(name)).unwrap_or(palette.muted);
+            h_flex()
+                .gap_3()
+                .min_h(px(32.))
+                .items_center()
+                .child(
+                    gpui_kit::component::switch::Switch::new(gpui_kit::ElementId::Name(format!("mail-show-{key}").into()))
+                        .checked(shown)
+                        .small()
+                        .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                            this.draft.mail.hidden.retain(|hidden| hidden != key);
+                            if !*checked {
+                                this.draft.mail.hidden.push(key.to_string());
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(Icon::new(crate::views::mail::special_icon_for(special)).small().text_color(color))
+                .child(div().w(px(110.)).text_sm().text_color(if shown { palette.text } else { palette.faint }).child(special.label()))
+                .child(swatches)
+        });
+        v_flex()
+            .gap_1()
+            .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(tr(language, "Special folders", "Специальные папки")))
+            .child(div().text_xs().text_color(palette.muted).pb_2().child(tr(
+                language,
+                "Found from the server's folder roles (Gmail's Bin and Spam too). Switch off to hide one; pick a color for its icon.",
+                "Определяются по ролям папок на сервере (в том числе Корзина и Спам Gmail). Выключите, чтобы скрыть; цвет — для значка.",
+            )))
+            .children(rows)
+            .into_any_element()
+    }
+
     /// Settings → Appearance → Context menu colors: the app's own items.
     /// Extensions color theirs on their own page.
     fn render_menu_colors(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -817,6 +1003,21 @@ impl SettingsWindow {
                 .child(h_flex().items_start().gap_1().child(main).children(side))
                 .into_any_element(),
         )
+    }
+
+    fn choose_global_search_folder(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Search here".into()) });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await
+                && let Some(folder) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |this, cx| {
+                    this.draft.search_filters.global_folder = (dirs::home_dir().as_ref() != Some(&folder)).then_some(folder);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn choose_favorite(&mut self, cx: &mut Context<Self>) {
@@ -1421,6 +1622,7 @@ impl SettingsWindow {
                         })),
                 )
                 .into_any_element(),
+            "mail" => self.render_mail_settings(palette, cx),
             "terminal" => setting_row(
                 tr(language, "Terminal app", "Приложение терминала"),
                 h_flex().gap_1().flex_wrap().children(crate::settings::TerminalApp::available().into_iter().map(|app| {
@@ -1504,6 +1706,7 @@ impl SettingsWindow {
                     .child(section(IconName::SlidersHorizontal, tr(language, "Settings", "Настройки"), palette))
                     .child(settings),
             )
+            .children(self.render_search_filters(extension, enabled, palette, cx))
             .child(
                 card(palette)
                     .child(section(IconName::Blocks, tr(language, "Adds to the app", "Что добавляет"), palette))

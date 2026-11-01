@@ -25,12 +25,15 @@ jobs:
   macos:
     runs-on: macos-latest
     env:
+      FILES_REQUIRE_VLC: "1"
       # Without a Developer ID certificate the app is signed ad hoc: it runs
       # after "Open Anyway" (see the downloads page).
       HAS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install VLC (its libvlc ships inside Files.app for video previews)
+        run: brew install --cask vlc
       - name: Import the signing certificate into a temporary keychain
         if: env.HAS_CERTIFICATE == 'true'
         env:
@@ -63,6 +66,8 @@ jobs:
             target/dist/*.dmg.sig
 
   linux:
+    env:
+      FILES_REQUIRE_VLC: "1"
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +76,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev libssl-dev libfuse2
+          # libVLC and its plugins go into the AppImage for video previews.
+          sudo apt-get install -y libvlc5 libvlccore9 vlc-plugin-base vlc-plugin-video-output
           curl -L -o /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           sudo chmod +x /usr/local/bin/appimagetool
       - run: cargo xtask bundle
@@ -104,6 +111,7 @@ jobs:
   windows:
     runs-on: windows-latest
     env:
+      FILES_REQUIRE_VLC: "1"
       # `secrets` cannot be read in a step's `if`; this flag can.
       HAS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
     steps:
@@ -115,6 +123,8 @@ jobs:
       - name: Install WiX
         # v5: open source (MS-RL). v7 needs the paid OSMF EULA accepted.
         run: dotnet tool install --global wix --version 5.0.2
+      - name: Install VLC (its libvlc ships inside the MSI for video previews)
+        run: choco install vlc -y --no-progress
       - name: Decode the signing certificate (if one is set)
         if: env.HAS_CERTIFICATE == 'true'
         shell: pwsh

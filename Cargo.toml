@@ -3,7 +3,7 @@ members = ["crates/*"]
 
 [package]
 name = "file-force"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 description = "Files: a fast file explorer for macOS and Linux with Git, SSH, AI agents and extensions."
 license = "FSL-1.1-MIT"
@@ -16,6 +16,7 @@ files-ext-archive = { path = "crates/ext-archive" }
 files-ext-ssh = { path = "crates/ext-ssh" }
 files-ext-forks = { path = "crates/ext-forks" }
 files-ext-agents = { path = "crates/ext-agents" }
+files-ext-mail = { path = "crates/ext-mail" }
 files-ext-git = { path = "crates/ext-git" }
 libloading = "0.8"
 libc = "0.2"
@@ -30,9 +31,16 @@ trash = "5"
 sysinfo = { version = "0.31", default-features = false, features = ["disk"] }
 toml = "0.8.23"
 unicode-normalization = "0.1"
+image = { version = "0.25", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
+objc2 = "0.6"
+objc2-av-foundation = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-foundation = "0.3"
 plist = "1"
 xattr = "1"
 

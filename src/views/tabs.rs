@@ -2,9 +2,10 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::h_flex;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{AnyElement, Context, IntoElement, ParentElement as _, Styled as _, div, px};
+use gpui_kit::{AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _, div, px};
 
 use crate::app::FileExplorer;
 use crate::model::Location;
@@ -22,6 +23,11 @@ impl FileExplorer {
                 tab.location()
             };
             let active = index == active_tab;
+            let (label, icon) = match tab.panel_icon {
+                Some(icon) => (tab.panel_title.to_string(), icon),
+                None => (crate::model::trim_middle(location.label(), 24).into_owned(), location_icon(location)),
+            };
+            let pinned = tab.pinned;
             let close = Button::new(("close-workspace-tab", tab.id))
                 .ghost()
                 .xsmall()
@@ -31,18 +37,37 @@ impl FileExplorer {
                     cx.stop_propagation();
                     this.close_tab(index, window, cx);
                 }));
-            Tab::new()
-                .label(crate::model::trim_middle(location.label(), 24).into_owned())
-                .prefix(
-                    Icon::new(location_icon(location))
-                        .xsmall()
-                        .text_color(if active {
-                            palette.accent
-                        } else {
-                            palette.muted
-                        }),
-                )
-                .when(tab_count > 1, |tab| tab.suffix(close))
+            let explorer = cx.entity();
+            // Right-click: close this / to the left / others / to the right, pin.
+            let title = h_flex()
+                .id(("workspace-tab-title", tab.id))
+                .gap_1p5()
+                .items_center()
+                .child(Icon::new(if pinned { IconName::Pin } else { icon }).xsmall().text_color(if active { palette.accent } else { palette.muted }))
+                .child(label)
+                .context_menu(move |menu, window, _| {
+                    let item = |label: &'static str, icon: IconName| PopupMenuItem::new(label).icon(icon);
+                    menu.item(item("Close", IconName::X).disabled(tab_count == 1).on_click(window.listener_for(&explorer, move |this, _, window, cx| {
+                        this.close_tab(index, window, cx);
+                    })))
+                    .item(item("Close Tabs to the Left", IconName::ArrowLeftToLine).disabled(index == 0).on_click(window.listener_for(
+                        &explorer,
+                        move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at < clicked, window, cx),
+                    )))
+                    .item(item("Close Other Tabs", IconName::Copy).disabled(tab_count == 1).on_click(window.listener_for(
+                        &explorer,
+                        move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at != clicked, window, cx),
+                    )))
+                    .item(item("Close Tabs to the Right", IconName::ArrowRightToLine).disabled(index + 1 == tab_count).on_click(window.listener_for(
+                        &explorer,
+                        move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at > clicked, window, cx),
+                    )))
+                    .separator()
+                    .item(item(if pinned { "Unpin Tab" } else { "Pin Tab" }, if pinned { IconName::PinOff } else { IconName::Pin }).on_click(
+                        window.listener_for(&explorer, move |this, _, _, cx| this.toggle_pin_tab(index, cx)),
+                    ))
+                });
+            Tab::new().prefix(title).when(tab_count > 1 && !pinned, |tab| tab.suffix(close))
         });
         let explorer = cx.entity();
 

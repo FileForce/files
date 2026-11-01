@@ -34,6 +34,8 @@ pub struct QuickLookView {
     focus_handle: FocusHandle,
     return_focus: Option<FocusHandle>,
     _repaint: Subscription,
+    /// The mini player of the video being shown; replaced when moving on.
+    video: Option<Entity<crate::views::video_player::VideoPlayer>>,
 }
 
 impl Focusable for QuickLookView {
@@ -330,10 +332,19 @@ fn read_text(path: &Path, kind: FileKind) -> Option<String> {
 }
 
 impl Render for QuickLookView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self.appearance.read(cx).clone();
         let palette = Palette::from_settings(&settings);
         let file = self.current(cx);
+        // Videos play in place (through VLC); another item stops the player.
+        let video_path = file.filter(|file| file.kind == FileKind::Video).and_then(|file| file.path).map(Path::to_path_buf);
+        let current = self.video.as_ref().map(|player| player.read(cx).path.clone());
+        if video_path != current {
+            if let Some(old) = self.video.take() {
+                old.update(cx, |player, cx| player.release(window, cx));
+            }
+            self.video = video_path.map(|path| cx.new(|cx| crate::views::video_player::VideoPlayer::new(path, palette, window, cx)));
+        }
         let content = match file {
             Some(file) => {
                 let size = crate::properties::demo_human_size(file, settings.human_sizes);
@@ -341,7 +352,10 @@ impl Render for QuickLookView {
                 v_flex()
                     .size_full()
                     .gap_3()
-                    .child(div().flex_1().min_h_0().child(body(file, palette, &settings)))
+                    .child(div().flex_1().min_h_0().child(match &self.video {
+                        Some(player) => player.clone().into_any_element(),
+                        None => body(file, palette, &settings),
+                    }))
                     .child(
                         h_flex()
                             .flex_shrink_0()
@@ -444,7 +458,10 @@ impl FileExplorer {
             appearance,
             focus_handle: cx.focus_handle(),
             return_focus: return_focus.clone(),
+            video: None,
         });
+        #[cfg(test)]
+        LAST.with(|last| *last.borrow_mut() = Some(view.clone()));
         // Conversions and folder sizes finish in the background; repaint then.
         view.update(cx, |_, cx| crate::properties::watch_folder_sizes(cx));
         let initial_focus = Cell::new(true);
@@ -477,5 +494,22 @@ impl FileExplorer {
                 })
                 .child(view.clone())
         });
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static LAST: std::cell::RefCell<Option<Entity<QuickLookView>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn last_for_test() -> Option<Entity<QuickLookView>> {
+    LAST.with(|last| last.borrow().clone())
+}
+
+#[cfg(test)]
+impl QuickLookView {
+    pub(crate) fn video_for_test(&self, cx: &gpui_kit::App) -> Option<std::path::PathBuf> {
+        self.video.as_ref().map(|player| player.read(cx).path.clone())
     }
 }

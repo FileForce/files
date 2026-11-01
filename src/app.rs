@@ -85,6 +85,12 @@ pub struct WorkspaceTab {
     pub left: PaneState,
     pub right: PaneState,
     pub active_pane: Pane,
+    /// Kept at the left, left alone by "Close others / to the left / right".
+    pub pinned: bool,
+    /// An extension's view (Mail) shown instead of files.
+    pub panel: Option<gpui_kit::AnyView>,
+    pub panel_title: &'static str,
+    pub panel_icon: Option<gpui_kit::assets::IconName>,
 }
 
 impl WorkspaceTab {
@@ -106,6 +112,10 @@ impl WorkspaceTab {
                 selected: None,
             },
             active_pane: Pane::Left,
+            pinned: false,
+            panel: None,
+            panel_title: "",
+            panel_icon: None,
         }
     }
 
@@ -208,6 +218,7 @@ fn update_search_extensions(settings: &crate::settings::AppSettings) {
         .map(|(_, manifest)| manifest.id)
         .collect();
     crate::model::set_search_disabled(off);
+    crate::model::set_search_keys_off(settings.search_filters.folder_off.clone(), settings.search_filters.global_off.clone());
 }
 
 impl FileExplorer {
@@ -595,6 +606,73 @@ impl FileExplorer {
         self.restore_active_tab(window, cx);
     }
 
+    /// A tab showing an extension's view (Mail) instead of files.
+    pub(crate) fn open_panel_tab(
+        &mut self,
+        title: &'static str,
+        icon: gpui_kit::assets::IconName,
+        view: gpui_kit::AnyView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_active_tab();
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut tab = WorkspaceTab::new(id, self.current);
+        tab.mode = self.mode;
+        tab.panel = Some(view);
+        tab.panel_title = title;
+        tab.panel_icon = Some(icon);
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+        self.restore_active_tab(window, cx);
+    }
+
+    /// The extension view of the active tab, if it shows one.
+    pub(crate) fn active_panel(&self) -> Option<gpui_kit::AnyView> {
+        self.tabs.get(self.active_tab).and_then(|tab| tab.panel.clone())
+    }
+
+    pub(crate) fn toggle_pin_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        self.save_active_tab();
+        let active_id = self.tabs[self.active_tab].id;
+        self.tabs[index].pinned = !self.tabs[index].pinned;
+        // Pinned tabs first, each group keeping its order.
+        self.tabs.sort_by_key(|tab| !tab.pinned);
+        self.active_tab = self.tabs.iter().position(|tab| tab.id == active_id).unwrap_or(0);
+        cx.notify();
+    }
+
+    /// Closes the unpinned tabs `close` picks (by index, relative to
+    /// `index`), always leaving at least one tab.
+    pub(crate) fn close_tabs_where(&mut self, index: usize, close: impl Fn(usize, usize) -> bool, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        self.save_active_tab();
+        let active_id = self.tabs[self.active_tab].id;
+        let keep_id = self.tabs[index].id;
+        let mut position = 0;
+        self.tabs.retain(|tab| {
+            let here = position;
+            position += 1;
+            tab.pinned || !close(here, index)
+        });
+        if self.tabs.is_empty() {
+            unreachable!("the clicked tab is never closed");
+        }
+        self.active_tab = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == active_id)
+            .or_else(|| self.tabs.iter().position(|tab| tab.id == keep_id))
+            .unwrap_or(0);
+        self.restore_active_tab(window, cx);
+    }
+
     pub fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.len() == 1 || index >= self.tabs.len() {
             return;
@@ -640,8 +718,8 @@ impl FileExplorer {
             dialog
                 .title(crate::settings::localized(
                     language,
-                    "Global search · home folder",
-                    "Глобальный поиск · домашняя папка",
+                    "Global search",
+                    "Глобальный поиск",
                 ))
                 .centered()
                 .w(px(640.))
@@ -1286,7 +1364,7 @@ impl FileExplorer {
         self.notice = Some("Removed from Favorites".to_string());
     }
 
-    fn selected_paths(&self) -> Vec<std::path::PathBuf> {
+    pub(crate) fn selected_paths(&self) -> Vec<std::path::PathBuf> {
         self.selected_entries()
             .into_iter()
             .filter_map(|entry| entry.path.map(std::path::Path::to_path_buf))
@@ -1449,7 +1527,10 @@ impl Render for FileExplorer {
             crate::settings::Background::Image { path } if path.is_file() => Some(path.clone()),
             _ => None,
         };
-        let inspector_visible = self.show_inspector && self.mode != ViewMode::Dual;
+        // An extension tab (Mail) fills the whole area: no toolbar, no inspector.
+        let panel = self.active_panel();
+        let has_panel = panel.is_some();
+        let inspector_visible = self.show_inspector && self.mode != ViewMode::Dual && !has_panel;
 
         div()
             .track_focus(&self.focus_handle)
@@ -1550,8 +1631,9 @@ impl Render for FileExplorer {
                                     .min_w_0()
                                     .min_h_0()
                                     .child(self.render_tabs(palette, cx))
-                                    .child(self.render_toolbar(palette, cx))
-                                    .child(self.render_drop_area(palette, cx)),
+                                    .children(panel.map(|panel| div().flex_1().min_h_0().child(panel)))
+                                    .children((!has_panel).then(|| self.render_toolbar(palette, cx)))
+                                    .children((!has_panel).then(|| self.render_drop_area(palette, cx))),
                             ),
                         )
                         .child(
@@ -3653,6 +3735,28 @@ mod tests {
     }
 
     #[test]
+    fn quick_look_plays_videos_and_stops_on_the_next_item() {
+        let dir = std::env::temp_dir().join(format!("file-force-quick-look-video-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a-clip.mp4"), b"not really a video").unwrap();
+        std::fs::write(dir.join("b-notes.txt"), "text").unwrap();
+        let (view, cx) = rooted_window(&dir);
+        let id = |cx: &mut VisualTestContext, name: &str| cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id);
+        let clip = id(cx, "a-clip.mp4");
+        view.update(cx, |this, cx| this.select_entry(clip, cx));
+        cx.simulate_keystrokes("space");
+        cx.run_until_parked();
+        let look = crate::views::quick_look::last_for_test().expect("Quick Look did not open");
+        // With VLC it plays, without it offers to get VLC: a player either way.
+        assert_eq!(cx.read(|app| look.read(app).video_for_test(app)), Some(dir.join("a-clip.mp4")));
+        cx.simulate_keystrokes("right");
+        cx.run_until_parked();
+        assert_eq!(cx.read(|app| look.read(app).video_for_test(app)), None, "moving on stops the player");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn quick_look_on_archives_lists_their_members() {
         let dir = std::env::temp_dir().join(format!("file-force-quick-look-archive-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3924,6 +4028,115 @@ mod tests {
     }
 
     #[test]
+    fn global_search_uses_its_folder_and_says_it_is_searching() {
+        let dir = std::env::temp_dir().join(format!("file-force-global-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("deep")).unwrap();
+        std::fs::write(dir.join("deep").join("needle-report.txt"), "x").unwrap();
+        let (view, cx) = rooted_window(&dir);
+        let appearance = cx.read(|app| view.read(app).appearance.clone());
+        appearance.update(cx, |settings, _| settings.search_filters.global_folder = Some(dir.clone()));
+        cx.update(|window, app| view.update(app, |this, cx| this.open_global_search(window, cx)));
+        cx.run_until_parked();
+        let search = cx.read(|app| view.read(app).global_search.clone()).expect("Cmd-K did not open");
+        assert_eq!(cx.read(|app| search.read(app).root_for_test()), dir, "the folder from Settings");
+        cx.update(|window, app| search.update(app, |this, cx| this.type_for_test("needle", window, cx)));
+        // Typing never waits for the search: it runs after a pause, off the UI thread.
+        assert!(cx.read(|app| search.read(app).searching_for_test()), "no Searching… while it runs");
+        cx.executor().advance_clock(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        assert_eq!(cx.read(|app| search.read(app).results_for_test()), ["needle-report.txt"]);
+        assert!(!cx.read(|app| search.read(app).searching_for_test()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tabs_close_around_the_clicked_one_and_pinned_tabs_stay() {
+        let (view, cx) = pro_window();
+        let ids = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).tabs.iter().map(|tab| tab.id).collect::<Vec<_>>());
+        cx.update(|window, app| {
+            view.update(app, |this, cx| {
+                for _ in 0..4 {
+                    this.new_tab(window, cx);
+                }
+            })
+        });
+        let all = ids(cx);
+        assert_eq!(all.len(), 5);
+        // Pin the last tab: it moves to the front and survives bulk closes.
+        cx.update(|_, app| view.update(app, |this, cx| this.toggle_pin_tab(4, cx)));
+        assert_eq!(ids(cx)[0], all[4]);
+        // Order now: [p4, 0, 1, 2, 3]. Close to the right of tab 2 (id all[1]).
+        cx.update(|window, app| view.update(app, |this, cx| this.close_tabs_where(2, |at, clicked| at > clicked, window, cx)));
+        assert_eq!(ids(cx), [all[4], all[0], all[1]]);
+        cx.update(|window, app| view.update(app, |this, cx| this.close_tabs_where(2, |at, clicked| at < clicked, window, cx)));
+        assert_eq!(ids(cx), [all[4], all[1]], "the pinned tab is kept");
+        cx.update(|window, app| view.update(app, |this, cx| this.close_tabs_where(1, |at, clicked| at != clicked, window, cx)));
+        assert_eq!(ids(cx), [all[4], all[1]]);
+        cx.update(|window, app| view.update(app, |this, cx| this.close_tabs_where(0, |at, clicked| at != clicked, window, cx)));
+        assert_eq!(ids(cx), [all[4]], "others closed, the pinned one clicked");
+    }
+
+    #[test]
+    fn mail_opens_once_as_a_tab() {
+        crate::views::mail::set_accounts_for_test(Vec::new());
+        let (view, cx) = pro_window();
+        let mail_tabs = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).tabs.iter().filter(|tab| tab.panel.is_some()).count());
+        cx.update(|window, app| view.update(app, |this, cx| this.open_mail(None, false, window, cx)));
+        cx.run_until_parked();
+        assert_eq!(mail_tabs(cx), 1);
+        assert!(cx.read(|app| view.read(app).active_panel().is_some()), "Mail is the active tab");
+        cx.update(|window, app| view.update(app, |this, cx| {
+            this.select_tab(0, window, cx);
+            this.open_mail(None, true, window, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(mail_tabs(cx), 1, "the same Mail tab is reused");
+        assert!(cx.read(|app| view.read(app).active_panel().is_some()));
+    }
+
+    #[test]
+    fn files_go_out_as_mail_attachments() {
+        let dir = std::env::temp_dir().join(format!("file-force-mail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["report.pdf", "photo.png", "notes.txt"] {
+            std::fs::write(dir.join(name), name).unwrap();
+        }
+        crate::views::mail::set_accounts_for_test(vec![
+            files_ext_mail::Account::for_provider("ann@gmail.com", "Ann", files_ext_mail::Provider::Gmail).unwrap(),
+        ]);
+        let (view, cx) = rooted_window(&dir);
+        cx.run_until_parked();
+        let entry = |cx: &mut VisualTestContext, name: &str| cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap());
+        let (report, photo, notes) = (entry(cx, "report.pdf"), entry(cx, "photo.png"), entry(cx, "notes.txt"));
+        // Right-click on an unselected file: just that file.
+        assert_eq!(cx.read(|app| view.read(app).attachment_files(notes)), [dir.join("notes.txt")]);
+        // Right-click inside a selection: the whole selection.
+        view.update(cx, |this, cx| {
+            this.select_entry(report.id, cx);
+            this.select_range_to(photo.id, cx);
+        });
+        let mut files = cx.read(|app| view.read(app).attachment_files(photo));
+        files.sort();
+        assert_eq!(files, [dir.join("photo.png"), dir.join("report.pdf")]);
+
+        let appearance = cx.read(|app| view.read(app).appearance.clone());
+        let compose = cx.update(|_, app| crate::views::mail::open_compose(files.clone(), None, appearance, app)).expect("no compose window");
+        cx.run_until_parked();
+        let draft = cx.read(|app| compose.read(app).draft(app));
+        assert_eq!(draft.attachments, files);
+        assert_eq!(draft.subject, "photo.png, report.pdf", "the subject starts as the file names");
+        crate::views::mail::set_accounts_for_test(Vec::new());
+        // No account yet: the Mail window opens on the sign-in form, offline.
+        let appearance = cx.read(|app| view.read(app).appearance.clone());
+        let mail = cx.update(|_, app| crate::views::mail::open_mail_window(None, false, appearance, app)).expect("no mail window");
+        cx.run_until_parked();
+        assert!(cx.read(|app| mail.read(app).is_adding_for_test()), "the sign-in form should show");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn git_search_filter_matches_branch_and_status() {
         let dir = std::env::temp_dir().join(format!("file-force-git-search-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3955,6 +4168,11 @@ mod tests {
         assert_eq!(found("git:main"), Vec::<&str>::new());
         assert_eq!(found("git:modified"), ["kept.txt"]);
         assert_eq!(found("git:untracked"), ["fresh.txt"]);
+        // Off in Cmd-K only: still a filter in the folder box.
+        crate::model::set_search_keys_off(Vec::new(), vec!["git".into()]);
+        assert!(crate::model::SearchQuery::parse_in("git:main", crate::model::SearchScope::Global).text == "git:main");
+        assert!(crate::model::SearchQuery::parse_in("git:main", crate::model::SearchScope::Folder).text.is_empty());
+        crate::model::set_search_keys_off(Vec::new(), Vec::new());
         // Git turned off: `git:` is plain text again, which no name contains.
         crate::model::set_search_disabled(vec!["git"]);
         assert!(crate::model::SearchQuery::parse("git:main").text == "git:main");

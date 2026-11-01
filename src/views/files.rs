@@ -547,7 +547,12 @@ fn section_title(title: &'static str, count: usize, palette: Palette) -> AnyElem
 }
 
 pub(crate) fn file_icon(entry: &FileEntry, palette: Palette, size: f32) -> Icon {
-    let (icon, color) = match entry.kind {
+    kind_icon(entry.kind, palette, size)
+}
+
+/// The icon and color files of `kind` have everywhere (lists, mail…).
+pub(crate) fn kind_icon(kind: FileKind, palette: Palette, size: f32) -> Icon {
+    let (icon, color) = match kind {
         FileKind::Folder => (IconName::Folder, palette.folder),
         FileKind::Image => (IconName::FileImage, palette.media),
         FileKind::Video => (IconName::Film, palette.video),

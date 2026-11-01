@@ -728,8 +728,9 @@ pub fn invalidate_listings() {
 }
 
 /// Every indexed entry for global search: a bounded walk of the home folder.
-pub fn searchable_entries() -> Vec<&'static FileEntry> {
-    fs_index::search_index()
+/// Everything under `root` (a few levels deep) for global search.
+pub fn searchable_entries(root: &Path) -> Vec<&'static FileEntry> {
+    fs_index::search_index(root)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -865,30 +866,59 @@ impl PartialEq for Contributor {
     }
 }
 
-/// Extensions turned off in Settings: their search filters stay plain text.
-static SEARCH_OFF: std::sync::RwLock<Vec<&'static str>> = std::sync::RwLock::new(Vec::new());
-
-pub fn set_search_disabled(ids: Vec<&'static str>) {
-    *SEARCH_OFF.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = ids;
+/// Where a search runs: the folder's search box, or Cmd-K over the home folder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchScope {
+    Folder,
+    Global,
 }
 
-/// The enabled extension that answers `key:`.
-fn contributor(key: &str) -> Option<Contributor> {
+/// Filters that stay plain text, per scope: extensions turned off, or a
+/// filter switched off for that box in Settings.
+#[derive(Default)]
+struct SearchOff {
+    extensions: Vec<&'static str>,
+    folder_keys: Vec<String>,
+    global_keys: Vec<String>,
+}
+
+static SEARCH_OFF: std::sync::RwLock<SearchOff> =
+    std::sync::RwLock::new(SearchOff { extensions: Vec::new(), folder_keys: Vec::new(), global_keys: Vec::new() });
+
+pub fn set_search_disabled(ids: Vec<&'static str>) {
+    SEARCH_OFF.write().unwrap_or_else(|poisoned| poisoned.into_inner()).extensions = ids;
+}
+
+/// Filter keys (`git`…) switched off in the folder search / in Cmd-K.
+pub fn set_search_keys_off(folder: Vec<String>, global: Vec<String>) {
+    let mut off = SEARCH_OFF.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+    off.folder_keys = folder;
+    off.global_keys = global;
+}
+
+/// The enabled extension that answers `key:` in `scope`.
+fn contributor(key: &str, scope: SearchScope) -> Option<Contributor> {
     let off = SEARCH_OFF.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let keys = match scope {
+        SearchScope::Folder => &off.folder_keys,
+        SearchScope::Global => &off.global_keys,
+    };
+    if keys.iter().any(|off| off.eq_ignore_ascii_case(key)) {
+        return None;
+    }
     crate::views::extension_ui::registry()
         .into_iter()
-        .filter(|extension| !off.contains(&extension.manifest().id))
+        .filter(|extension| !off.extensions.contains(&extension.manifest().id))
         .find(|extension| extension.search_keys().iter().any(|search| search.key.eq_ignore_ascii_case(key)))
         .map(Contributor)
 }
 
 /// `git: …` hints for the search placeholder, from enabled extensions.
-pub fn contributed_search_keys() -> Vec<files_sdk::SearchKey> {
-    let off = SEARCH_OFF.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+pub fn contributed_search_keys(scope: SearchScope) -> Vec<files_sdk::SearchKey> {
     crate::views::extension_ui::registry()
         .into_iter()
-        .filter(|extension| !off.contains(&extension.manifest().id))
         .flat_map(|extension| extension.search_keys().iter().copied())
+        .filter(|search| contributor(search.key, scope).is_some())
         .collect()
 }
 
@@ -906,10 +936,14 @@ pub struct SearchQuery {
 
 impl SearchQuery {
     pub fn parse(query: &str) -> Self {
+        Self::parse_in(query, SearchScope::Folder)
+    }
+
+    pub fn parse_in(query: &str, scope: SearchScope) -> Self {
         let mut text = Vec::new();
         let mut filters = Vec::new();
         for token in query.split_whitespace() {
-            match token.split_once(':').and_then(|(key, value)| parse_filter(key, value)) {
+            match token.split_once(':').and_then(|(key, value)| parse_filter(key, value, scope)) {
                 Some(filter) => filters.push(filter),
                 None => text.push(token),
             }
@@ -954,7 +988,7 @@ impl SearchQuery {
     }
 }
 
-fn parse_filter(key: &str, value: &str) -> Option<Filter> {
+fn parse_filter(key: &str, value: &str, scope: SearchScope) -> Option<Filter> {
     if value.is_empty() {
         return None;
     }
@@ -1000,7 +1034,7 @@ fn parse_filter(key: &str, value: &str) -> Option<Filter> {
         }
         "tag" => Some(Filter::Tag(value.to_lowercase())),
         "mode" | "perm" | "permissions" => parse_mode(value).map(Filter::Mode),
-        other => contributor(other).map(|extension| Filter::Contributed(extension, other.to_string(), value.to_lowercase())),
+        other => contributor(other, scope).map(|extension| Filter::Contributed(extension, other.to_string(), value.to_lowercase())),
     }
 }
 
@@ -1119,10 +1153,18 @@ pub fn rank_entries(
     candidates: impl IntoIterator<Item = &'static FileEntry>,
     query: &str,
 ) -> Vec<&'static FileEntry> {
+    rank_entries_in(candidates, query, SearchScope::Folder)
+}
+
+pub fn rank_entries_in(
+    candidates: impl IntoIterator<Item = &'static FileEntry>,
+    query: &str,
+    scope: SearchScope,
+) -> Vec<&'static FileEntry> {
     use nucleo::pattern::{CaseMatching, Normalization, Pattern};
     use nucleo::{Config, Matcher, Utf32Str};
 
-    let query = SearchQuery::parse(query);
+    let query = SearchQuery::parse_in(query, scope);
     let candidates = candidates.into_iter().filter(|entry| query.matches(entry));
     if query.text.is_empty() {
         return candidates.collect();
@@ -1169,7 +1211,7 @@ mod fs_index {
         dir_ids: HashMap<PathBuf, u32>,
         entries: HashMap<PathBuf, (Option<SystemTime>, u64, &'static FileEntry)>,
         listings: HashMap<Location, (Instant, Vec<&'static FileEntry>)>,
-        search: Option<(Instant, Vec<&'static FileEntry>)>,
+        search: Option<(Instant, PathBuf, Vec<&'static FileEntry>)>,
     }
 
     fn registry() -> &'static Mutex<Registry> {
@@ -1464,18 +1506,15 @@ mod fs_index {
         })
     }
 
-    pub fn search_index() -> Vec<&'static FileEntry> {
-        if let Some((loaded, entries)) = &lock().search
+    pub fn search_index(root: &Path) -> Vec<&'static FileEntry> {
+        if let Some((loaded, indexed, entries)) = &lock().search
             && loaded.elapsed() < SEARCH_TTL
+            && indexed == root
         {
             return entries.clone();
         }
         let mut entries = Vec::new();
-        let mut queue: VecDeque<(PathBuf, usize)> = Location::Home
-            .path()
-            .into_iter()
-            .map(|path| (path, 0))
-            .collect();
+        let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::from([(root.to_path_buf(), 0)]);
         while let Some((dir, depth)) = queue.pop_front() {
             for entry in read_children(&dir) {
                 if entries.len() >= SEARCH_LIMIT {
@@ -1490,7 +1529,7 @@ mod fs_index {
                 entries.push(entry);
             }
         }
-        lock().search = Some((Instant::now(), entries.clone()));
+        lock().search = Some((Instant::now(), root.to_path_buf(), entries.clone()));
         entries
     }
 }

@@ -111,6 +111,7 @@ pub fn commands() -> Vec<Command> {
         command!("archive.close", "Close archive window", "Windows", "Archive", &["escape", "cmd-w"], &["escape", "ctrl-w"], crate::archive::CloseArchive),
         command!("properties.close", "Close properties", "Windows", "Properties", &["escape", "cmd-w"], &["escape", "ctrl-w"], crate::properties::CloseProperties),
         command!("git.close", "Close Git window", "Windows", "Git", &["escape", "cmd-w"], &["escape", "ctrl-w"], crate::views::git::CloseGit),
+        command!("mail.close", "Close Mail window", "Windows", "Mail", &["cmd-w"], &["ctrl-w"], crate::views::mail::CloseMail),
         command!("agents.close", "Close agent window", "Windows", "Agents", &["escape", "cmd-w"], &["escape", "ctrl-w"], crate::views::agents::CloseAgents),
         command!("compress.close", "Close compress window", "Windows", "Compress", &["escape", "cmd-w"], &["escape", "ctrl-w"], crate::compress::CloseCompress),
     ]

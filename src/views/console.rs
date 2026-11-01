@@ -89,6 +89,10 @@ impl FileExplorer {
                     if check_disk {
                         this.check_disk_space();
                     }
+                    // Scheduled mail goes out about once a minute.
+                    if ticks % 150 == 3 && this.appearance.read(cx).extensions.mail {
+                        crate::views::mail::send_due_mail(cx);
+                    }
                 });
                 if alive.is_err() {
                     break;

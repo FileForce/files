@@ -7,6 +7,44 @@ version's notes under `## Unreleased`, then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.7
+
+- Videos play in Quick Look (Space): play/pause, seek, time and mute, on
+  macOS, Windows and Linux. libVLC (LGPL) ships inside the macOS app and
+  the Windows installer and the Linux AppImage (only what previews need,
+  about 27 MB on macOS), so nothing has to be installed.
+- New Mail extension (experimental): several accounts (Google, Yandex or
+  any IMAP/SMTP server) under MAIL in the sidebar; sign-in with an app
+  password kept in the system keychain.
+  - Opens as a tab (or a window: Settings → General → Extension windows).
+  - Special folders (Inbox, Starred, Drafts, Sent, Archive, Spam, Trash) are
+    found from the server, with their own icons; pick their colors or hide
+    them in Settings → Extensions → Mail.
+  - Fast: one connection per account, messages kept in memory and the
+    newest read ahead.
+  - Links in messages open in the browser; long lines wrap.
+  - Write with Cc and Bcc; Send later (in an hour, tomorrow, Monday or any
+    time), listed under Scheduled until it goes out.
+  - Search mail: `from:`, `to:`, `subject:`, `is:unread`, and
+    `email:you@gmail.com:to:someone@x.com` to pick the account.
+  - Right-click a file → Send as Attachment… (several selected at once).
+  - Sending tries ports 465 and 587 over IPv4 first, and says so plainly
+    when a network blocks outgoing mail.
+  - Messages show with their HTML styles (or every line of plain text);
+    subject, sender and text can be selected and copied.
+  - Right-click a message: Reply, Mark as Read/Unread, Star, Copy Sender
+    Address, Move to Spam, Delete (to Trash; for good inside Trash).
+- Global search (Cmd-K) searches the folder set in Settings → General →
+  Global search folder (the home folder by default); Change… in the search
+  window picks another folder just this once, "Always search here" keeps it.
+  While it searches it says so instead of "No matching files".
+- Global search (Cmd-K) ranks in the background after a short pause, so
+  filters like `git:` no longer freeze typing.
+- An extension's page in Settings lists its search filters (Git: `git:`),
+  each on or off for the folder search and for global search.
+- Tabs: right-click for Close, Close Tabs to the Left / Right, Close Other
+  Tabs and Pin Tab; pinned tabs stay at the left and survive bulk closes.
+
 ## 0.1.6
 
 - Search filters from extensions. Git adds `git:`: `git:feature` finds

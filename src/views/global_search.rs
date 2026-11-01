@@ -2,7 +2,10 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::AnimationExt as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
@@ -10,7 +13,7 @@ use gpui_kit::{
 };
 
 use crate::app::{AppearanceSettings, FileExplorer};
-use crate::model::{FileEntry, rank_entries, searchable_entries};
+use crate::model::{FileEntry, searchable_entries};
 use crate::palette::Palette;
 use crate::properties::demo_human_size;
 use crate::views::files::file_icon;
@@ -19,12 +22,17 @@ const MAX_RESULTS: usize = 8;
 
 pub struct GlobalSearch {
     explorer: WeakEntity<FileExplorer>,
+    /// The folder searched; changing it here lasts until the dialog closes.
+    root: std::path::PathBuf,
     previous_focus: Option<FocusHandle>,
     appearance: Entity<AppearanceSettings>,
     include_remote: bool,
     input: Entity<InputState>,
     query: String,
     results: Vec<&'static FileEntry>,
+    /// Bumped per keystroke: only the newest search's results are shown.
+    generation: u64,
+    searching: bool,
     selected: usize,
     scroll_handle: ScrollHandle,
     _input_subscription: Subscription,
@@ -41,6 +49,7 @@ impl GlobalSearch {
         include_remote: bool,
     ) -> Self {
         let language = appearance.read(cx).language;
+        let root = appearance.read(cx).search_filters.global_root().unwrap_or_default();
         crate::properties::watch_folder_sizes(cx);
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(crate::settings::localized(
@@ -52,27 +61,83 @@ impl GlobalSearch {
         let input_subscription = cx.subscribe(&input, |this, state, event, cx| {
             if matches!(event, InputEvent::Change) {
                 this.query = state.read(cx).value().to_string();
-                this.results = ranked_results(&this.query, this.include_remote);
-                this.selected = 0;
-                this.scroll_handle.scroll_to_item(0);
-                cx.notify();
+                this.search(cx);
             }
         });
         let appearance_subscription = cx.observe(&appearance, |_, _, cx| cx.notify());
 
+        let results = ranked_results(&root, "", include_remote);
         Self {
             explorer,
+            root,
             previous_focus,
             appearance,
             include_remote,
             input,
             query: String::new(),
-            results: ranked_results("", include_remote),
+            results,
+            generation: 0,
+            searching: false,
             selected: 0,
             scroll_handle: ScrollHandle::new(),
             _input_subscription: input_subscription,
             _appearance_subscription: appearance_subscription,
         }
+    }
+
+    /// Ranks off the UI thread after a short pause in typing, so filters that
+    /// look at every file (`git:`, `size:` on folders) never freeze typing.
+    fn search(&mut self, cx: &mut Context<Self>) {
+        self.generation += 1;
+        let generation = self.generation;
+        let (query, include_remote, root) = (self.query.clone(), self.include_remote, self.root.clone());
+        self.searching = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
+            if this.read_with(cx, |this, _| this.generation != generation).unwrap_or(true) {
+                return;
+            }
+            let results = cx.background_executor().spawn(async move { ranked_results(&root, &query, include_remote) }).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.results = results;
+                this.searching = false;
+                this.selected = 0;
+                this.scroll_handle.scroll_to_item(0);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Searches another folder, just this time.
+    fn choose_root(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Search here".into()) });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await
+                && let Some(root) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |this, cx| {
+                    this.root = root;
+                    this.search(cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Makes the current folder Cmd-K's default (Settings → General).
+    fn save_root(&mut self, cx: &mut Context<Self>) {
+        let root = self.root.clone();
+        let home = dirs::home_dir();
+        self.appearance.update(cx, |settings, cx| {
+            settings.search_filters.global_folder = (Some(&root) != home.as_ref()).then_some(root);
+            let _ = crate::settings::save(settings);
+            cx.notify();
+        });
     }
 
     fn previous(&mut self, cx: &mut Context<Self>) {
@@ -187,6 +252,12 @@ impl Render for GlobalSearch {
         let settings = self.appearance.read(cx).clone();
         let palette = Palette::from_settings(&settings);
         let focus_handle = self.focus_handle(cx);
+        let is_default = settings.search_filters.global_root().as_ref() == Some(&self.root);
+        let root_label = if dirs::home_dir().as_ref() == Some(&self.root) {
+            crate::settings::localized(settings.language, "Home folder", "Домашняя папка").to_string()
+        } else {
+            self.root.file_name().map_or_else(|| self.root.display().to_string(), |name| name.to_string_lossy().into_owned())
+        };
         let results = self
             .results
             .iter()
@@ -216,13 +287,32 @@ impl Render for GlobalSearch {
                             .small()
                             .text_color(palette.muted),
                     )
-                    .suffix(div().text_xs().text_color(palette.faint).child(
-                        crate::settings::localized(
-                            settings.language,
-                            "HOME FOLDER",
-                            "ДОМАШНЯЯ ПАПКА",
-                        ),
-                    )),
+                    .suffix(div().text_xs().text_color(palette.faint).child(root_label.to_uppercase())),
+            )
+            .child(
+                h_flex()
+                    .px_1()
+                    .gap_1()
+                    .items_center()
+                    .child(Icon::new(IconName::Folder).xsmall().text_color(palette.faint))
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(10.)).text_color(palette.muted).child(self.root.display().to_string()))
+                    .child(
+                        Button::new("global-search-root")
+                            .ghost()
+                            .xsmall()
+                            .label(crate::settings::localized(settings.language, "Change…", "Сменить…"))
+                            .tooltip(crate::settings::localized(settings.language, "Search another folder this time", "Искать в другой папке в этот раз"))
+                            .on_click(cx.listener(|this, _, _, cx| this.choose_root(cx))),
+                    )
+                    .when(!is_default, |this| {
+                        this.child(
+                            Button::new("global-search-root-default")
+                                .ghost()
+                                .xsmall()
+                                .label(crate::settings::localized(settings.language, "Always search here", "Всегда искать здесь"))
+                                .on_click(cx.listener(|this, _, _, cx| this.save_root(cx))),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -231,7 +321,7 @@ impl Render for GlobalSearch {
                     .text_color(palette.faint)
                     .child(if self.query.trim().is_empty() {
                         // Extensions add their own, e.g. `git:main`.
-                        let contributed: String = crate::model::contributed_search_keys()
+                        let contributed: String = crate::model::contributed_search_keys(crate::model::SearchScope::Global)
                             .iter()
                             .map(|search| format!(" {}:", search.key))
                             .collect();
@@ -249,7 +339,28 @@ impl Render for GlobalSearch {
                         format!("Global matches for “{}”", self.query)
                     }),
             )
-            .child(if results.is_empty() {
+            .child(if results.is_empty() && self.searching {
+                // Filters like `git:` look at every file: say it is working.
+                v_flex()
+                    .h(px(120.))
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .debug_selector(|| "global-search-searching".into())
+                    .child(Icon::new(IconName::LoaderCircle).large().text_color(palette.accent).with_animation(
+                        "global-search-spin",
+                        gpui_kit::Animation::new(std::time::Duration::from_secs(1)).repeat(),
+                        |icon, delta| icon.transform(gpui_kit::Transformation::rotate(gpui_kit::percentage(delta))),
+                    ))
+                    .child(crate::views::text_fx::shimmer(
+                        "global-search-shimmer",
+                        crate::settings::localized(settings.language, "Searching…", "Идёт поиск…"),
+                        palette.muted,
+                        palette,
+                    ))
+                    .child(div().text_xs().text_color(palette.faint).child(self.root.display().to_string()))
+                    .into_any_element()
+            } else if results.is_empty() {
                 v_flex()
                     .h(px(120.))
                     .items_center()
@@ -284,7 +395,7 @@ impl Render for GlobalSearch {
                     .gap_2()
                     .text_size(px(10.))
                     .text_color(palette.faint)
-                    .child(format!("{} shown", self.results.len()))
+                    .child(if self.searching { "Searching…".to_string() } else { format!("{} shown", self.results.len()) })
                     .child("·")
                     .child(crate::settings::localized(
                         settings.language,
@@ -305,12 +416,12 @@ impl Render for GlobalSearch {
     }
 }
 
-fn ranked_results(query: &str, include_remote: bool) -> Vec<&'static FileEntry> {
-    let candidates = searchable_entries()
+fn ranked_results(root: &std::path::Path, query: &str, include_remote: bool) -> Vec<&'static FileEntry> {
+    let candidates = searchable_entries(root)
         .into_iter()
         // Remote folders are searched as far as they have been browsed.
         .chain(crate::model::remote::loaded_entries().into_iter().filter(move |_| include_remote));
-    rank_entries(candidates, query)
+    crate::model::rank_entries_in(candidates, query, crate::model::SearchScope::Global)
         .into_iter()
         .take(MAX_RESULTS)
         .collect()
@@ -328,5 +439,29 @@ pub(crate) fn close_global_search(
     });
     if let Some(focus) = previous_focus {
         focus.focus(window, cx);
+    }
+}
+
+#[cfg(test)]
+impl GlobalSearch {
+    pub(crate) fn type_for_test(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| input.set_value(text.to_string(), window, cx));
+        // Typing emits Change; setting the value from code does not.
+        if self.query != text {
+            self.query = text.to_string();
+            self.search(cx);
+        }
+    }
+
+    pub(crate) fn results_for_test(&self) -> Vec<&'static str> {
+        self.results.iter().map(|entry| entry.name).collect()
+    }
+
+    pub(crate) fn searching_for_test(&self) -> bool {
+        self.searching
+    }
+
+    pub(crate) fn root_for_test(&self) -> std::path::PathBuf {
+        self.root.clone()
     }
 }

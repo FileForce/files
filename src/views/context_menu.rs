@@ -105,6 +105,13 @@ pub(crate) fn file_context_menu(
                         })),
                 )
             })
+            .when(extensions.mail && !entry.is_folder() && entry.path.is_some(), |menu| {
+                let mail_view = view.clone();
+                menu.item(
+                    tinted_item("Send as Attachment…", IconName::Mail, tint("mail"))
+                        .on_click(window.listener_for(&mail_view, move |this, _, window, cx| this.send_as_attachment(entry, window, cx))),
+                )
+            })
             .when(extensions.open_with, |menu| {
                 menu.submenu_with_icon(
                     Some(tinted_icon(crate::extensions::icon("Open With"), tint("open-with"))),

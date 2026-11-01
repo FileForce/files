@@ -88,6 +88,11 @@ fn main() -> ExitCode {
         Some("license") => license(&workspace_root(), &args[1..]),
         Some("package-extension") => package_extension(&workspace_root(), &args[1..]),
         Some("updates") => updates(&workspace_root(), &args[1..]),
+        // Copies the bundled VLC into a folder, to try the plugin list: `cargo xtask vlc DIR`.
+        Some("vlc") => match args.get(1) {
+            Some(target) => vlc_source().ok_or_else(|| "VLC not found: set FILES_VLC_DIR".to_string()).and_then(|source| copy_vlc(&source, Path::new(target))),
+            None => Err("usage: cargo xtask vlc TARGET_DIR".to_string()),
+        },
         _ => {
             eprintln!(
                 "usage: cargo xtask <icons | bundle [--sign IDENTITY] [--notarize] [--no-dmg] | doctor\n\
@@ -261,6 +266,7 @@ fn wix_source(config: &Config, version: &str, exe: &str) -> String {
         <Component Id="MainExecutable">
           <File Id="AppExe" Source="{exe}" KeyPath="yes" />
         </Component>
+        <Directory Id="VLCFOLDER" Name="vlc" />
       </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
@@ -272,6 +278,7 @@ fn wix_source(config: &Config, version: &str, exe: &str) -> String {
     <Feature Id="Main">
       <ComponentRef Id="MainExecutable" />
       <ComponentRef Id="StartMenuShortcut" />
+      <Files Directory="VLCFOLDER" Include="vlc\**" />
     </Feature>
   </Package>
 </Wix>
@@ -280,6 +287,170 @@ fn wix_source(config: &Config, version: &str, exe: &str) -> String {
         upgrade = config.windows.upgrade_code,
         homepage = "https://github.com/FileForce/files",
     )
+}
+
+// ------------------------------------------------------------------- VLC
+
+/// Plugins video preview needs (by name, without `lib…_plugin`): reading
+/// files, the common containers and codecs, picture handed to the app
+/// (vmem), sound out, and the converters in between. About 20 MB of VLC's 80.
+const VLC_PLUGINS: &[&str] = &[
+    // access and containers
+    "filesystem", "mp4", "mkv", "avi", "es", "ps", "ts", "ogg", "wav", "avformat", "h26x", "mpgv",
+    // decoders (hardware first)
+    "avcodec", "videotoolbox", "d3d11va", "dxva2", "faad", "mpg123", "vorbis", "opus", "flac", "araw", "lpcm", "a52", "dts",
+    // packetizers
+    "packetizer_h264", "packetizer_hevc", "packetizer_mpeg4video", "packetizer_mpeg4audio", "packetizer_mpegaudio",
+    "packetizer_mpegvideo", "packetizer_av1", "packetizer_vc1", "packetizer_mlp", "packetizer_flac", "packetizer_a52",
+    "packetizer_dts", "packetizer_copy",
+    // picture to the app, and pixel format conversion
+    "vmem", "swscale", "chroma_copy", "i420_rgb", "i420_yuy2", "i422_i420", "i422_yuy2", "yuy2_i420", "yuy2_i422",
+    "rv32", "grey_yuv", "yuvp", "cvpx", "chain", "deinterlace",
+    // sound out and conversion
+    "auhal", "mmdevice", "wasapi", "directsound", "waveout", "pulse", "alsa", "audio_format", "float_mixer", "integer_mixer",
+    "ugly_resampler", "speex_resampler", "soxr", "samplerate", "simple_channel_mixer", "trivial_channel_mixer", "remap",
+    "scaletempo", "audio_volume",
+    // misc that playback asks for
+    "console_logger", "xml", "inflate", "stats",
+];
+
+/// The VLC to copy from: FILES_VLC_DIR, or the installed one. On Linux the
+/// distribution's (`/usr/lib/x86_64-linux-gnu` with `vlc/plugins`).
+fn vlc_source() -> Option<PathBuf> {
+    let candidates = [
+        std::env::var_os("FILES_VLC_DIR").map(PathBuf::from),
+        cfg!(target_os = "macos").then(|| PathBuf::from("/Applications/VLC.app/Contents/MacOS")),
+        cfg!(windows).then(|| PathBuf::from(r"C:\Program Files\VideoLAN\VLC")),
+        cfg!(target_os = "linux").then(|| PathBuf::from("/usr/lib/x86_64-linux-gnu")),
+    ];
+    candidates.into_iter().flatten().find(|dir| plugins_of(dir).is_dir())
+}
+
+/// Where a VLC keeps its plugins.
+fn plugins_of(source: &Path) -> PathBuf {
+    if cfg!(target_os = "linux") { source.join("vlc").join("plugins") } else { source.join("plugins") }
+}
+
+fn plugin_wanted(file_name: &str) -> bool {
+    let stem = file_name.split('.').next().unwrap_or_default();
+    let name = stem.strip_prefix("lib").unwrap_or(stem).strip_suffix("_plugin").unwrap_or(stem);
+    VLC_PLUGINS.contains(&name)
+}
+
+fn copy_plugins(from: &Path, to: &Path, copied: &mut usize) -> Result {
+    for entry in std::fs::read_dir(from).map_err(|error| format!("{}: {error}", from.display()))? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            copy_plugins(&path, &to.join(&name), copied)?;
+        } else if plugin_wanted(&name) {
+            std::fs::create_dir_all(to).map_err(|error| error.to_string())?;
+            std::fs::copy(&path, to.join(&name)).map_err(|error| format!("{name}: {error}"))?;
+            *copied += 1;
+        }
+    }
+    Ok(())
+}
+
+/// libvlc, libvlccore and the preview plugins into `target`:
+/// `lib/` + `plugins/` on macOS, the DLLs + `plugins\` on Windows.
+fn copy_vlc(source: &Path, target: &Path) -> Result {
+    let _ = std::fs::remove_dir_all(target);
+    let (libraries, lib_dir, library_source): (&[&str], PathBuf, PathBuf) = if cfg!(target_os = "macos") {
+        (&["libvlc.dylib", "libvlc.5.dylib", "libvlccore.dylib", "libvlccore.9.dylib"], target.join("lib"), source.join("lib"))
+    } else if cfg!(windows) {
+        (&["libvlc.dll", "libvlccore.dll"], target.to_path_buf(), source.to_path_buf())
+    } else {
+        (&["libvlc.so.5", "libvlccore.so.9"], target.join("lib"), source.to_path_buf())
+    };
+    std::fs::create_dir_all(&lib_dir).map_err(|error| error.to_string())?;
+    for library in libraries {
+        let from = library_source.join(library);
+        if from.exists() {
+            // `fs::copy` follows links: the real file under the soname.
+            std::fs::copy(&from, lib_dir.join(library)).map_err(|error| format!("{library}: {error}"))?;
+        }
+    }
+    let mut copied = 0;
+    copy_plugins(&plugins_of(source), &target.join("plugins"), &mut copied)?;
+    #[cfg(target_os = "linux")]
+    copy_linux_dependencies(target, &lib_dir)?;
+    // VLC is LGPL: its notice travels with it.
+    let notice = "This app includes libVLC from VideoLAN (https://www.videolan.org), licensed under the GNU LGPL 2.1 or later.\n\
+                  Source code: https://code.videolan.org/videolan/vlc\n";
+    std::fs::write(target.join("VLC-LICENSE.txt"), notice).map_err(|error| error.to_string())?;
+    println!("VLC → {} ({copied} plugins)", target.display());
+    Ok(())
+}
+
+/// Libraries every Linux desktop has: taken from the system, never bundled
+/// (the usual AppImage exclude list).
+#[cfg(target_os = "linux")]
+const SYSTEM_LIBRARIES: &[&str] = &[
+    "linux-vdso", "ld-linux", "libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so", "libresolv.so", "libutil.so",
+    "libgcc_s.so", "libstdc++.so", "libasound.so", "libGL", "libEGL", "libGLX", "libGLdispatch", "libX11", "libxcb", "libdrm",
+    "libgbm", "libfontconfig", "libfreetype", "libharfbuzz", "libz.so", "libexpat", "libdbus-1", "libsystemd", "libudev",
+    "libwayland", "libvulkan",
+];
+
+/// Copies what VLC and its plugins link against (except the system's), so
+/// the AppImage plays on distributions without VLC; then checks with `ldd`
+/// that nothing is missing.
+#[cfg(target_os = "linux")]
+fn copy_linux_dependencies(target: &Path, lib_dir: &Path) -> Result {
+    fn objects(dir: &Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                objects(&path, found);
+            } else if path.to_string_lossy().contains(".so") {
+                found.push(path);
+            }
+        }
+    }
+    let ldd = |object: &Path| output(Command::new("ldd").arg(object).env("LD_LIBRARY_PATH", lib_dir)).unwrap_or_default();
+    let mut queue = Vec::new();
+    objects(target, &mut queue);
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(object) = queue.pop() {
+        for line in ldd(&object).lines() {
+            // "libavcodec.so.60 => /lib/x86_64-linux-gnu/libavcodec.so.60 (0x…)"
+            let Some((name, rest)) = line.trim().split_once(" => ") else { continue };
+            let Some(path) = rest.split_whitespace().next().filter(|path| path.starts_with('/')) else { continue };
+            if SYSTEM_LIBRARIES.iter().any(|system| name.starts_with(system)) || !seen.insert(name.to_string()) {
+                continue;
+            }
+            let copy = lib_dir.join(name);
+            if !copy.exists() {
+                std::fs::copy(path, &copy).map_err(|error| format!("{name}: {error}"))?;
+                queue.push(copy);
+            }
+        }
+    }
+    let mut all = Vec::new();
+    objects(target, &mut all);
+    let missing: Vec<String> = all
+        .iter()
+        .flat_map(|object| ldd(object).lines().filter(|line| line.contains("not found")).map(|line| format!("{}: {}", object.display(), line.trim())).collect::<Vec<_>>())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("bundled VLC cannot load:\n{}", missing.join("\n")));
+    }
+    println!("VLC dependencies → {} libraries", seen.len());
+    Ok(())
+}
+
+/// The bundled VLC: required in CI (FILES_REQUIRE_VLC=1), optional locally.
+fn bundle_vlc(target: &Path) -> Result {
+    match vlc_source() {
+        Some(source) => copy_vlc(&source, target),
+        None if std::env::var_os("FILES_REQUIRE_VLC").is_some() => Err("VLC not found to bundle (install it or set FILES_VLC_DIR)".to_string()),
+        None => {
+            println!("VLC not found: videos will play only where VLC is installed");
+            Ok(())
+        }
+    }
 }
 
 fn bundle_windows(root: &Path, config: &Config, version: &str, icons: &Path, dist: &Path) -> Result {
@@ -302,6 +473,7 @@ fn bundle_windows(root: &Path, config: &Config, version: &str, icons: &Path, dis
         .collect::<Result<Vec<_>>>()?;
     write_ico(&pngs, &staging.join("icon.ico"))?;
     sign_windows(config, &staging.join(&exe))?;
+    bundle_vlc(&staging.join("vlc"))?;
     std::fs::write(staging.join("Files.wxs"), wix_source(config, version, &exe)).map_err(|error| error.to_string())?;
     if !config.windows.msi {
         return Ok(());
@@ -370,6 +542,7 @@ fn bundle_macos(root: &Path, config: &Config, version: &str, icons: &Path, dist:
     std::fs::copy(icons.join("AppIcon.icns"), contents.join("Resources/AppIcon.icns")).map_err(|error| error.to_string())?;
     std::fs::write(contents.join("Info.plist"), info_plist(config, version)).map_err(|error| error.to_string())?;
     std::fs::write(contents.join("PkgInfo"), "APPL????").map_err(|error| error.to_string())?;
+    bundle_vlc(&contents.join("Frameworks").join("vlc"))?;
     println!("App → {}", app.display());
 
     let identity = config.macos.signing_identity.as_str();
@@ -476,8 +649,17 @@ fn bundle_linux(root: &Path, config: &Config, version: &str, icons: &Path, dist:
         ),
     )
     .map_err(|error| error.to_string())?;
+    bundle_vlc(&appdir.join("usr/lib/vlc"))?;
     let app_run = appdir.join("AppRun");
-    std::fs::write(&app_run, format!("#!/bin/sh\nexec \"$(dirname \"$0\")/usr/bin/{}\" \"$@\"\n", config.app.binary)).map_err(|error| error.to_string())?;
+    // The bundled VLC's libraries come first; the app finds libvlc itself.
+    std::fs::write(
+        &app_run,
+        format!(
+            "#!/bin/sh\nhere=\"$(dirname \"$(readlink -f \"$0\")\")\"\nexport LD_LIBRARY_PATH=\"$here/usr/lib/vlc/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\nexec \"$here/usr/bin/{}\" \"$@\"\n",
+            config.app.binary
+        ),
+    )
+    .map_err(|error| error.to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -754,6 +936,10 @@ mod tests {
         let wxs = wix_source(&config, "1.2.3", "file-force.exe");
         assert!(wxs.contains(r#"Version="1.2.3""#) && wxs.contains(&config.windows.upgrade_code), "{wxs}");
         assert!(wxs.contains(r#"Source="file-force.exe""#) && wxs.contains("ProgramFiles64Folder") && wxs.contains("MajorUpgrade"));
+        assert!(wxs.contains(r#"<Directory Id="VLCFOLDER" Name="vlc" />"#) && wxs.contains(r#"Include="vlc\**""#), "VLC goes into the MSI");
+        // The VLC plugin list matches both systems' file names.
+        assert!(plugin_wanted("libavcodec_plugin.dylib") && plugin_wanted("libvmem_plugin.dll") && plugin_wanted("libmmdevice_plugin.dll"));
+        assert!(!plugin_wanted("libaccess_srt_plugin.dylib") && !plugin_wanted("libqt_plugin.dll"), "players' UIs and streaming stay out");
         let svg = std::fs::read(root.join(&config.app.icon)).unwrap();
         let dir = std::env::temp_dir().join(format!("xtask-ico-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -40,6 +40,37 @@ pub struct AppSettings {
     pub license: LicenseSettings,
     /// Update checks.
     pub updates: UpdateSettings,
+    /// Mail: colors of the special folders (Inbox, Sent, Trash…).
+    pub mail: MailSettings,
+    /// Extension search filters (`git:`…) switched off per search box.
+    pub search_filters: SearchFilterSettings,
+}
+
+/// `[search_filters]`: keys that stay plain text in each search box.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchFilterSettings {
+    pub folder_off: Vec<String>,
+    pub global_off: Vec<String>,
+    /// Where Cmd-K searches; empty means the home folder.
+    pub global_folder: Option<PathBuf>,
+}
+
+impl SearchFilterSettings {
+    /// The folder Cmd-K searches by default.
+    pub fn global_root(&self) -> Option<PathBuf> {
+        self.global_folder.clone().filter(|folder| folder.is_dir()).or_else(dirs::home_dir)
+    }
+}
+
+/// `[mail]` in settings.toml.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MailSettings {
+    /// Special folder key (`inbox`, `trash`…) → menu color name (`red`…).
+    pub folder_colors: std::collections::BTreeMap<String, String>,
+    /// Special folders hidden from the folder list.
+    pub hidden: Vec<String>,
 }
 
 /// `[updates]` in settings.toml.
@@ -388,6 +419,17 @@ pub struct BehaviorSettings {
     pub drop_action: DropAction,
     /// Ask Copy / Move on every drop.
     pub ask_on_drop: bool,
+    /// Where Mail (and other extension windows) open.
+    pub open_in: OpenIn,
+}
+
+/// Where an extension's window opens: on its own, or as a tab here.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenIn {
+    #[default]
+    Tab,
+    Window,
 }
 
 impl Default for BehaviorSettings {
@@ -397,6 +439,7 @@ impl Default for BehaviorSettings {
             default_view: crate::model::ViewMode::Expressive,
             drop_action: DropAction::Copy,
             ask_on_drop: false,
+            open_in: OpenIn::Tab,
         }
     }
 }
@@ -468,6 +511,8 @@ impl Default for AppSettings {
             developer: DeveloperSettings::default(),
             license: LicenseSettings::default(),
             updates: UpdateSettings::default(),
+            mail: MailSettings::default(),
+            search_filters: SearchFilterSettings::default(),
         }
     }
 }
@@ -494,6 +539,8 @@ pub struct ExtensionSettings {
     pub forks: bool,
     /// Claude Code, Codex and OpenCode sessions in the sidebar.
     pub agents: bool,
+    /// Mail accounts in the sidebar, "Send as Attachment" on files.
+    pub mail: bool,
     /// Archives: "Create folder" is ticked when the extract page opens.
     pub archives_create_folder: bool,
     /// Archives: "Overwrite existing files without asking" starts ticked.
@@ -587,6 +634,7 @@ impl Default for ExtensionSettings {
             terminal: true,
             forks: true,
             agents: true,
+            mail: true,
             archives_create_folder: true,
             archives_overwrite: false,
             terminal_app: TerminalApp::Terminal,

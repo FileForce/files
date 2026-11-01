@@ -29,6 +29,7 @@ mod ssh;
 mod thumbnails;
 mod transfer;
 mod updates;
+mod video;
 mod views;
 
 use gpui_kit::component::TitleBar;

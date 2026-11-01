@@ -1,0 +1,17 @@
+[package]
+name = "files-ext-mail"
+version = "0.1.0"
+edition = "2024"
+description = "Mail extension for Files: several IMAP/SMTP accounts, read mail, send files as attachments."
+license = "FSL-1.1-MIT"
+
+[dependencies]
+files-sdk = { path = "../sdk" }
+imap = { version = "3.0.0-alpha.15", default-features = false }
+imap-proto = "0.16"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls", "hostname"] }
+mail-parser = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "0.8.23"
+webpki-roots = "1"

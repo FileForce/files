@@ -27,6 +27,7 @@ fn builtin_icon(name: &str) -> Option<IconName> {
         "copy" => IconName::Copy,
         "cloud" => IconName::Cloud,
         "square-terminal" => IconName::SquareTerminal,
+        "mail" => IconName::Mail,
         _ => return None,
     })
 }
@@ -94,7 +95,7 @@ static TERMINAL: Manifest = Manifest {
 
 /// Every extension, in Settings order. Archives, SSH and Forks are separate
 /// crates built on `files-sdk`; the rest are small enough to live in the app.
-pub static CATALOG: [&Manifest; 8] = [
+pub static CATALOG: [&Manifest; 9] = [
     &OPEN_WITH,
     &files_ext_archive::MANIFEST,
     &files_ext_git::MANIFEST,
@@ -103,6 +104,7 @@ pub static CATALOG: [&Manifest; 8] = [
     &TERMINAL,
     &files_ext_forks::MANIFEST,
     &files_ext_agents::MANIFEST,
+    &files_ext_mail::MANIFEST,
 ];
 
 pub fn enabled(settings: &ExtensionSettings, index: usize) -> bool {
@@ -114,7 +116,8 @@ pub fn enabled(settings: &ExtensionSettings, index: usize) -> bool {
         4 => settings.ssh,
         5 => settings.terminal,
         6 => settings.forks,
-        _ => settings.agents,
+        7 => settings.agents,
+        _ => settings.mail,
     }
 }
 
@@ -127,7 +130,8 @@ pub fn toggle(settings: &mut ExtensionSettings, index: usize) {
         4 => &mut settings.ssh,
         5 => &mut settings.terminal,
         6 => &mut settings.forks,
-        _ => &mut settings.agents,
+        7 => &mut settings.agents,
+        _ => &mut settings.mail,
     };
     *flag = !*flag;
 }
