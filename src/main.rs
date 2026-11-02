@@ -18,6 +18,7 @@ mod host;
 mod keymap;
 mod licensing;
 mod plugins;
+mod power;
 mod menu_colors;
 mod menus;
 mod model;
@@ -54,13 +55,16 @@ fn main() {
         loaded.apply_permissions();
         // Signed Pro plugins the license covers (the rest are never loaded).
         plugins::load_installed(&loaded);
-        cx.set_reduce_motion(loaded.accessibility.reduce_motion());
+        power::set_mode(loaded.power_saving, loaded.power_saving_below);
+        power::refresh();
+        cx.set_reduce_motion(loaded.accessibility.reduce_motion() || power::power_saving());
         palette::apply_motion(cx, loaded.look.motion);
         apply_theme(cx, loaded.scheme, loaded.accent);
         app::register_keys(cx);
         keymap::apply(cx, &Default::default(), &loaded.keymap);
         menus::register(cx);
         let appearance = cx.new(|_| loaded);
+        power::watch(appearance.clone(), cx);
 
         open_window(explorer_window_options(0), cx, move |window, cx| {
             let appearance = appearance.clone();

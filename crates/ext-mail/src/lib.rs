@@ -24,6 +24,7 @@ pub static MANIFEST: Manifest = Manifest {
         "Sidebar → Mail: every account and its folders",
         "Context menu on a file → Send as Attachment…",
         "Mail window: read, reply, write, save attachments",
+        "Global search → email:text, email:from:name, email:to:address",
     ],
     permissions: &[Permission::Network, Permission::Secrets, Permission::ReadFiles, Permission::WriteFiles],
     commands: &[],
@@ -40,6 +41,14 @@ pub static EXTENSION: Mail = Mail;
 impl files_sdk::Extension for Mail {
     fn manifest(&self) -> &'static Manifest {
         &MANIFEST
+    }
+
+    fn search_keys(&self) -> &'static [files_sdk::SearchKey] {
+        &[files_sdk::SearchKey {
+            key: "email",
+            summary: "mail text, sender, recipient or subject (partial matches)",
+            example: "email:to:ann",
+        }]
     }
 }
 
@@ -424,6 +433,8 @@ pub struct Summary {
     pub from: String,
     /// The sender's address, e.g. to copy it.
     pub address: String,
+    pub to: String,
+    pub cc: String,
     pub subject: String,
     /// Seconds since the Unix epoch, when the message has a date.
     pub date: Option<i64>,
@@ -456,7 +467,7 @@ pub fn cached_message(account: &Account, folder: &str, uid: u32) -> Option<Messa
     cache().bodies.get(&(account.email.clone(), folder.to_string(), uid)).cloned()
 }
 
-const SUMMARY_FIELDS: &str = "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])";
+const SUMMARY_FIELDS: &str = "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE)])";
 
 fn summaries(fetched: &imap::types::Fetches) -> Vec<Summary> {
     let mut list: Vec<Summary> = fetched
@@ -495,10 +506,22 @@ pub fn parse_summary(header: &[u8]) -> Summary {
     let sender = parsed.as_ref().and_then(|message| message.from()).and_then(|from| from.first());
     let address = sender.as_ref().and_then(|sender| sender.address()).unwrap_or_default().to_string();
     let from = sender.as_ref().and_then(|sender| sender.name()).map_or_else(|| address.clone(), str::to_string);
+    let to = parsed
+        .as_ref()
+        .and_then(|message| message.to())
+        .map(|list| list.mailboxes().filter_map(|address| address.address()).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default();
+    let cc = parsed
+        .as_ref()
+        .and_then(|message| message.cc())
+        .map(|list| list.mailboxes().filter_map(|address| address.address()).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default();
     Summary {
         uid: 0,
         from,
         address,
+        to,
+        cc,
         subject: parsed.as_ref().and_then(|message| message.subject()).unwrap_or("(no subject)").to_string(),
         date: parsed.as_ref().and_then(|message| message.date()).map(|date| date.to_timestamp()),
         seen: false,
@@ -643,6 +666,14 @@ pub struct Search {
     pub account: Option<String>,
     /// IMAP SEARCH keys, already quoted.
     pub criteria: Vec<String>,
+    addresses: Vec<(Address, String)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Address {
+    From,
+    To,
+    Cc,
 }
 
 fn quoted(value: &str) -> String {
@@ -664,10 +695,18 @@ impl Search {
             let mut index = 0;
             while index < parts.len() {
                 let (key, value) = (parts[index].to_lowercase(), parts.get(index + 1).copied());
+                let address = match (key.as_str(), value) {
+                    ("from", Some(value)) => Some((Address::From, value)),
+                    ("to", Some(value)) => Some((Address::To, value)),
+                    ("cc", Some(value)) => Some((Address::Cc, value)),
+                    _ => None,
+                };
+                if let Some((field, value)) = address {
+                    search.addresses.push((field, value.to_lowercase()));
+                    index += 2;
+                    continue;
+                }
                 let criterion = match (key.as_str(), value) {
-                    ("from", Some(value)) => Some(format!("FROM {}", quoted(value))),
-                    ("to", Some(value)) => Some(format!("TO {}", quoted(value))),
-                    ("cc", Some(value)) => Some(format!("CC {}", quoted(value))),
                     ("subject", Some(value)) => Some(format!("SUBJECT {}", quoted(value))),
                     ("is", Some("unread")) => Some("UNSEEN".to_string()),
                     ("is", Some("read")) => Some("SEEN".to_string()),
@@ -688,25 +727,84 @@ impl Search {
         }
         search
     }
+
+    fn matches(&self, summary: &Summary) -> bool {
+        self.addresses.iter().all(|(field, needle)| {
+            let haystack = match field {
+                Address::From => format!("{} {}", summary.from, summary.address),
+                Address::To => summary.to.clone(),
+                Address::Cc => summary.cc.clone(),
+            };
+            haystack.to_lowercase().contains(needle)
+        })
+    }
 }
 
 /// Messages of `folder` matching `search`, newest first (at most [`PAGE`]).
 pub fn search(account: &Account, folder: &str, search: &Search) -> io::Result<Vec<Summary>> {
-    if search.criteria.is_empty() {
+    if search.criteria.is_empty() && search.addresses.is_empty() {
         return messages(account, folder);
     }
-    let query = search.criteria.join(" ");
-    with_session(account, |session| {
+    let query = if search.criteria.is_empty() { "ALL".to_string() } else { search.criteria.join(" ") };
+    let mut found = with_session(account, |session| {
         session.examine(folder)?;
         let mut uids: Vec<u32> = session.uid_search(&query)?.into_iter().collect();
         uids.sort_unstable_by(|a, b| b.cmp(a));
-        uids.truncate(PAGE as usize);
+        if search.addresses.is_empty() {
+            uids.truncate(PAGE as usize);
+        }
         if uids.is_empty() {
             return Ok(Vec::new());
         }
         let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
         Ok(summaries(&session.uid_fetch(set, SUMMARY_FIELDS)?))
-    })
+    })?;
+    found.retain(|summary| search.matches(summary));
+    found.truncate(PAGE as usize);
+    Ok(found)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MailResult {
+    pub account: Account,
+    pub folder: Folder,
+    pub summary: Summary,
+}
+
+/// Searches every folder of every configured account, newest mail first.
+pub fn global_search(query: &str) -> io::Result<Vec<MailResult>> {
+    let search = Search::parse(query);
+    let mut found = Vec::new();
+    let mut first_error = None;
+    let mut loaded = false;
+    for account in accounts() {
+        let folders = match folders(&account) {
+            Ok(folders) => folders,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        for folder in folders.into_iter().filter(|folder| folder.special != Some(Special::All)) {
+            match self::search(&account, &folder.name, &search) {
+                Ok(messages) => {
+                    loaded = true;
+                    found.extend(messages.into_iter().map(|summary| MailResult { account: account.clone(), folder: folder.clone(), summary }));
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+    }
+    if !loaded && found.is_empty()
+        && let Some(error) = first_error
+    {
+        return Err(error);
+    }
+    found.sort_by(|a, b| b.summary.date.unwrap_or(0).cmp(&a.summary.date.unwrap_or(0)));
+    found.truncate(PAGE as usize);
+    Ok(found)
 }
 
 /// Text, sender and attachments of a raw RFC 5322 message.
@@ -1064,9 +1162,27 @@ mod more_tests {
     fn search_reads_filters_and_the_chained_account() {
         let search = Search::parse("email:Vitalicset@gmail.com:to:someone@qwe.com invoice from:ann is:unread");
         assert_eq!(search.account.as_deref(), Some("vitalicset@gmail.com"));
-        assert_eq!(search.criteria, ["TO \"someone@qwe.com\"", "TEXT \"invoice\"", "FROM \"ann\"", "UNSEEN"]);
+        assert_eq!(search.criteria, ["TEXT \"invoice\"", "UNSEEN"]);
+        assert_eq!(search.addresses, [(Address::To, "someone@qwe.com".into()), (Address::From, "ann".into())]);
         assert_eq!(Search::parse("subject:\"x").criteria, ["SUBJECT \"\\\"x\""], "quotes are escaped");
         assert!(Search::parse("").criteria.is_empty());
+    }
+
+    #[test]
+    fn address_filters_match_part_of_an_address() {
+        let summary = parse_summary(
+            b"From: Vitalicset <Vitalicset@gmail.com>\r\nTo: Other <other@vitalicset.net>\r\nCc: copy@gmail.com, vitalicset+tag@gmail.com\r\n\r\n",
+        );
+        assert_eq!(summary.address, "Vitalicset@gmail.com");
+        assert_eq!(summary.to, "other@vitalicset.net");
+        assert_eq!(summary.cc, "copy@gmail.com, vitalicset+tag@gmail.com");
+        assert!(Search::parse("from:vitalicset").matches(&summary));
+        assert!(Search::parse("to:VITALICSET").matches(&summary));
+        assert!(Search::parse("cc:vitalicset").matches(&summary));
+        assert!(!Search::parse("to:missing").matches(&summary));
+        let combined = Search::parse("to:vitalicset is:unread");
+        assert_eq!(combined.criteria, ["UNSEEN"], "only the non-address filters are sent to IMAP");
+        assert!(combined.matches(&summary));
     }
 
     #[test]

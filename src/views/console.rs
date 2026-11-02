@@ -34,6 +34,7 @@ fn kind_color(kind: Kind, palette: Palette) -> Hsla {
         Kind::Notification => palette.archive,
         Kind::Error => palette.video,
         Kind::Info => palette.faint,
+        Kind::Setting => palette.accent,
     }
 }
 
@@ -66,15 +67,29 @@ fn action_buttons(prefix: &'static str, notification: &log::Notification, explor
     }))
 }
 
+fn maintenance_due(last: std::time::Instant, now: std::time::Instant) -> bool {
+    now.duration_since(last) >= std::time::Duration::from_secs(60)
+}
+
 impl FileExplorer {
     /// Redraws when the journal changes, and checks the free disk space.
     pub(crate) fn watch_journal(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
-            let mut ticks = 0u32;
+            let started = std::time::Instant::now();
+            let mut last_disk = started - std::time::Duration::from_secs(60);
+            let mut last_mail = started;
+            let mut update_checked = false;
             loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
-                ticks += 1;
-                let check_disk = ticks % 150 == 1;
+                cx.background_executor()
+                    .timer(crate::power::interval(
+                        std::time::Duration::from_millis(400),
+                        std::time::Duration::from_secs(2),
+                    ))
+                    .await;
+                let now = std::time::Instant::now();
+                let check_disk = maintenance_due(last_disk, now);
+                let check_mail = maintenance_due(last_mail, now);
+                let check_update = !update_checked && now.duration_since(started) >= std::time::Duration::from_secs(2);
                 let alive = this.update(cx, |this, cx| {
                     let generation = log::generation();
                     // Toasts on screen fade out on time.
@@ -83,15 +98,22 @@ impl FileExplorer {
                         cx.notify();
                     }
                     // Soon after start: the daily update check (at most once a day).
-                    if ticks == 5 {
-                        this.auto_check_updates(cx);
+                    if check_update {
+                        update_checked = true;
+                        if !crate::power::power_saving() {
+                            this.auto_check_updates(cx);
+                        }
                     }
                     if check_disk {
+                        last_disk = now;
                         this.check_disk_space();
                     }
-                    // Scheduled mail goes out about once a minute.
-                    if ticks % 150 == 3 && this.appearance.read(cx).extensions.mail {
-                        crate::views::mail::send_due_mail(cx);
+                    // The slower UI tick must not slow scheduled mail.
+                    if check_mail {
+                        last_mail = now;
+                        if this.appearance.read(cx).extensions.mail {
+                            crate::views::mail::send_due_mail(cx);
+                        }
                     }
                 });
                 if alive.is_err() {
@@ -533,5 +555,15 @@ impl FileExplorer {
             )
             .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn maintenance_schedule_does_not_depend_on_ui_tick_count() {
+        let start = std::time::Instant::now();
+        assert!(!super::maintenance_due(start, start + std::time::Duration::from_secs(58)));
+        assert!(super::maintenance_due(start, start + std::time::Duration::from_secs(60)));
     }
 }

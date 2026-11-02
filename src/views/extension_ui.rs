@@ -143,10 +143,11 @@ impl FileExplorer {
     pub(crate) fn watch_extension_events(window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::Subscription {
         cx.spawn(async move |this, cx| {
             const TICK: std::time::Duration = std::time::Duration::from_secs(5);
+            const SAVING_TICK: std::time::Duration = std::time::Duration::from_secs(30);
             loop {
                 let wall = std::time::SystemTime::now();
                 let monotonic = std::time::Instant::now();
-                cx.background_executor().timer(TICK).await;
+                cx.background_executor().timer(crate::power::interval(TICK, SAVING_TICK)).await;
                 let slept = wall.elapsed().unwrap_or_default().saturating_sub(monotonic.elapsed());
                 if slept > std::time::Duration::from_secs(30) {
                     let alive = this.update(cx, |this, cx| this.woke_up(cx));

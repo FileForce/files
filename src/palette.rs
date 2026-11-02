@@ -35,11 +35,13 @@ impl Palette {
     /// contrast. (Only the main window also applies Appearance opacity.)
     pub fn from_settings(settings: &crate::settings::AppSettings) -> Self {
         let palette = Self::new(settings.scheme, settings.accent).with_accessibility(&settings.accessibility);
-        if settings.accessibility.high_contrast() {
+        let mut palette = if settings.accessibility.high_contrast() {
             palette.with_high_contrast(settings.scheme.is_dark())
         } else {
             palette
-        }
+        };
+        palette.shimmer &= !crate::power::power_saving_for(settings.power_saving, settings.power_saving_below);
+        palette
     }
 
     /// Text contrast and Shimmer from Accessibility.

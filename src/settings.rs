@@ -40,6 +40,11 @@ pub struct AppSettings {
     pub license: LicenseSettings,
     /// Update checks.
     pub updates: UpdateSettings,
+    /// Reduce background work and animation, automatically or on demand.
+    pub power_saving: PowerSavingMode,
+    /// Automatic: power saving starts when the battery drops to this
+    /// percent (100: as soon as the computer runs on battery).
+    pub power_saving_below: u8,
     /// Mail: colors of the special folders (Inbox, Sent, Trash…).
     pub mail: MailSettings,
     /// Extension search filters (`git:`…) switched off per search box.
@@ -511,10 +516,21 @@ impl Default for AppSettings {
             developer: DeveloperSettings::default(),
             license: LicenseSettings::default(),
             updates: UpdateSettings::default(),
+            power_saving: PowerSavingMode::Automatic,
+            power_saving_below: 100,
             mail: MailSettings::default(),
             search_filters: SearchFilterSettings::default(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerSavingMode {
+    #[default]
+    Automatic,
+    On,
+    Off,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1031,6 +1047,17 @@ mod deletion_tests {
     }
 
     #[test]
+    fn power_saving_defaults_to_automatic_and_round_trips() {
+        let old: AppSettings = toml::from_str("").unwrap();
+        assert_eq!(old.power_saving, PowerSavingMode::Automatic);
+        let mut settings = AppSettings::default();
+        settings.power_saving = PowerSavingMode::On;
+        let source = toml::to_string_pretty(&settings).unwrap();
+        assert!(source.contains("power_saving = \"on\""), "{source}");
+        assert_eq!(toml::from_str::<AppSettings>(&source).unwrap().power_saving, PowerSavingMode::On);
+    }
+
+    #[test]
     fn look_settings_round_trip_and_hex_parses() {
         let mut settings = AppSettings::default();
         settings.look.panel_opacity = 70;
@@ -1120,5 +1147,82 @@ mod deletion_tests {
         let parsed: AppSettings = toml::from_str("scheme = \"light\"\n").unwrap();
         assert!(parsed.deletion.use_trash);
         assert_eq!(parsed.deletion.protected.len(), crate::delete::default_protected().len());
+    }
+}
+
+/// The last settings seen, to report what changed.
+static LOGGED: std::sync::Mutex<Option<toml::Table>> = std::sync::Mutex::new(None);
+
+/// Records every setting that changed since the last call in the developer
+/// console (`look.panel_opacity: 90 → 75`). The first call only remembers.
+/// Secrets (license key, passwords, tokens) are masked.
+pub fn log_changes(settings: &AppSettings) {
+    let Ok(toml::Value::Table(now)) = toml::Value::try_from(settings) else { return };
+    let mut logged = LOGGED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(before) = logged.as_ref() {
+        for (key, old, new) in changes(before, &now) {
+            files_sdk::log::record("settings", files_sdk::log::Kind::Setting, format!("{key}: {old} → {new}"), None);
+        }
+    }
+    *logged = Some(now);
+}
+
+/// Changed leaves of two tables as (`dotted.key`, old, new), in key order.
+fn changes(before: &toml::Table, now: &toml::Table) -> Vec<(String, String, String)> {
+    fn flatten(prefix: &str, value: &toml::Value, out: &mut std::collections::BTreeMap<String, String>) {
+        match value {
+            toml::Value::Table(table) => {
+                for (key, value) in table {
+                    let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+                    flatten(&path, value, out);
+                }
+            }
+            other => {
+                out.insert(prefix.to_string(), other.to_string());
+            }
+        }
+    }
+    let secret = |key: &str| ["key", "password", "token", "secret"].iter().any(|word| key.rsplit('.').next().is_some_and(|last| last.contains(word)));
+    // Bookkeeping, not choices: when updates were last checked.
+    let noise = |key: &str| key == "updates.last_check";
+    let (mut old, mut new) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
+    flatten("", &toml::Value::Table(before.clone()), &mut old);
+    flatten("", &toml::Value::Table(now.clone()), &mut new);
+    let keys: std::collections::BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+    keys.into_iter()
+        .filter(|key| old.get(*key) != new.get(*key) && !noise(key))
+        .map(|key| {
+            let show = |value: Option<&String>| match value {
+                None => "(none)".to_string(),
+                Some(_) if secret(key) => "••••".to_string(),
+                Some(value) => value.clone(),
+            };
+            (key.clone(), show(old.get(key)), show(new.get(key)))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod change_log_tests {
+    use super::*;
+
+    #[test]
+    fn changed_settings_are_listed_and_secrets_masked() {
+        let before = AppSettings::default();
+        let mut after = before.clone();
+        after.power_saving = PowerSavingMode::On;
+        after.power_saving_below = 20;
+        after.license.key = "FILES1.secret".into();
+        after.updates.last_check = 99;
+        let table = |settings: &AppSettings| match toml::Value::try_from(settings).unwrap() {
+            toml::Value::Table(table) => table,
+            _ => unreachable!(),
+        };
+        let listed = changes(&table(&before), &table(&after));
+        let keys: Vec<&str> = listed.iter().map(|(key, _, _)| key.as_str()).collect();
+        assert_eq!(keys, ["license.key", "power_saving", "power_saving_below"], "last_check is bookkeeping");
+        assert_eq!(listed[1], ("power_saving".into(), "\"automatic\"".into(), "\"on\"".into()));
+        assert_eq!(listed[2].1, "100");
+        assert_eq!(listed[0].2, "••••", "never the key itself");
     }
 }

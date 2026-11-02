@@ -265,7 +265,10 @@ pub(crate) fn watch_folder_sizes<T: 'static>(cx: &mut Context<T>) {
         let mut seen = generation();
         loop {
             cx.background_executor()
-                .timer(std::time::Duration::from_millis(300))
+                .timer(crate::power::interval(
+                    std::time::Duration::from_millis(300),
+                    std::time::Duration::from_secs(1),
+                ))
                 .await;
             let current = generation();
             if current != seen {

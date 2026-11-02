@@ -1,5 +1,5 @@
-//! The Agents extension in the UI: a sidebar list of Claude Code, Codex and
-//! OpenCode sessions, a session window (the chat, with live answers when you
+//! The Agents extension in the UI: a sidebar list of Claude Code, Codex,
+//! OpenCode, Kimi and GLM sessions, a session window (with live answers when you
 //! reply), and a usage window (tokens, cost, plans and rate limits).
 
 use std::path::PathBuf;
@@ -46,6 +46,8 @@ fn roots() -> Roots {
             claude_account: empty.join("claude.json"),
             codex: empty.join("codex"),
             opencode_db: empty.join("opencode.db"),
+            kimi: empty.join("kimi-code"),
+            zcode_db: empty.join("zcode.db"),
         };
     }
     #[cfg(not(test))]
@@ -91,6 +93,8 @@ fn agent_color(agent: Agent, palette: Palette) -> Hsla {
         Agent::Claude => palette.archive,
         Agent::Codex => palette.code,
         Agent::OpenCode => palette.media,
+        Agent::Kimi => palette.accent,
+        Agent::Glm => palette.video,
     }
 }
 
@@ -99,6 +103,8 @@ fn agent_glyph(agent: Agent, palette: Palette, size_px: f32) -> AnyElement {
         Agent::Claude => "C",
         Agent::Codex => "X",
         Agent::OpenCode => "O",
+        Agent::Kimi => "K",
+        Agent::Glm => "G",
     };
     div()
         .size(px(size_px))
@@ -162,14 +168,16 @@ impl FileExplorer {
         .detach();
     }
 
-    /// Keeps the list fresh: every 15 s while the window exists.
+    /// Keeps the list fresh: every 15 s, or 120 s in power saving mode.
     pub(crate) fn watch_agents(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
                 if this.update(cx, |this, cx| this.refresh_agents(cx)).is_err() {
                     break;
                 }
-                cx.background_executor().timer(std::time::Duration::from_secs(15)).await;
+                cx.background_executor()
+                    .timer(crate::power::interval(std::time::Duration::from_secs(15), std::time::Duration::from_secs(120)))
+                    .await;
             }
         })
         .detach();
@@ -216,7 +224,7 @@ impl FileExplorer {
             section = section.child(if self.agents_scanning {
                 row.child(crate::views::text_fx::shimmer("agents-scanning", "Looking for sessions…", palette.faint, palette))
             } else {
-                row.text_color(palette.faint).child("No Claude Code, Codex or OpenCode sessions yet")
+                row.text_color(palette.faint).child("No Claude Code, Codex, OpenCode, Kimi or GLM sessions yet")
             });
             return Some(section.into_any_element());
         }
@@ -450,7 +458,7 @@ impl AgentWindow {
         let focus = input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let agent = session.as_ref().map_or_else(
-            || Agent::ALL.into_iter().find(|agent| agent.installed()).unwrap_or(Agent::Claude),
+            || Agent::RUNNABLE.into_iter().find(|agent| agent.installed()).unwrap_or(Agent::Claude),
             |session| session.agent,
         );
         let mut this = Self {
@@ -584,13 +592,14 @@ impl AgentWindow {
         -offset >= max - px(48.)
     }
 
-    /// Polls the session log once a second and shows what was added, so a
-    /// session running elsewhere (a terminal, an IDE, the agent's app)
-    /// streams into this window too.
+    /// Polls the session log and shows what was added, so a session running
+    /// elsewhere (a terminal, an IDE, the agent's app) streams here too.
     fn watch(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                cx.background_executor()
+                    .timer(crate::power::interval(std::time::Duration::from_secs(1), std::time::Duration::from_secs(5)))
+                    .await;
                 let Ok(Some(session)) = this.update(cx, |this, _| {
                     // Our own turn streams directly; the log is re-read after it.
                     (!this.running && !this.reloading).then(|| this.session.clone()).flatten()
@@ -999,7 +1008,7 @@ impl Render for AgentWindow {
         }
 
         let picker = new_session.then(|| {
-            h_flex().gap_1().children(Agent::ALL.into_iter().map(|agent| {
+            h_flex().gap_1().children(Agent::RUNNABLE.into_iter().map(|agent| {
                 let installed = agent.installed();
                 Button::new(gpui_kit::ElementId::Name(format!("pick-{}", agent.short()).into()))
                     .small()

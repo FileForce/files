@@ -7,6 +7,20 @@ version's notes under `## Unreleased`, then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.8
+
+- Power saving (Settings → General): Automatic, On or Off. While it is on,
+  background refreshes slow down and animations stop.
+- Power saving: Automatic can wait for the battery to drop to a level you
+  pick (Settings → General, 5–100%; 100% = as soon as on battery). The
+  charge is read on macOS, Windows and Linux and shown under the slider.
+- Global search (Cmd-K): `email:` searches the mail of every account.
+- Developer console: every changed setting, switch and slider is listed
+  (`power_saving: "automatic" → "on"`), along with view, inspector and
+  power saving changes; secrets are masked.
+- Windows: the app icon is built into file-force.exe, so the window, the
+  taskbar, Explorer and the Start menu shortcut keep it after updates.
+
 ## 0.1.7
 
 - Videos play in Quick Look (Space): play/pause, seek, time and mute, on

@@ -33,10 +33,13 @@ pub enum Kind {
     Error,
     /// Anything else an extension reports.
     Info,
+    /// A setting, mode or slider changed (`power_saving: automatic → on`).
+    Setting,
 }
 
 impl Kind {
-    pub const ALL: [Self; 7] = [Self::Process, Self::Fs, Self::Network, Self::Notice, Self::Notification, Self::Error, Self::Info];
+    pub const ALL: [Self; 8] =
+        [Self::Process, Self::Fs, Self::Network, Self::Notice, Self::Notification, Self::Error, Self::Info, Self::Setting];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -47,6 +50,7 @@ impl Kind {
             Self::Notification => "notification",
             Self::Error => "error",
             Self::Info => "info",
+            Self::Setting => "setting",
         }
     }
 

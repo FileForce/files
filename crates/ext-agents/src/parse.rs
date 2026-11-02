@@ -300,6 +300,96 @@ pub fn codex_messages(path: &Path) -> Vec<ChatMessage> {
     messages
 }
 
+// --------------------------------------------------------------- Kimi
+
+pub fn kimi_session(wire: &Path) -> Option<Session> {
+    let state_path = wire.parent()?.parent()?.parent()?.join("state.json");
+    let state: Value = serde_json::from_str(&std::fs::read_to_string(state_path).ok()?).ok()?;
+    if state.get("archived").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let mut session = Session {
+        agent: Agent::Kimi,
+        id: text(&state, "id")?.to_string(),
+        title: text(&state, "title").or(text(&state, "lastPrompt")).filter(|title| !title.is_empty())?.to_string(),
+        cwd: text(&state, "cwd").map(PathBuf::from),
+        model: None,
+        updated: number(&state, "updatedAt") as i64 / 1000,
+        usage: Usage::default(),
+        origin: Some("kimi".to_string()),
+        running: false,
+        external: true,
+        source: Some(wire.to_path_buf()),
+    };
+    for line in lines(wire) {
+        session.updated = session.updated.max(number(&line, "time") as i64 / 1000);
+        if text(&line, "type") == Some("usage.record") {
+            session.model = text(&line, "model").map(str::to_string).or(session.model);
+            let usage = line.get("usage").unwrap_or(&Value::Null);
+            session.usage.add(&Usage {
+                input: number(usage, "inputOther"),
+                output: number(usage, "output"),
+                cache_read: number(usage, "inputCacheRead"),
+                cache_write: number(usage, "inputCacheCreation"),
+                reasoning: 0,
+                cost: None,
+            });
+        }
+    }
+    Some(session)
+}
+
+pub fn kimi_messages(path: &Path) -> Vec<ChatMessage> {
+    let mut messages = Vec::new();
+    for line in lines(path) {
+        if text(&line, "type") != Some("agent.message.appended") {
+            continue;
+        }
+        let Some(message) = line.pointer("/message/message") else { continue };
+        let role = match text(message, "role") {
+            Some("user") => Role::User,
+            Some("assistant") => Role::Assistant,
+            Some("tool") => Role::Tool,
+            _ => continue,
+        };
+        if role != Role::Tool {
+            let content = message.get("content").unwrap_or(&Value::Null);
+            let text = match content {
+                Value::String(text) => text.clone(),
+                Value::Array(blocks) => blocks.iter().filter(|block| text(block, "type") == Some("text")).filter_map(|block| text(block, "text")).collect::<Vec<_>>().join("\n"),
+                _ => String::new(),
+            };
+            if !text.trim().is_empty() {
+                messages.push(ChatMessage { role, text });
+            }
+        }
+        if role == Role::Tool {
+            let output = match message.get("content") {
+                Some(Value::String(output)) => output.clone(),
+                Some(Value::Array(blocks)) => blocks.iter().filter_map(|block| text(block, "text")).collect::<Vec<_>>().join("\n"),
+                _ => String::new(),
+            };
+            if !output.trim().is_empty() {
+                messages.push(ChatMessage { role, text: format!("↳ {}", short(&output, 240)) });
+            }
+        }
+        for call in message.get("toolCalls").or(message.get("tool_calls")).and_then(Value::as_array).into_iter().flatten() {
+            let name = text(call, "name").or_else(|| call.pointer("/function/name").and_then(Value::as_str)).unwrap_or("tool");
+            let arguments = call.get("arguments").cloned().or_else(|| call.pointer("/function/arguments").cloned());
+            let detail = arguments
+                .and_then(|arguments| match arguments {
+                    Value::String(arguments) => serde_json::from_str::<Value>(&arguments).ok(),
+                    value => Some(value.clone()),
+                })
+                .and_then(|arguments| text(&arguments, "command").or(text(&arguments, "path")).or(text(&arguments, "file_path")).map(str::to_string))
+                .map(|detail| format!(" · {}", short(&detail, 120)))
+                .unwrap_or_default();
+            messages.push(ChatMessage { role: Role::Tool, text: format!("⚙ {name}{detail}") });
+        }
+    }
+    messages
+}
+
 fn window_name(minutes: u64) -> String {
     match minutes {
         0 => "Window".to_string(),

@@ -69,6 +69,9 @@ pub struct SettingsWindow {
     just_saved: bool,
     /// Appearance: panel opacity slider and custom background color.
     opacity_slider: Entity<gpui_kit::component::slider::SliderState>,
+    /// Settings → General → Power saving: below which charge it starts.
+    power_slider: Entity<gpui_kit::component::slider::SliderState>,
+    _power_subscription: Subscription,
     text_scale_slider: Entity<gpui_kit::component::slider::SliderState>,
     _text_scale_subscription: Subscription,
     background_hex: Entity<InputState>,
@@ -113,6 +116,15 @@ impl SettingsWindow {
         let opacity_subscription = cx.subscribe(&opacity_slider, |this: &mut Self, _, event, cx| {
             if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
                 this.draft.look.panel_opacity = value.end().round() as u8;
+                cx.notify();
+            }
+        });
+        let power_slider = cx.new(|_| {
+            gpui_kit::component::slider::SliderState::new().min(5.).max(100.).step(5.).default_value(current.power_saving_below as f32)
+        });
+        let power_subscription = cx.subscribe(&power_slider, |this: &mut Self, _, event, cx| {
+            if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
+                this.draft.power_saving_below = value.end().round() as u8;
                 cx.notify();
             }
         });
@@ -169,6 +181,8 @@ impl SettingsWindow {
             return_focus: None,
             just_saved: false,
             opacity_slider,
+            power_slider,
+            _power_subscription: power_subscription,
             text_scale_slider,
             _text_scale_subscription: text_scale_subscription,
             background_hex,
@@ -243,6 +257,8 @@ impl SettingsWindow {
         let opacity = self.draft.look.panel_opacity as f32;
         let scale = self.draft.accessibility.text_scale.index() as f32;
         self.opacity_slider.update(cx, |slider, cx| slider.set_value(opacity, window, cx));
+        let below = self.draft.power_saving_below as f32;
+        self.power_slider.update(cx, |slider, cx| slider.set_value(below, window, cx));
         self.text_scale_slider.update(cx, |slider, cx| slider.set_value(scale, window, cx));
     }
 
@@ -434,6 +450,58 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
+            .child(section(IconName::Zap, tr(language, "Power saving", "Энергосбережение"), palette))
+            .child(div().debug_selector(|| "settings-power-saving".into()).child(setting_row(
+                tr(language, "Background activity and animations", "Фоновая активность и анимации"),
+                h_flex().gap_2().children([
+                    (crate::settings::PowerSavingMode::Automatic, tr(language, "Automatic", "Автоматически")),
+                    (crate::settings::PowerSavingMode::On, tr(language, "On", "Включено")),
+                    (crate::settings::PowerSavingMode::Off, tr(language, "Off", "Выключено")),
+                ].map(|(mode, label)| {
+                    let id = match mode {
+                        crate::settings::PowerSavingMode::Automatic => "power-saving-automatic",
+                        crate::settings::PowerSavingMode::On => "power-saving-on",
+                        crate::settings::PowerSavingMode::Off => "power-saving-off",
+                    };
+                    div().debug_selector(move || id.into()).child(
+                        option_button(id, label, self.draft.power_saving == mode).on_click(cx.listener(move |this, _, _, cx| {
+                            this.draft.power_saving = mode;
+                            cx.notify();
+                        })),
+                    )
+                })),
+                palette,
+            )))
+            .when(self.draft.power_saving == crate::settings::PowerSavingMode::Automatic, |this| {
+                let below = self.draft.power_saving_below;
+                let battery = crate::power::battery();
+                this.child(div().debug_selector(|| "settings-power-below".into()).child(setting_row(
+                    tr(language, "Turn on when the battery is at", "Включать при заряде"),
+                    h_flex()
+                        .flex_1()
+                        .gap_3()
+                        .items_center()
+                        .child(div().flex_1().child(gpui_kit::component::slider::Slider::new(&self.power_slider)))
+                        .child(div().w(px(140.)).text_xs().text_color(palette.muted).child(if below >= 100 {
+                            tr(language, "any charge, on battery", "любом, от батареи").to_string()
+                        } else {
+                            format!("{} {below}%", tr(language, "or below", "или ниже"))
+                        })),
+                    palette,
+                )))
+                .child(div().debug_selector(|| "settings-power-now".into()).text_xs().text_color(palette.faint).child(
+                    match (battery.percent, battery.on_battery) {
+                        (Some(percent), true) => format!("{} {percent}% · {}", tr(language, "Now:", "Сейчас:"), tr(language, "on battery", "от батареи")),
+                        (Some(percent), false) => format!("{} {percent}% · {}", tr(language, "Now:", "Сейчас:"), tr(language, "plugged in", "от сети")),
+                        (None, _) => tr(language, "No battery found: power saving stays off in Automatic.", "Батарея не найдена: в автоматическом режиме энергосбережение не включится.").to_string(),
+                    },
+                ))
+            })
+            .child(note(tr(
+                language,
+                "Automatic reduces background work and turns off animations while on battery power, once the charge drops to the level above.",
+                "В автоматическом режиме снижает фоновую активность и отключает анимации при питании от батареи, когда заряд опускается до уровня выше.",
+            ), palette))
             .child(section(IconName::Languages, tr(language, "Language", "Язык"), palette))
             .child(setting_row(
                 tr(language, "Interface language", "Язык интерфейса"),
@@ -819,8 +887,8 @@ impl SettingsWindow {
                 .child(note(
                     tr(
                         language,
-                        "Typed in a search box, these narrow files with what this extension knows. Switched off, the text is searched as a name.",
-                        "Набранные в строке поиска, они сужают файлы тем, что знает расширение. Выключенный фильтр ищется как обычный текст в имени.",
+                        "Typed in a search box, these use what this extension knows to filter files or add results. Switched off, the text is searched as a name.",
+                        "Эти ключи используют данные расширения для фильтрации файлов или добавления результатов. Выключенный ключ ищется как обычный текст в имени.",
                     ),
                     palette,
                 ))

@@ -185,6 +185,12 @@ impl FileExplorer {
                                     .tooltip("Toggle inspector")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.show_inspector = !this.show_inspector;
+                                        files_sdk::log::record(
+                                            "files",
+                                            files_sdk::log::Kind::Setting,
+                                            format!("inspector: {}", if this.show_inspector { "shown" } else { "hidden" }),
+                                            None,
+                                        );
                                         cx.notify();
                                     })),
                             )),

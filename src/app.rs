@@ -150,6 +150,7 @@ pub struct FileExplorer {
     /// Panel opacity and background from Settings → Appearance.
     pub look: crate::settings::LookSettings,
     pub accessibility: crate::settings::AccessibilitySettings,
+    power_saving: bool,
     /// The window backdrop last asked of the OS (blurred when see-through).
     applied_backdrop: Option<gpui_kit::WindowBackgroundAppearance>,
     pub query: String,
@@ -230,14 +231,19 @@ impl FileExplorer {
         crate::host::install();
         let settings = appearance.read(cx).clone();
         update_search_extensions(&settings);
+        crate::settings::log_changes(&settings);
         let appearance_subscription = cx.observe(&appearance, |this, appearance, cx| {
             let settings = appearance.read(cx).clone();
             update_search_extensions(&settings);
+            // Every switch and slider shows up in the developer console.
+            crate::settings::log_changes(&settings);
             this.scheme = settings.scheme;
             this.accent = settings.accent;
             this.look = settings.look;
             this.accessibility = settings.accessibility;
-            cx.set_reduce_motion(settings.accessibility.reduce_motion());
+            crate::power::set_mode(settings.power_saving, settings.power_saving_below);
+            this.power_saving = crate::power::power_saving();
+            cx.set_reduce_motion(settings.accessibility.reduce_motion() || this.power_saving);
             crate::palette::apply_motion(cx, this.look.motion);
             cx.notify();
         });
@@ -311,6 +317,7 @@ impl FileExplorer {
             search,
             look: settings.look.clone(),
             accessibility: settings.accessibility,
+            power_saving: crate::power::power_saving(),
             applied_backdrop: None,
             query: String::new(),
             sort: crate::model::SortOrder::default(),
@@ -359,11 +366,13 @@ impl FileExplorer {
         let palette = Palette::new(self.scheme, self.accent)
             .with_opacity(self.effective_opacity())
             .with_accessibility(&self.accessibility);
-        if self.accessibility.high_contrast() {
+        let mut palette = if self.accessibility.high_contrast() {
             palette.with_high_contrast(self.scheme.is_dark())
         } else {
             palette
-        }
+        };
+        palette.shimmer &= !self.power_saving;
+        palette
     }
 
     /// Appearance opacity, unless Accessibility asks for solid or high-contrast panels.
@@ -434,6 +443,7 @@ impl FileExplorer {
         if self.mode == mode {
             return;
         }
+        files_sdk::log::record("files", files_sdk::log::Kind::Setting, format!("view: {:?} → {mode:?}", self.mode), None);
         if mode == ViewMode::Dual {
             self.left.location = self.current;
             self.left.selected = self.selected;
@@ -1170,6 +1180,7 @@ impl FileExplorer {
 
     fn on_toggle_inspector(&mut self, _: &ToggleInspector, _: &mut Window, cx: &mut Context<Self>) {
         self.show_inspector = !self.show_inspector;
+        files_sdk::log::record("files", files_sdk::log::Kind::Setting, format!("inspector: {}", if self.show_inspector { "shown" } else { "hidden" }), None);
         cx.notify();
     }
 
@@ -2680,6 +2691,25 @@ mod tests {
         });
         cx.run_until_parked();
         assert!((explorer(cx).1 - 0.6).abs() < 1e-6, "opacity comes back when nothing overrides it");
+
+        view.update(cx, |this, cx| {
+            this.appearance.update(cx, |settings, cx| {
+                settings.power_saving = crate::settings::PowerSavingMode::On;
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        assert!(cx.update(|_, cx| cx.reduce_motion()), "power saving reduces motion independently of Accessibility");
+        assert!(!explorer(cx).0.shimmer, "power saving disables shimmer");
+        view.update(cx, |this, cx| {
+            this.appearance.update(cx, |settings, cx| {
+                settings.power_saving = crate::settings::PowerSavingMode::Off;
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        assert!(!cx.update(|_, cx| cx.reduce_motion()));
+        assert!(explorer(cx).0.shimmer);
     }
 
     /// Two explorer windows in one app, showing `left` and `right`.
@@ -3296,6 +3326,8 @@ mod tests {
             claude_account: dir.join("claude.json"),
             codex: dir.join("codex"),
             opencode_db: dir.join("opencode.db"),
+            kimi: dir.join("kimi-code"),
+            zcode_db: dir.join("zcode.db"),
         });
 
         let (view, cx) = pro_window();
@@ -4456,11 +4488,28 @@ mod tests {
     }
 
     #[test]
-    fn settings_general_has_check_now() {
+    fn settings_general_has_update_and_power_controls() {
         let (_view, cx) = rooted_window(&std::env::temp_dir());
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-," });
         cx.run_until_parked();
         // Not clicked here: it would ask the real GitHub.
         assert!(cx.debug_bounds("settings-check-updates").is_some(), "no Check now button in Settings → General");
+        assert!(cx.debug_bounds("settings-power-saving").is_some(), "no power saving controls in Settings → General");
+        // Automatic (the default) shows when it starts, and the charge now.
+        assert!(cx.debug_bounds("settings-power-below").is_some(), "no battery threshold slider");
+        assert!(cx.debug_bounds("settings-power-now").is_some());
+        // Always on: no threshold to set.
+        let on = cx.debug_bounds("power-saving-on").expect("no On button");
+        cx.simulate_click(on.center(), gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("settings-power-below").is_none(), "the slider is only for Automatic");
+        // Saved, the switch shows up in the developer console.
+        let save = cx.debug_bounds("settings-save").expect("no Save button");
+        cx.simulate_click(save.center(), gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        let logged = files_sdk::log::events()
+            .iter()
+            .any(|event| event.kind == files_sdk::log::Kind::Setting && event.message.contains("power_saving: \"automatic\" → \"on\""));
+        assert!(logged, "the change is not in the console journal");
     }
 }

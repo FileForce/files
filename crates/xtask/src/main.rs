@@ -83,6 +83,8 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("icons") => load().and_then(|(root, config)| icons(&root, &config).map(drop)),
+        // The .ico build.rs embeds into the Windows exe (taskbar, window, Explorer).
+        Some("windows-icon") => load().and_then(|(root, config)| windows_icon(&root, &config, &root.join("packaging/windows/icon.ico"))),
         Some("bundle") => load().and_then(|(root, config)| bundle(&root, config, &args[1..])),
         Some("doctor") => load().and_then(|(root, config)| doctor(&root, &config)),
         Some("license") => license(&workspace_root(), &args[1..]),
@@ -271,7 +273,7 @@ fn wix_source(config: &Config, version: &str, exe: &str) -> String {
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut">
-        <Shortcut Id="StartMenu" Name="{name}" Target="[INSTALLFOLDER]{exe}" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+        <Shortcut Id="StartMenu" Name="{name}" Target="[INSTALLFOLDER]{exe}" WorkingDirectory="INSTALLFOLDER" />
         <RegistryValue Root="HKLM" Key="Software\{manufacturer}\{name}" Name="installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>
@@ -451,6 +453,28 @@ fn bundle_vlc(target: &Path) -> Result {
             Ok(())
         }
     }
+}
+
+/// The app icon as a multi-size .ico.
+fn windows_icon(root: &Path, config: &Config, target: &Path) -> Result {
+    let scratch = std::env::temp_dir().join(format!("xtask-ico-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
+    let svg = std::fs::read(root.join(&config.app.icon)).map_err(|error| error.to_string())?;
+    let pngs = [16, 24, 32, 48, 64, 256]
+        .into_iter()
+        .map(|size| {
+            let path = scratch.join(format!("ico-{size}.png"));
+            render(&svg, size, &path)?;
+            Ok((size, std::fs::read(&path).map_err(|error| error.to_string())?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    write_ico(&pngs, target)?;
+    let _ = std::fs::remove_dir_all(&scratch);
+    println!("Icon → {}", target.display());
+    Ok(())
 }
 
 fn bundle_windows(root: &Path, config: &Config, version: &str, icons: &Path, dist: &Path) -> Result {

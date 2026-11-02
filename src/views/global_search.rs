@@ -20,6 +20,22 @@ use crate::views::files::file_icon;
 
 const MAX_RESULTS: usize = 8;
 
+#[derive(Clone, Debug)]
+enum SearchResult {
+    File(&'static FileEntry),
+    Mail(files_ext_mail::MailResult),
+}
+
+#[cfg(test)]
+impl SearchResult {
+    fn name(&self) -> &str {
+        match self {
+            Self::File(file) => file.name,
+            Self::Mail(mail) => &mail.summary.subject,
+        }
+    }
+}
+
 pub struct GlobalSearch {
     explorer: WeakEntity<FileExplorer>,
     /// The folder searched; changing it here lasts until the dialog closes.
@@ -29,7 +45,7 @@ pub struct GlobalSearch {
     include_remote: bool,
     input: Entity<InputState>,
     query: String,
-    results: Vec<&'static FileEntry>,
+    results: Vec<SearchResult>,
     /// Bumped per keystroke: only the newest search's results are shown.
     generation: u64,
     searching: bool,
@@ -155,15 +171,16 @@ impl GlobalSearch {
     }
 
     fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(file) = self.results.get(self.selected).copied() {
-            self.open_file(file, window, cx);
+        if let Some(result) = self.results.get(self.selected).cloned() {
+            self.open_result(result, window, cx);
         }
     }
 
-    fn open_file(&mut self, file: &'static FileEntry, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_result(&mut self, result: SearchResult, window: &mut Window, cx: &mut Context<Self>) {
         let explorer = self.explorer.clone();
-        let _ = explorer.update(cx, |explorer, cx| {
-            explorer.open_global_result(file, window, cx);
+        let _ = explorer.update(cx, |explorer, cx| match result {
+            SearchResult::File(file) => explorer.open_global_result(file, window, cx),
+            SearchResult::Mail(mail) => explorer.open_mail_result(mail, window, cx),
         });
         self.close(window, cx);
     }
@@ -173,14 +190,32 @@ impl GlobalSearch {
         close_global_search(&self.explorer, &self.previous_focus, window, cx);
     }
 
-    fn result_row(
-        &self,
-        index: usize,
-        file: &'static FileEntry,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn result_row(&self, index: usize, result: SearchResult, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let selected = index == self.selected;
+        let (icon, title, subtitle, kind, detail) = match &result {
+            SearchResult::File(file) => (
+                file_icon(file, palette, 20.).into_any_element(),
+                file.name.to_string(),
+                file.parent.breadcrumbs().join(" / "),
+                file.kind.label().to_string(),
+                demo_human_size(file, self.appearance.read(cx).human_sizes),
+            ),
+            SearchResult::Mail(mail) => {
+                let date = mail
+                    .summary
+                    .date
+                    .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+                    .map(|date| date.with_timezone(&chrono::Local).format("%b %d, %H:%M").to_string())
+                    .unwrap_or_default();
+                (
+                    Icon::new(IconName::Mail).text_color(palette.accent).into_any_element(),
+                    mail.summary.subject.clone(),
+                    format!("{} · {} / {}", mail.summary.from, mail.account.email, mail.folder.label),
+                    "Email".to_string(),
+                    date,
+                )
+            }
+        };
         h_flex()
             .id(("global-search-result", index))
             .h(px(48.))
@@ -190,52 +225,29 @@ impl GlobalSearch {
             .items_center()
             .rounded_md()
             .border_1()
-            .border_color(if selected {
-                palette.accent
-            } else {
-                palette.window
-            })
-            .bg(if selected {
-                palette.selection
-            } else {
-                palette.window
-            })
+            .border_color(if selected { palette.accent } else { palette.window })
+            .bg(if selected { palette.selection } else { palette.window })
             .hover(|style| style.bg(palette.hover))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.selected = index;
-                this.open_file(file, window, cx);
+                this.open_result(result.clone(), window, cx);
             }))
-            .child(file_icon(file, palette, 20.))
+            .child(icon)
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
                     .gap_0p5()
-                    .child(div().text_sm().child(file.name))
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(palette.muted)
-                            .child(file.parent.breadcrumbs().join(" / ")),
-                    ),
+                    .child(div().truncate().text_sm().child(title))
+                    .child(div().truncate().text_size(px(10.)).text_color(palette.muted).child(subtitle)),
             )
             .child(
                 v_flex()
                     .flex_shrink_0()
                     .items_end()
                     .gap_0p5()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.muted)
-                            .child(file.kind.label()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(palette.faint)
-                            .child(demo_human_size(file, self.appearance.read(cx).human_sizes)),
-                    ),
+                    .child(div().text_xs().text_color(palette.muted).child(kind))
+                    .child(div().text_size(px(10.)).text_color(palette.faint).child(detail)),
             )
             .into_any_element()
     }
@@ -253,7 +265,9 @@ impl Render for GlobalSearch {
         let palette = Palette::from_settings(&settings);
         let focus_handle = self.focus_handle(cx);
         let is_default = settings.search_filters.global_root().as_ref() == Some(&self.root);
-        let root_label = if dirs::home_dir().as_ref() == Some(&self.root) {
+        let root_label = if mail_query(&self.query).is_some() {
+            "Mail".to_string()
+        } else if dirs::home_dir().as_ref() == Some(&self.root) {
             crate::settings::localized(settings.language, "Home folder", "Домашняя папка").to_string()
         } else {
             self.root.file_name().map_or_else(|| self.root.display().to_string(), |name| name.to_string_lossy().into_owned())
@@ -262,7 +276,7 @@ impl Render for GlobalSearch {
             .results
             .iter()
             .enumerate()
-            .map(|(index, file)| self.result_row(index, file, palette, cx))
+            .map(|(index, result)| self.result_row(index, result.clone(), palette, cx))
             .collect::<Vec<_>>();
 
         v_flex()
@@ -416,13 +430,30 @@ impl Render for GlobalSearch {
     }
 }
 
-fn ranked_results(root: &std::path::Path, query: &str, include_remote: bool) -> Vec<&'static FileEntry> {
+fn mail_query(query: &str) -> Option<&str> {
+    let (key, value) = query.split_once(':')?;
+    let enabled = crate::model::contributed_search_keys(crate::model::SearchScope::Global)
+        .iter()
+        .any(|search| search.key == "email");
+    (enabled && key.eq_ignore_ascii_case("email") && !value.trim().is_empty()).then_some(value)
+}
+
+fn ranked_results(root: &std::path::Path, query: &str, include_remote: bool) -> Vec<SearchResult> {
+    if let Some(query) = mail_query(query) {
+        return files_ext_mail::global_search(query)
+            .unwrap_or_default()
+            .into_iter()
+            .map(SearchResult::Mail)
+            .take(MAX_RESULTS)
+            .collect();
+    }
     let candidates = searchable_entries(root)
         .into_iter()
         // Remote folders are searched as far as they have been browsed.
         .chain(crate::model::remote::loaded_entries().into_iter().filter(move |_| include_remote));
     crate::model::rank_entries_in(candidates, query, crate::model::SearchScope::Global)
         .into_iter()
+        .map(SearchResult::File)
         .take(MAX_RESULTS)
         .collect()
 }
@@ -453,8 +484,8 @@ impl GlobalSearch {
         }
     }
 
-    pub(crate) fn results_for_test(&self) -> Vec<&'static str> {
-        self.results.iter().map(|entry| entry.name).collect()
+    pub(crate) fn results_for_test(&self) -> Vec<String> {
+        self.results.iter().map(|entry| entry.name().to_string()).collect()
     }
 
     pub(crate) fn searching_for_test(&self) -> bool {

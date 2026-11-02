@@ -1,4 +1,4 @@
-//! The Agents extension: sessions of Claude Code, Codex and OpenCode.
+//! The Agents extension: sessions of Claude Code, Codex, OpenCode, Kimi and GLM.
 //!
 //! Everything is read from what the agents already keep on disk, so sessions
 //! started anywhere (a terminal, an IDE, the agent's own app) show up too and
@@ -10,6 +10,9 @@
 //!   rate-limit windows the server reports with every turn.
 //! - OpenCode: the SQLite database `~/.local/share/opencode/opencode.db`
 //!   (read-only, through the system `sqlite3`).
+//! - Kimi: `~/.kimi-code/sessions/<project>/<session>/state.json` and the
+//!   main agent's `wire.jsonl`.
+//! - GLM / ZCode: the SQLite database `~/.zcode/cli/db/db.sqlite`, read-only.
 //!
 //! New sessions run the agent's own CLI in non-interactive streaming mode
 //! ([`start`]), so answers appear as they are generated.
@@ -34,7 +37,7 @@ pub static MANIFEST: Manifest = Manifest {
     name: "Agents",
     version: env!("CARGO_PKG_VERSION"),
     source: "Built-in (experimental)",
-    summary: "Sessions of Claude Code, Codex and OpenCode: chats, live answers, tokens, limits and plans.",
+    summary: "Sessions of Claude Code, Codex, OpenCode, Kimi and GLM: chats, live answers, tokens, limits and plans.",
     icon: Icon::Svg(ICON),
     adds: &[
         "Sidebar → Agents: recent sessions, running ones marked, external ones tagged",
@@ -67,16 +70,21 @@ pub enum Agent {
     Claude,
     Codex,
     OpenCode,
+    Kimi,
+    Glm,
 }
 
 impl Agent {
-    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::OpenCode];
+    pub const ALL: [Self; 5] = [Self::Claude, Self::Codex, Self::OpenCode, Self::Kimi, Self::Glm];
+    pub const RUNNABLE: [Self; 4] = [Self::Claude, Self::Codex, Self::OpenCode, Self::Kimi];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
             Self::OpenCode => "OpenCode",
+            Self::Kimi => "Kimi Code",
+            Self::Glm => "GLM / ZCode",
         }
     }
 
@@ -85,6 +93,8 @@ impl Agent {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
+            Self::Kimi => "kimi",
+            Self::Glm => "zcode",
         }
     }
 
@@ -93,12 +103,17 @@ impl Agent {
         self.short()
     }
 
+    pub fn supports_run(self) -> bool {
+        Self::RUNNABLE.contains(&self)
+    }
+
     /// The macOS bundle id of the agent's desktop app.
     pub fn desktop_bundle(self) -> &'static str {
         match self {
             Self::Claude => "com.anthropic.claudefordesktop",
             Self::Codex => "com.openai.codex",
             Self::OpenCode => "ai.opencode.desktop",
+            Self::Kimi | Self::Glm => "",
         }
     }
 
@@ -214,6 +229,8 @@ pub struct Roots {
     pub claude_account: PathBuf,
     pub codex: PathBuf,
     pub opencode_db: PathBuf,
+    pub kimi: PathBuf,
+    pub zcode_db: PathBuf,
 }
 
 impl Roots {
@@ -222,11 +239,15 @@ impl Roots {
         let claude = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"));
         let codex = std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".codex"));
         let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
+        let kimi = std::env::var_os("KIMI_CODE_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".kimi-code"));
+        let zcode = std::env::var_os("ZCODE_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".zcode"));
         Self {
             claude_account: home.join(".claude.json"),
             claude,
             codex,
             opencode_db: data.join("opencode/opencode.db"),
+            kimi,
+            zcode_db: zcode.join("cli/db/db.sqlite"),
         }
     }
 }
@@ -289,7 +310,13 @@ pub fn scan(roots: &Roots, ours: &[String]) -> Vec<Session> {
     );
     sessions.extend(files.iter().filter_map(|path| cached(path, codex_session)));
 
-    sessions.extend(opencode_sessions(&roots.opencode_db));
+    sessions.extend(sqlite_sessions(&roots.opencode_db, Agent::OpenCode));
+
+    let mut files = Vec::new();
+    files_with(&roots.kimi.join("sessions"), 4, &|path| path.ends_with("agents/main/wire.jsonl"), &mut files);
+    sessions.extend(files.iter().filter_map(|path| cached(path, parse::kimi_session)));
+
+    sessions.extend(sqlite_sessions(&roots.zcode_db, Agent::Glm));
 
     let running = running_agents();
     let now = now();
@@ -367,6 +394,8 @@ pub fn agent_of_command(command: &str) -> Option<Agent> {
         "claude" => Some(Agent::Claude),
         "codex" => Some(Agent::Codex),
         "opencode" => Some(Agent::OpenCode),
+        "kimi" => Some(Agent::Kimi),
+        "zcode" | "zcode-cli" => Some(Agent::Glm),
         _ => None,
     }
 }
@@ -450,7 +479,7 @@ fn sqlite_json(db: &Path, query: &str) -> Vec<Value> {
     serde_json::from_slice::<Vec<Value>>(&output.stdout).unwrap_or_default()
 }
 
-fn opencode_sessions(db: &Path) -> Vec<Session> {
+fn sqlite_sessions(db: &Path, agent: Agent) -> Vec<Session> {
     sqlite_json(
         db,
         "select id, title, directory, model, cost, tokens_input, tokens_output, tokens_reasoning, \
@@ -468,7 +497,7 @@ fn opencode_sessions(db: &Path) -> Vec<Session> {
                 .unwrap_or_else(|| model.to_string())
         });
         Some(Session {
-            agent: Agent::OpenCode,
+            agent,
             id: row.get("id")?.as_str()?.to_string(),
             title: row.get("title").and_then(Value::as_str).unwrap_or("Untitled").to_string(),
             cwd: row.get("directory").and_then(Value::as_str).map(PathBuf::from),
@@ -482,7 +511,7 @@ fn opencode_sessions(db: &Path) -> Vec<Session> {
                 reasoning: number("tokens_reasoning"),
                 cost: row.get("cost").and_then(Value::as_f64),
             },
-            origin: Some("opencode".to_string()),
+            origin: Some(agent.short().to_string()),
             running: false,
             external: true,
             source: Some(db.to_path_buf()),
@@ -491,7 +520,7 @@ fn opencode_sessions(db: &Path) -> Vec<Session> {
     .collect()
 }
 
-fn opencode_messages(db: &Path, session: &str) -> Vec<ChatMessage> {
+fn sqlite_messages(db: &Path, session: &str) -> Vec<ChatMessage> {
     let id = session.replace('\'', "''");
     sqlite_json(
         db,
@@ -528,19 +557,22 @@ pub fn messages(roots: &Roots, session: &Session) -> Vec<ChatMessage> {
     match (session.agent, &session.source) {
         (Agent::Claude, Some(path)) => parse::claude_messages(path),
         (Agent::Codex, Some(path)) => parse::codex_messages(path),
-        (Agent::OpenCode, _) => opencode_messages(&roots.opencode_db, &session.id),
+        (Agent::Kimi, Some(path)) => parse::kimi_messages(path),
+        (Agent::OpenCode, _) => sqlite_messages(&roots.opencode_db, &session.id),
+        (Agent::Glm, _) => sqlite_messages(&roots.zcode_db, &session.id),
         _ => Vec::new(),
     }
 }
 
 /// Changes whenever the session gets new messages: the log's size and
-/// modification time, or OpenCode's newest part. Cheap enough to poll.
+/// modification time, or the database's newest part. Cheap enough to poll.
 pub fn fingerprint(roots: &Roots, session: &Session) -> Option<(u64, i64)> {
     match (session.agent, &session.source) {
-        (Agent::OpenCode, _) => {
+        (Agent::OpenCode | Agent::Glm, _) => {
+            let db = if session.agent == Agent::OpenCode { &roots.opencode_db } else { &roots.zcode_db };
             let id = session.id.replace('\'', "''");
             let rows = sqlite_json(
-                &roots.opencode_db,
+                db,
                 &format!("select count(*) as n, max(time_updated) as t from part where session_id = '{id}'"),
             );
             let row = rows.first()?;
@@ -646,6 +678,8 @@ pub fn models(roots: &Roots, agent: Agent, sessions: &[Session]) -> Vec<ModelCho
             })
             .collect(),
         Agent::Codex => codex_models(&roots.codex),
+        Agent::Kimi => kimi_models(&roots.kimi),
+        Agent::Glm => Vec::new(),
         Agent::OpenCode => opencode_models()
             .into_iter()
             .map(|id| ModelChoice {
@@ -672,6 +706,18 @@ pub fn models(roots: &Roots, agent: Agent, sessions: &[Session]) -> Vec<ModelCho
         }
     }
     choices
+}
+
+fn kimi_models(kimi: &Path) -> Vec<ModelChoice> {
+    let config = std::fs::read_to_string(kimi.join("config.toml")).unwrap_or_default();
+    config
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "default_model").then(|| value.trim().trim_matches('"').to_string())
+        })
+        .map(|id| vec![ModelChoice { label: id.clone(), id, efforts: Vec::new(), default_effort: None, is_default: true }])
+        .unwrap_or_default()
 }
 
 /// `~/.codex/models_cache.json`: what the Codex server offers, with each
@@ -772,6 +818,12 @@ pub fn option_args(agent: Agent, options: &RunOptions) -> Vec<String> {
                 args.extend(["--variant".to_string(), effort.clone()]);
             }
         }
+        Agent::Kimi => {
+            if let Some(model) = &options.model {
+                args.extend(["--model".to_string(), model.clone()]);
+            }
+        }
+        Agent::Glm => {}
     }
     args
 }
@@ -819,6 +871,14 @@ pub fn start(agent: Agent, cwd: &Path, prompt: &str, resume: Option<&str>, optio
             }
             command.arg(prompt);
         }
+        Agent::Kimi => {
+            command.args(["--prompt", prompt, "--output-format", "stream-json"]);
+            command.args(option_args(agent, options));
+            if let Some(id) = resume {
+                command.args(["--session", id]);
+            }
+        }
+        Agent::Glm => return Err(io::Error::new(io::ErrorKind::Unsupported, "GLM / ZCode sessions are read-only in Files")),
     }
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     files_sdk::log::spawned(MANIFEST.id, &command);

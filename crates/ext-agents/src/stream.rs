@@ -33,9 +33,10 @@ pub fn parse_line(agent: Agent, line: &str) -> Vec<Event> {
         return Vec::new();
     };
     match agent {
-        Agent::Claude => claude(&value),
+        Agent::Claude | Agent::Kimi => claude(&value),
         Agent::Codex => codex(&value),
         Agent::OpenCode => opencode(&value),
+        Agent::Glm => Vec::new(),
     }
 }
 

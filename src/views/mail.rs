@@ -256,6 +256,30 @@ impl FileExplorer {
         self.open_panel_tab("Mail", IconName::Mail, view.into(), window, cx);
     }
 
+    pub(crate) fn open_mail_result(&mut self, result: files_ext_mail::MailResult, window: &mut Window, cx: &mut Context<Self>) {
+        let appearance = self.appearance.clone();
+        let email = result.account.email.clone();
+        if self.appearance.read(cx).behavior.open_in == crate::settings::OpenIn::Window {
+            if let Some(view) = open_mail_window(Some(email), false, appearance, cx) {
+                view.update(cx, |mail, cx| mail.show_result(result, cx));
+            }
+            return;
+        }
+        let existing = self
+            .tabs
+            .iter()
+            .enumerate()
+            .find_map(|(index, tab)| tab.panel.as_ref().and_then(|panel| panel.clone().downcast::<MailWindow>().ok()).map(|view| (index, view)));
+        if let Some((index, view)) = existing {
+            view.update(cx, |mail, cx| mail.show_result(result, cx));
+            self.select_tab(index, window, cx);
+            return;
+        }
+        let view = cx.new(|cx| MailWindow::new(window, cx, Some(email), false, true, appearance));
+        view.update(cx, |mail, cx| mail.show_result(result, cx));
+        self.open_panel_tab("Mail", IconName::Mail, view.into(), window, cx);
+    }
+
     /// Context menu → Send as Attachment…: the selected files, or this one.
     pub(crate) fn send_as_attachment(&mut self, entry: &'static crate::model::FileEntry, window: &mut Window, cx: &mut Context<Self>) {
         let files = self.attachment_files(entry);
@@ -414,6 +438,24 @@ impl MailWindow {
         cx.notify();
     }
 
+    fn show_result(&mut self, result: files_ext_mail::MailResult, cx: &mut Context<Self>) {
+        self.generation += 1;
+        self.account = Some(result.account);
+        self.adding = false;
+        self.busy = false;
+        self.notice = None;
+        if !self.folders.iter().any(|folder| folder.name == result.folder.name) {
+            self.folders.push(result.folder.clone());
+        }
+        self.folder = result.folder.name;
+        self.special = result.folder.special;
+        self.messages = vec![result.summary.clone()];
+        self.open = None;
+        self.selected = None;
+        self.open_message(result.summary.uid, cx);
+        cx.notify();
+    }
+
     fn close(&mut self, _: &CloseMail, window: &mut Window, cx: &mut Context<Self>) {
         if self.in_tab {
             cx.propagate();
@@ -476,7 +518,7 @@ impl MailWindow {
                     true
                 })
                 .unwrap_or(false);
-            if current && !ahead.is_empty() {
+            if current && !ahead.is_empty() && !crate::power::power_saving() {
                 cx.background_executor().spawn(async move { files_ext_mail::prefetch(&account, &folder, &ahead) }).await;
             }
         })

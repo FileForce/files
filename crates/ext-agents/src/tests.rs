@@ -15,6 +15,8 @@ fn roots(dir: &Path) -> Roots {
         claude_account: dir.join("claude.json"),
         codex: dir.join("codex"),
         opencode_db: dir.join("opencode.db"),
+        kimi: dir.join("kimi-code"),
+        zcode_db: dir.join("zcode.db"),
     }
 }
 
