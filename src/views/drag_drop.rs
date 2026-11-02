@@ -124,7 +124,16 @@ impl Render for DragFilePreview {
 
 impl FileExplorer {
     pub(crate) fn render_drop_area(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let content = self.render_mode_content(palette, cx);
+        // Pictures decoded for this folder live in its own cache, freed
+        // when another folder opens (the global one never lets go).
+        let folder_key = format!("images-{}", self.active_location().label());
+        let content = gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(folder_key.into())))
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .child(self.render_mode_content(palette, cx));
         let window_id = cx.entity_id();
         let location = self.active_location();
         let accepts = location.path().is_some();

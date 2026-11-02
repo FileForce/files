@@ -2,10 +2,10 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::h_flex;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _, div, px};
+use gpui_kit::{AnyElement, AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, px};
 
 use crate::app::FileExplorer;
 use crate::model::Location;
@@ -38,6 +38,7 @@ impl FileExplorer {
                     this.close_tab(index, window, cx);
                 }));
             let explorer = cx.entity();
+            let drag_label = label.clone();
             // Right-click: close this / to the left / others / to the right, pin.
             let title = h_flex()
                 .id(("workspace-tab-title", tab.id))
@@ -45,27 +46,36 @@ impl FileExplorer {
                 .items_center()
                 .child(Icon::new(if pinned { IconName::Pin } else { icon }).xsmall().text_color(if active { palette.accent } else { palette.muted }))
                 .child(label)
-                .context_menu(move |menu, window, _| {
-                    let item = |label: &'static str, icon: IconName| PopupMenuItem::new(label).icon(icon);
-                    menu.item(item("Close", IconName::X).disabled(tab_count == 1).on_click(window.listener_for(&explorer, move |this, _, window, cx| {
-                        this.close_tab(index, window, cx);
-                    })))
-                    .item(item("Close Tabs to the Left", IconName::ArrowLeftToLine).disabled(index == 0).on_click(window.listener_for(
+                // Drag a tab onto another to move it there.
+                .on_drag(DraggedTab { index, label: drag_label }, |tab, _, _, cx| cx.new(|_| tab.clone()))
+                .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(palette.accent_soft).rounded_md())
+                .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| this.move_tab(dragged.index, index, window, cx)))
+                .context_menu(move |menu, window, cx| {
+                    let settings = explorer.read(cx).appearance.read(cx).clone();
+                    // Each item: its color from Appearance, its hotkey (grey) from the keymap.
+                    let item = |label: &'static str, icon: IconName, key: &str, action: Box<dyn gpui_kit::Action>| {
+                        crate::views::context_menu::tinted_item(label, icon, crate::menu_colors::color_for(&settings, key)).action(action)
+                    };
+                    menu.item(item("Close", IconName::X, "tab-close", Box::new(crate::app::CloseTab)).disabled(tab_count == 1).on_click(window.listener_for(
                         &explorer,
-                        move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at < clicked, window, cx),
+                        move |this, _, window, cx| this.close_tab(index, window, cx),
                     )))
-                    .item(item("Close Other Tabs", IconName::Copy).disabled(tab_count == 1).on_click(window.listener_for(
-                        &explorer,
-                        move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at != clicked, window, cx),
-                    )))
-                    .item(item("Close Tabs to the Right", IconName::ArrowRightToLine).disabled(index + 1 == tab_count).on_click(window.listener_for(
-                        &explorer,
-                        move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at > clicked, window, cx),
-                    )))
-                    .separator()
-                    .item(item(if pinned { "Unpin Tab" } else { "Pin Tab" }, if pinned { IconName::PinOff } else { IconName::Pin }).on_click(
-                        window.listener_for(&explorer, move |this, _, _, cx| this.toggle_pin_tab(index, cx)),
+                    .item(item("Close Tabs to the Left", IconName::ArrowLeftToLine, "tab-close-left", Box::new(crate::app::CloseTabsLeft)).disabled(index == 0).on_click(
+                        window.listener_for(&explorer, move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at < clicked, window, cx)),
                     ))
+                    .item(item("Close Other Tabs", IconName::Copy, "tab-close-others", Box::new(crate::app::CloseOtherTabs)).disabled(tab_count == 1).on_click(
+                        window.listener_for(&explorer, move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at != clicked, window, cx)),
+                    ))
+                    .item(
+                        item("Close Tabs to the Right", IconName::ArrowRightToLine, "tab-close-right", Box::new(crate::app::CloseTabsRight))
+                            .disabled(index + 1 == tab_count)
+                            .on_click(window.listener_for(&explorer, move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at > clicked, window, cx))),
+                    )
+                    .separator()
+                    .item(
+                        item(if pinned { "Unpin Tab" } else { "Pin Tab" }, if pinned { IconName::PinOff } else { IconName::Pin }, "tab-pin", Box::new(crate::app::TogglePinTab))
+                            .on_click(window.listener_for(&explorer, move |this, _, _, cx| this.toggle_pin_tab(index, cx))),
+                    )
                 });
             Tab::new().prefix(title).when(tab_count > 1 && !pinned, |tab| tab.suffix(close))
         });
@@ -141,5 +151,18 @@ fn location_icon(location: Location) -> IconName {
             IconName::GitFork
         }
         Location::Dir(_) => IconName::Folder,
+    }
+}
+
+/// A tab being dragged to a new place; also its floating preview.
+#[derive(Clone)]
+pub(crate) struct DraggedTab {
+    pub(crate) index: usize,
+    label: String,
+}
+
+impl gpui_kit::Render for DraggedTab {
+    fn render(&mut self, _: &mut gpui_kit::Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+        div().px_3().py_1().rounded_md().bg(gpui_kit::hsla(0., 0., 0.2, 0.9)).text_sm().text_color(gpui_kit::white()).child(self.label.clone())
     }
 }

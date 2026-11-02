@@ -53,3 +53,8 @@ url = "https://github.com/FileForce/files/releases/latest/download/latest.json"
 download_base = ""
 # Shown in About.
 website = "https://fileforce.vercel.app"
+
+[music]
+# Spotify Developer Dashboard → your app → Client ID. Redirect URI to add
+# there: http://127.0.0.1:43821/callback (PKCE: no secret is needed).
+spotify_client_id = "15a64ef8a0864c48bb826b939a720980"

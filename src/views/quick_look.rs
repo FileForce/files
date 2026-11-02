@@ -337,7 +337,10 @@ impl Render for QuickLookView {
         let palette = Palette::from_settings(&settings);
         let file = self.current(cx);
         // Videos play in place (through VLC); another item stops the player.
-        let video_path = file.filter(|file| file.kind == FileKind::Video).and_then(|file| file.path).map(Path::to_path_buf);
+        let video_path = file
+            .filter(|file| file.kind == FileKind::Video || (file.kind == FileKind::Audio && file.path.is_some_and(files_ext_music::local::is_audio)))
+            .and_then(|file| file.path)
+            .map(Path::to_path_buf);
         let current = self.video.as_ref().map(|player| player.read(cx).path.clone());
         if video_path != current {
             if let Some(old) = self.video.take() {

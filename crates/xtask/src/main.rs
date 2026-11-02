@@ -311,7 +311,7 @@ const VLC_PLUGINS: &[&str] = &[
     // sound out and conversion
     "auhal", "mmdevice", "wasapi", "directsound", "waveout", "pulse", "alsa", "audio_format", "float_mixer", "integer_mixer",
     "ugly_resampler", "speex_resampler", "soxr", "samplerate", "simple_channel_mixer", "trivial_channel_mixer", "remap",
-    "scaletempo", "audio_volume",
+    "scaletempo", "audio_volume", "equalizer",
     // misc that playback asks for
     "console_logger", "xml", "inflate", "stats",
 ];

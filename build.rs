@@ -34,6 +34,7 @@ fn main() {
         ("FILES_WEBSITE", "updates.website"),
         ("FILES_COPYRIGHT", "app.copyright"),
         ("FILES_APP_NAME", "app.name"),
+        ("FILES_SPOTIFY_CLIENT_ID", "music.spotify_client_id"),
     ] {
         println!("cargo:rustc-env={env}={}", values.get(key).cloned().unwrap_or_default());
     }

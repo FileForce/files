@@ -557,6 +557,8 @@ pub struct ExtensionSettings {
     pub agents: bool,
     /// Mail accounts in the sidebar, "Send as Attachment" on files.
     pub mail: bool,
+    /// The music library, Spotify and Yandex Music.
+    pub music: bool,
     /// Archives: "Create folder" is ticked when the extract page opens.
     pub archives_create_folder: bool,
     /// Archives: "Overwrite existing files without asking" starts ticked.
@@ -651,6 +653,7 @@ impl Default for ExtensionSettings {
             forks: true,
             agents: true,
             mail: true,
+            music: true,
             archives_create_folder: true,
             archives_overwrite: false,
             terminal_app: TerminalApp::Terminal,

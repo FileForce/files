@@ -728,6 +728,11 @@ pub fn invalidate_listings() {
 }
 
 /// Every indexed entry for global search: a bounded walk of the home folder.
+/// The entry for a file on disk (to reveal it).
+pub fn entry_at(path: &Path) -> Option<&'static FileEntry> {
+    fs_index::entry_for_path(path)
+}
+
 /// Everything under `root` (a few levels deep) for global search.
 pub fn searchable_entries(root: &Path) -> Vec<&'static FileEntry> {
     fs_index::search_index(root)
@@ -961,7 +966,8 @@ impl SearchQuery {
                 let extension = Path::new(entry.name)
                     .extension()
                     .map(|extension| extension.to_string_lossy().to_lowercase());
-                extension.is_some_and(|extension| extensions.contains(&extension))
+                // Partial, like names: ext:web finds .webp and .webm, ext:j .jpg.
+                extension.is_some_and(|extension| extensions.iter().any(|wanted| extension.starts_with(wanted.as_str())))
             }
             Filter::Size(compare, bytes) => {
                 let size = if entry.is_folder() {
@@ -1099,8 +1105,37 @@ fn parse_mode(value: &str) -> Option<u32> {
     Some(mode)
 }
 
+/// A kind by name, or by the start of one (`kind:vid`, `kind:img`).
 fn parse_kind(kind: &str) -> Option<FileKind> {
-    Some(match kind.trim_end_matches('s') {
+    const NAMES: [(&str, FileKind); 15] = [
+        ("folder", FileKind::Folder),
+        ("dir", FileKind::Folder),
+        ("image", FileKind::Image),
+        ("picture", FileKind::Image),
+        ("photo", FileKind::Image),
+        ("video", FileKind::Video),
+        ("movie", FileKind::Video),
+        ("document", FileKind::Document),
+        ("design", FileKind::Design),
+        ("code", FileKind::Code),
+        ("source", FileKind::Code),
+        ("archive", FileKind::Archive),
+        ("audio", FileKind::Audio),
+        ("music", FileKind::Audio),
+        ("text", FileKind::Text),
+    ];
+    let kind = kind.trim_end_matches('s');
+    if kind == "img" {
+        return Some(FileKind::Image);
+    }
+    if let Some(exact) = parse_kind_exact(kind) {
+        return Some(exact);
+    }
+    (kind.len() >= 2).then(|| NAMES.iter().find(|(name, _)| name.starts_with(kind)).map(|(_, kind)| *kind)).flatten()
+}
+
+fn parse_kind_exact(kind: &str) -> Option<FileKind> {
+    Some(match kind {
         "folder" | "dir" => FileKind::Folder,
         "image" | "picture" | "photo" => FileKind::Image,
         "video" | "movie" => FileKind::Video,
@@ -1699,6 +1734,10 @@ mod tests {
         assert_eq!(run("kind:image"), ["photo.png"]);
         assert_eq!(run("kind:video,document"), ["big.mov", "report.pdf"]);
         assert_eq!(run("ext:md"), ["notes.md"]);
+        assert_eq!(run("ext:pn"), ["photo.png"], "ext: is partial, from the start (ext:web finds .webp)");
+        assert_eq!(run("ext:ng"), Vec::<&str>::new(), "…not from the middle");
+        assert_eq!(run("kind:vid"), ["big.mov"], "kind: takes the start of a name");
+        assert_eq!(run("kind:img"), ["photo.png"]);
         assert_eq!(run("size:>10mb"), ["big.mov", "report.pdf"]);
         assert_eq!(run("size:<=2kb"), ["notes.md"]);
         assert_eq!(run("modified:<7d"), ["photo.png", "notes.md"]);

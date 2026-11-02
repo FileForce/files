@@ -28,6 +28,10 @@ actions!(
         ShowGlobalSearch,
         NewTab,
         CloseTab,
+        CloseOtherTabs,
+        CloseTabsLeft,
+        CloseTabsRight,
+        TogglePinTab,
         ToggleTheme,
         ToggleInspector,
         ShowSettings,
@@ -643,6 +647,21 @@ impl FileExplorer {
         self.tabs.get(self.active_tab).and_then(|tab| tab.panel.clone())
     }
 
+    /// Moves the tab at `from` to `to` (a drag). Pinned tabs stay in front.
+    pub(crate) fn move_tab(&mut self, from: usize, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        self.save_active_tab();
+        let active_id = self.tabs[self.active_tab].id;
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.tabs.sort_by_key(|tab| !tab.pinned);
+        self.active_tab = self.tabs.iter().position(|tab| tab.id == active_id).unwrap_or(0);
+        files_sdk::log::record("files", files_sdk::log::Kind::Setting, format!("tab moved: {} → {}", from + 1, to + 1), None);
+        self.restore_active_tab(window, cx);
+    }
+
     pub(crate) fn toggle_pin_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.tabs.len() {
             return;
@@ -764,9 +783,28 @@ impl FileExplorer {
         }
         self.navigate(file.parent, window, cx);
         self.selected = Some(file.id);
+        // Scroll to it: in a long folder it may be far below the top.
+        self.reveal = Some(file.id);
         self.show_inspector = true;
         self.notice = Some(format!("Preview · {}", file.name));
         cx.notify();
+    }
+
+    /// Opens the folder of `path` with the file selected and scrolled to
+    /// (Music → Show in Files, and any other "reveal").
+    pub(crate) fn reveal_path(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = crate::model::entry_at(path) else {
+            self.notice = Some(format!("{} is gone", path.display()));
+            cx.notify();
+            return;
+        };
+        // Back to the files: a Mail or Music tab shows no list.
+        if self.active_panel().is_some()
+            && let Some(index) = self.tabs.iter().position(|tab| tab.panel.is_none())
+        {
+            self.select_tab(index, window, cx);
+        }
+        self.open_global_result(file, window, cx);
     }
 
     pub fn navigate(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
@@ -1174,6 +1212,22 @@ impl FileExplorer {
         self.close_tab(self.active_tab, window, cx);
     }
 
+    fn on_close_other_tabs(&mut self, _: &CloseOtherTabs, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tabs_where(self.active_tab, |at, clicked| at != clicked, window, cx);
+    }
+
+    fn on_close_tabs_left(&mut self, _: &CloseTabsLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tabs_where(self.active_tab, |at, clicked| at < clicked, window, cx);
+    }
+
+    fn on_close_tabs_right(&mut self, _: &CloseTabsRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tabs_where(self.active_tab, |at, clicked| at > clicked, window, cx);
+    }
+
+    fn on_toggle_pin_tab(&mut self, _: &TogglePinTab, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_pin_tab(self.active_tab, cx);
+    }
+
     fn on_toggle_theme(&mut self, _: &ToggleTheme, _: &mut Window, cx: &mut Context<Self>) {
         self.set_scheme(self.scheme.toggled(), cx);
     }
@@ -1553,6 +1607,10 @@ impl Render for FileExplorer {
             .on_action(cx.listener(Self::on_global_search))
             .on_action(cx.listener(Self::on_new_tab))
             .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_close_other_tabs))
+            .on_action(cx.listener(Self::on_close_tabs_left))
+            .on_action(cx.listener(Self::on_close_tabs_right))
+            .on_action(cx.listener(Self::on_toggle_pin_tab))
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_toggle_inspector))
             .on_action(cx.listener(Self::on_show_settings))
@@ -2908,6 +2966,31 @@ mod tests {
     }
 
     #[test]
+    fn revealing_a_file_in_a_long_folder_scrolls_to_it() {
+        let dir = std::env::temp_dir().join(format!("file-force-reveal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("big")).unwrap();
+        for index in 0..300 {
+            std::fs::write(dir.join("big").join(format!("file-{index:03}.txt")), "x").unwrap();
+        }
+        let (view, cx) = rooted_window(&dir);
+        view.update(cx, |this, cx| this.set_mode(ViewMode::Pro, cx));
+        cx.run_until_parked();
+        let last = dir.join("big").join("file-299.txt");
+        cx.update(|window, app| view.update(app, |this, cx| this.reveal_path(&last, window, cx)));
+        for _ in 0..5 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let selected = cx.read(|app| view.read(app).selected_entry().map(|entry| entry.name));
+        assert_eq!(selected, Some("file-299.txt"));
+        let row = cx.debug_bounds("pro-row-file-299.txt").expect("row not drawn");
+        let viewport = cx.read(|app| view.read(app).list_scroll.bounds());
+        assert!(row.top() >= viewport.top() && row.bottom() <= viewport.bottom(), "the revealed file is off screen");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn arrow_keys_keep_the_selection_on_screen() {
         let dir = std::env::temp_dir().join(format!("file-force-arrows-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3773,6 +3856,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a-clip.mp4"), b"not really a video").unwrap();
         std::fs::write(dir.join("b-notes.txt"), "text").unwrap();
+        std::fs::write(dir.join("c-song.mp3"), b"not really music").unwrap();
         let (view, cx) = rooted_window(&dir);
         let id = |cx: &mut VisualTestContext, name: &str| cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id);
         let clip = id(cx, "a-clip.mp4");
@@ -3785,6 +3869,10 @@ mod tests {
         cx.simulate_keystrokes("right");
         cx.run_until_parked();
         assert_eq!(cx.read(|app| look.read(app).video_for_test(app)), None, "moving on stops the player");
+        // Music previews play too (with their cover and tags).
+        cx.simulate_keystrokes("right");
+        cx.run_until_parked();
+        assert_eq!(cx.read(|app| look.read(app).video_for_test(app)), Some(dir.join("c-song.mp3")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4107,6 +4195,93 @@ mod tests {
         assert_eq!(ids(cx), [all[4], all[1]]);
         cx.update(|window, app| view.update(app, |this, cx| this.close_tabs_where(0, |at, clicked| at != clicked, window, cx)));
         assert_eq!(ids(cx), [all[4]], "others closed, the pinned one clicked");
+
+        // Dragging: a tab moves to where it is dropped; pinned stay in front.
+        cx.update(|window, app| {
+            view.update(app, |this, cx| {
+                this.new_tab(window, cx);
+                this.new_tab(window, cx);
+            })
+        });
+        let before = ids(cx);
+        cx.update(|window, app| view.update(app, |this, cx| this.move_tab(2, 1, window, cx)));
+        assert_eq!(ids(cx), [before[0], before[2], before[1]]);
+        cx.update(|window, app| view.update(app, |this, cx| this.move_tab(2, 0, window, cx)));
+        assert_eq!(ids(cx)[0], before[0], "nothing goes before the pinned tab");
+    }
+
+    #[test]
+    fn music_opens_once_and_the_queue_moves_on() {
+        let (view, cx) = pro_window();
+        let music_tabs = |cx: &mut VisualTestContext| {
+            cx.read(|app| view.read(app).tabs.iter().filter(|tab| tab.panel.as_ref().is_some_and(|panel| panel.clone().downcast::<crate::views::music::MusicView>().is_ok())).count())
+        };
+        cx.update(|window, app| view.update(app, |this, cx| this.open_music(window, cx)));
+        cx.update(|window, app| view.update(app, |this, cx| {
+            this.select_tab(0, window, cx);
+            this.open_music(window, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(music_tabs(cx), 1, "one Music tab, reused");
+        // THIS COMPUTER folds and unfolds.
+        let drawn = |cx: &mut VisualTestContext, selector: &'static str| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.debug_bounds(selector).is_some()
+        };
+        assert!(drawn(cx, "music-library"), "the library row is shown");
+        let heading = cx.debug_bounds("music-group-local").expect("no THIS COMPUTER heading");
+        cx.simulate_click(heading.center(), gpui_kit::Modifiers::none());
+        assert!(!drawn(cx, "music-library"), "folded: the row is hidden");
+        let heading = cx.debug_bounds("music-group-local").unwrap();
+        cx.simulate_click(heading.center(), gpui_kit::Modifiers::none());
+        assert!(drawn(cx, "music-library"), "unfolded again");
+        // Every row spans the list, however long its text.
+        let music = cx.read(|app| {
+            view.read(app).tabs.iter().find_map(|tab| tab.panel.as_ref().and_then(|panel| panel.clone().downcast::<crate::views::music::MusicView>().ok()))
+        });
+        let named = |title: &str, album: &str| files_ext_music::Track {
+            source: files_ext_music::Source::Spotify(format!("spotify:track:{title}")),
+            title: title.into(),
+            artist: "A".into(),
+            album: album.into(),
+            duration_ms: 1000,
+            cover_url: None,
+            artist_id: None,
+            album_id: None,
+        };
+        music.unwrap().update(cx, |music, cx| music.show_tracks_for_test(vec![named("Short", "LP"), named("A much, much longer title", "Long album name")], cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let list = cx.debug_bounds("music-track-list").expect("no track list");
+        for row in ["music-track-0", "music-track-1"] {
+            let bounds = cx.debug_bounds(row).expect("row not drawn");
+            assert_eq!(bounds.size.width, list.size.width, "{row} does not span the list");
+        }
+
+        // A queue of two tracks: Next walks it, then stops at the end.
+        let track = |name: &str| files_ext_music::Track {
+            source: files_ext_music::Source::Local(std::path::PathBuf::from(format!("/nonexistent/{name}.mp3"))),
+            title: name.into(),
+            artist: String::new(),
+            album: String::new(),
+            duration_ms: 0,
+            cover_url: None,
+            artist_id: None,
+            album_id: None,
+        };
+        let jukebox = cx.update(|_, app| crate::views::music::jukebox(app));
+        jukebox.update(cx, |jukebox, cx| jukebox.play_queue(vec![track("one"), track("two")], 0, cx));
+        assert_eq!(cx.read(|app| jukebox.read(app).current().map(|track| track.title.clone())).as_deref(), Some("one"));
+        jukebox.update(cx, |jukebox, cx| jukebox.next(cx));
+        assert_eq!(cx.read(|app| jukebox.read(app).current().map(|track| track.title.clone())).as_deref(), Some("two"));
+        jukebox.update(cx, |jukebox, cx| jukebox.next(cx));
+        assert!(!cx.read(|app| jukebox.read(app).playing), "the end of the queue stops");
+        // Play Next goes right after the current track.
+        jukebox.update(cx, |jukebox, cx| {
+            jukebox.play_queue(vec![track("one"), track("two")], 0, cx);
+            jukebox.play_next(track("next"), cx);
+        });
+        let titles = cx.read(|app| jukebox.read(app).queue.iter().map(|track| track.title.clone()).collect::<Vec<_>>());
+        assert_eq!(titles, ["one", "next", "two"]);
     }
 
     #[test]

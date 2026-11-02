@@ -26,6 +26,47 @@ pub fn needs_conversion(path: &Path) -> bool {
         })
 }
 
+/// Longest edge of a list or grid thumbnail, in pixels.
+const THUMB_SIZE: u32 = 320;
+/// Images up to this size are shown as they are (decoding them is cheap).
+const SMALL_IMAGE: u64 = 300 * 1024;
+
+/// A small version of an image for lists and grids: decoded full size, a
+/// 12-megapixel photo takes 48 MB, and GPUI keeps what it decoded. Small
+/// files are used as they are; big ones get a 320 px JPEG, made once in the
+/// background. `None` while it is being made (the icon shows).
+pub fn thumbnail(path: &Path) -> Option<PathBuf> {
+    if needs_conversion(path) {
+        return source(path);
+    }
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() <= SMALL_IMAGE {
+        return Some(path.to_path_buf());
+    }
+    let cached = cache_path(path)?.with_extension("thumb.jpg");
+    if cached.is_file() {
+        return Some(cached);
+    }
+    if state().failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains_key(&cached) {
+        // Cannot be shrunk (an odd format): the file itself, as before.
+        return Some(path.to_path_buf());
+    }
+    enqueue(path, cached);
+    None
+}
+
+/// Decodes and shrinks an image to a JPEG thumbnail.
+fn shrink(source: &Path, target: &Path) -> std::io::Result<()> {
+    let image = image::ImageReader::open(source)?
+        .with_guessed_format()?
+        .decode()
+        .map_err(|error| std::io::Error::other(format!("cannot decode: {error}")))?;
+    let small = image.thumbnail(THUMB_SIZE, THUMB_SIZE).to_rgb8();
+    let partial = target.with_extension("partial.jpg");
+    small.save_with_format(&partial, image::ImageFormat::Jpeg).map_err(|error| std::io::Error::other(error.to_string()))?;
+    std::fs::rename(&partial, target)
+}
+
 /// What to hand to `img()`: the file itself, a ready cached conversion, or
 /// `None` while (or because) a conversion is not available.
 pub fn source(path: &Path) -> Option<PathBuf> {
@@ -172,6 +213,9 @@ fn convert(source: &Path, target: &Path) -> std::io::Result<()> {
     }
     if target.to_string_lossy().ends_with(".ql.png") {
         return quick_look_render(source, target);
+    }
+    if target.to_string_lossy().ends_with(".thumb.jpg") {
+        return shrink(source, target);
     }
     let partial = target.with_extension("partial.jpg");
     let output = converter(source, &partial)?;

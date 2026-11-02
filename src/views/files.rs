@@ -639,9 +639,9 @@ pub(crate) fn file_thumbnail(entry: &FileEntry, palette: Palette, height: f32) -
 
     let source = match (entry.preview, entry.path) {
         (Some(preview), _) => Some(gpui_kit::ImageSource::from(preview)),
-        // HEIC/AVIF go through a cached conversion; until it is ready the icon shows.
+        // A small cached copy (HEIC/AVIF converted); until it is ready the icon shows.
         (None, Some(path)) if entry.kind == FileKind::Image => {
-            crate::thumbnails::source(path).map(gpui_kit::ImageSource::from)
+            crate::thumbnails::thumbnail(path).map(gpui_kit::ImageSource::from)
         }
         _ => None,
     };

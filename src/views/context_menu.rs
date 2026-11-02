@@ -105,6 +105,22 @@ pub(crate) fn file_context_menu(
                         })),
                 )
             })
+            .when(extensions.music && entry.path.is_some_and(files_ext_music::local::is_audio), |menu| {
+                let (play_view, queue_view) = (view.clone(), view.clone());
+                let path = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
+                menu.item(
+                    tinted_item("Play in Music", IconName::Play, tint("music"))
+                        .on_click(window.listener_for(&play_view, move |this, _, _, cx| this.play_in_music(&path, cx))),
+                )
+                .item(tinted_item("Add to Queue", IconName::ListMusic, tint("music")).on_click(window.listener_for(
+                    &queue_view,
+                    move |this, _, _, cx| {
+                        let mut paths = this.attachment_files(entry);
+                        paths.retain(|path| files_ext_music::local::is_audio(path));
+                        this.add_to_queue(paths, cx);
+                    },
+                )))
+            })
             .when(extensions.mail && !entry.is_folder() && entry.path.is_some(), |menu| {
                 let mail_view = view.clone();
                 menu.item(

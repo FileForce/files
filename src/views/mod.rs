@@ -7,6 +7,7 @@ pub(crate) mod drag_drop;
 mod fork_views;
 pub(crate) mod git;
 pub(crate) mod mail;
+pub(crate) mod music;
 pub(crate) mod video_player;
 mod dual;
 pub(crate) mod extension_ui;

@@ -34,12 +34,31 @@ pub(crate) struct VideoPlayer {
     seeking: bool,
     palette: Palette,
     _seek_events: Subscription,
+    /// For music: the tags and cover shown instead of a picture.
+    audio: Option<(files_ext_music::Track, Option<Arc<gpui_kit::Image>>)>,
+}
+
+/// A file's embedded cover as an image the UI can draw.
+fn cover_image(path: &std::path::Path) -> Option<Arc<gpui_kit::Image>> {
+    let bytes = files_ext_music::local::cover(path)?;
+    let format = match bytes.get(..4)? {
+        [0x89, b'P', b'N', b'G'] => gpui_kit::ImageFormat::Png,
+        [0xFF, 0xD8, ..] => gpui_kit::ImageFormat::Jpeg,
+        [b'R', b'I', b'F', b'F'] => gpui_kit::ImageFormat::Webp,
+        _ => return None,
+    };
+    Some(Arc::new(gpui_kit::Image::from_bytes(format, bytes)))
 }
 
 impl VideoPlayer {
     pub(crate) fn new(path: PathBuf, palette: Palette, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let player = Player::open(&path);
+        let audio = files_ext_music::local::is_audio(&path).then(|| (files_ext_music::local::track(&path), cover_image(&path)));
         if let Ok(player) = &player {
+            // Music previews use the Music volume and equalizer.
+            if audio.is_some() {
+                crate::views::music::apply_sound(player);
+            }
             player.play();
         }
         let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001));
@@ -76,6 +95,7 @@ impl VideoPlayer {
             seeking: false,
             palette,
             _seek_events: seek_events,
+            audio,
         }
     }
 
@@ -164,9 +184,30 @@ impl Render for VideoPlayer {
                 )
                 .into_any_element();
         }
-        let picture = match &self.picture {
-            Some(picture) => img(ImageSource::Render(picture.clone())).size_full().object_fit(ObjectFit::Contain).into_any_element(),
-            None => div().text_sm().text_color(palette.faint).child("Starting…").into_any_element(),
+        let picture = match (&self.picture, &self.audio) {
+            // Music: the cover and what is playing.
+            (_, Some((track, cover))) => v_flex()
+                .items_center()
+                .gap_3()
+                .child(match cover {
+                    Some(cover) => img(cover.clone()).size(px(220.)).rounded_lg().object_fit(ObjectFit::Cover).into_any_element(),
+                    None => div()
+                        .size(px(220.))
+                        .rounded_lg()
+                        .bg(palette.surface)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(Icon::new(IconName::Music).large().text_color(palette.accent))
+                        .into_any_element(),
+                })
+                .child(div().text_base().text_color(gpui_kit::white()).child(track.title.clone()))
+                .child(div().text_sm().text_color(palette.muted).child(
+                    [track.artist.as_str(), track.album.as_str()].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(" · "),
+                ))
+                .into_any_element(),
+            (Some(picture), None) => img(ImageSource::Render(picture.clone())).size_full().object_fit(ObjectFit::Contain).into_any_element(),
+            (None, None) => div().text_sm().text_color(palette.faint).child("Starting…").into_any_element(),
         };
         v_flex()
             .size_full()

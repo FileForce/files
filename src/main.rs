@@ -19,6 +19,7 @@ mod keymap;
 mod licensing;
 mod plugins;
 mod power;
+mod media_keys;
 mod menu_colors;
 mod menus;
 mod model;
@@ -55,6 +56,7 @@ fn main() {
         loaded.apply_permissions();
         // Signed Pro plugins the license covers (the rest are never loaded).
         plugins::load_installed(&loaded);
+        files_ext_music::spotify::set_client_id(env!("FILES_SPOTIFY_CLIENT_ID"));
         power::set_mode(loaded.power_saving, loaded.power_saving_below);
         power::refresh();
         cx.set_reduce_motion(loaded.accessibility.reduce_motion() || power::power_saving());

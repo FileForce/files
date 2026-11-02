@@ -26,6 +26,7 @@ pub(crate) fn registry() -> Vec<&'static dyn Extension> {
             &files_ext_agents::EXTENSION,
             &files_ext_git::EXTENSION,
             &files_ext_mail::EXTENSION,
+            &files_ext_music::EXTENSION,
         ];
     // Signed, licensed plugins installed outside the app.
     all.extend(crate::plugins::registry());

@@ -1,0 +1,19 @@
+[package]
+name = "files-ext-music"
+version = "0.1.0"
+edition = "2024"
+description = "Music extension for Files: a local library, Spotify and Yandex Music."
+license = "FSL-1.1-MIT"
+
+[dependencies]
+base64 = "0.22"
+files-sdk = { path = "../sdk" }
+getrandom = "0.2"
+lofty = "0.22"
+md-5 = "0.10"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+toml = "0.8.23"
+ureq = { version = "3", features = ["json"] }
+url = "2"

@@ -40,6 +40,19 @@ struct Vlc {
     set_position: unsafe extern "C" fn(*mut MediaPlayer, f32),
     get_state: unsafe extern "C" fn(*mut MediaPlayer) -> c_int,
     audio_set_mute: unsafe extern "C" fn(*mut MediaPlayer, c_int),
+    audio_set_volume: unsafe extern "C" fn(*mut MediaPlayer, c_int) -> c_int,
+    equalizer_new: unsafe extern "C" fn() -> *mut c_void,
+    equalizer_new_from_preset: unsafe extern "C" fn(c_uint) -> *mut c_void,
+    equalizer_release: unsafe extern "C" fn(*mut c_void),
+    equalizer_set_preamp: unsafe extern "C" fn(*mut c_void, f32) -> c_int,
+    equalizer_get_preamp: unsafe extern "C" fn(*mut c_void) -> f32,
+    equalizer_set_amp_at_index: unsafe extern "C" fn(*mut c_void, f32, c_uint) -> c_int,
+    equalizer_get_amp_at_index: unsafe extern "C" fn(*mut c_void, c_uint) -> f32,
+    equalizer_preset_count: unsafe extern "C" fn() -> c_uint,
+    equalizer_preset_name: unsafe extern "C" fn(c_uint) -> *const c_char,
+    equalizer_band_count: unsafe extern "C" fn() -> c_uint,
+    equalizer_band_frequency: unsafe extern "C" fn(c_uint) -> f32,
+    set_equalizer: unsafe extern "C" fn(*mut MediaPlayer, *mut c_void) -> c_int,
 }
 
 // SAFETY: libvlc's instance and functions may be used from any thread.
@@ -162,6 +175,19 @@ fn load() -> Result<Vlc, String> {
                 set_position: symbol!("libvlc_media_player_set_position"),
                 get_state: symbol!("libvlc_media_player_get_state"),
                 audio_set_mute: symbol!("libvlc_audio_set_mute"),
+                audio_set_volume: symbol!("libvlc_audio_set_volume"),
+                equalizer_new: symbol!("libvlc_audio_equalizer_new"),
+                equalizer_new_from_preset: symbol!("libvlc_audio_equalizer_new_from_preset"),
+                equalizer_release: symbol!("libvlc_audio_equalizer_release"),
+                equalizer_set_preamp: symbol!("libvlc_audio_equalizer_set_preamp"),
+                equalizer_get_preamp: symbol!("libvlc_audio_equalizer_get_preamp"),
+                equalizer_set_amp_at_index: symbol!("libvlc_audio_equalizer_set_amp_at_index"),
+                equalizer_get_amp_at_index: symbol!("libvlc_audio_equalizer_get_amp_at_index"),
+                equalizer_preset_count: symbol!("libvlc_audio_equalizer_get_preset_count"),
+                equalizer_preset_name: symbol!("libvlc_audio_equalizer_get_preset_name"),
+                equalizer_band_count: symbol!("libvlc_audio_equalizer_get_band_count"),
+                equalizer_band_frequency: symbol!("libvlc_audio_equalizer_get_band_frequency"),
+                set_equalizer: symbol!("libvlc_media_player_set_equalizer"),
                 _library: library,
                 _core: core,
             };
@@ -175,6 +201,53 @@ fn load() -> Result<Vlc, String> {
 fn vlc() -> Result<&'static Vlc, &'static str> {
     static VLC: OnceLock<Result<Vlc, String>> = OnceLock::new();
     VLC.get_or_init(load).as_ref().map_err(String::as_str)
+}
+
+/// The equalizer's settings: a gain per band, in dB (−20…20), and the
+/// preamp. `None` anywhere it is used means "off".
+#[derive(Clone, Debug, PartialEq)]
+pub struct Equalizer {
+    pub preamp: f32,
+    pub bands: Vec<f32>,
+}
+
+/// The band centres in Hz (VLC's 10 bands: 60 Hz … 16 kHz).
+pub fn equalizer_bands() -> Vec<f32> {
+    let Ok(vlc) = vlc() else { return Vec::new() };
+    // SAFETY: plain queries of libvlc's static tables.
+    unsafe { (0..(vlc.equalizer_band_count)()).map(|band| (vlc.equalizer_band_frequency)(band)).collect() }
+}
+
+/// VLC's presets by name ("Flat", "Rock", "Classical"…).
+pub fn equalizer_presets() -> Vec<String> {
+    let Ok(vlc) = vlc() else { return Vec::new() };
+    // SAFETY: names are static NUL-terminated strings owned by libvlc.
+    unsafe {
+        (0..(vlc.equalizer_preset_count)())
+            .map(|index| {
+                let name = (vlc.equalizer_preset_name)(index);
+                if name.is_null() { String::new() } else { std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned() }
+            })
+            .collect()
+    }
+}
+
+/// A preset's values, to start from and adjust.
+pub fn equalizer_preset(index: usize) -> Option<Equalizer> {
+    let vlc = vlc().ok()?;
+    // SAFETY: the equalizer is made, read and released here.
+    unsafe {
+        let equalizer = (vlc.equalizer_new_from_preset)(index as c_uint);
+        if equalizer.is_null() {
+            return None;
+        }
+        let values = Equalizer {
+            preamp: (vlc.equalizer_get_preamp)(equalizer),
+            bands: (0..(vlc.equalizer_band_count)()).map(|band| (vlc.equalizer_get_amp_at_index)(equalizer, band)).collect(),
+        };
+        (vlc.equalizer_release)(equalizer);
+        Some(values)
+    }
 }
 
 pub const VLC_DOWNLOAD: &str = "https://www.videolan.org/vlc/";
@@ -328,6 +401,42 @@ impl Player {
         unsafe { (self.vlc.set_position)(self.player, fraction.clamp(0., 1.)) }
     }
 
+    /// 0…100 (VLC's 100 is the file's own level).
+    pub fn set_volume(&self, volume: u8) {
+        // SAFETY: a live player.
+        unsafe { (self.vlc.audio_set_volume)(self.player, volume.min(100) as c_int) };
+    }
+
+    /// The equalizer (`None` turns it off). VLC copies the values.
+    pub fn set_equalizer(&self, equalizer: Option<&Equalizer>) {
+        // SAFETY: a live player; the equalizer is released after VLC copied it.
+        unsafe {
+            match equalizer {
+                None => {
+                    (self.vlc.set_equalizer)(self.player, std::ptr::null_mut());
+                }
+                Some(values) => {
+                    let handle = (self.vlc.equalizer_new)();
+                    if handle.is_null() {
+                        return;
+                    }
+                    (self.vlc.equalizer_set_preamp)(handle, values.preamp.clamp(-20., 20.));
+                    for (band, gain) in values.bands.iter().enumerate() {
+                        (self.vlc.equalizer_set_amp_at_index)(handle, gain.clamp(-20., 20.), band as c_uint);
+                    }
+                    (self.vlc.set_equalizer)(self.player, handle);
+                    (self.vlc.equalizer_release)(handle);
+                }
+            }
+        }
+    }
+
+    /// The file played to its end.
+    pub fn ended(&self) -> bool {
+        // SAFETY: a live player.
+        unsafe { (self.vlc.get_state)(self.player) == STATE_ENDED }
+    }
+
     pub fn set_muted(&self, muted: bool) {
         // SAFETY: a live player.
         unsafe { (self.vlc.audio_set_mute)(self.player, muted as c_int) }
@@ -382,5 +491,14 @@ mod tests {
         assert_eq!(frame.bgra.len(), (frame.width * frame.height * 4) as usize);
         drop(frame);
         assert!(player.progress().1 > 0, "length known while playing");
+        // Sound controls: volume and an equalizer preset.
+        player.set_volume(40);
+        let presets = equalizer_presets();
+        assert!(presets.iter().any(|name| name == "Rock"), "{presets:?}");
+        assert_eq!(equalizer_bands().len(), 10);
+        let rock = equalizer_preset(presets.iter().position(|name| name == "Rock").unwrap()).unwrap();
+        assert_eq!(rock.bands.len(), 10);
+        player.set_equalizer(Some(&rock));
+        player.set_equalizer(None);
     }
 }

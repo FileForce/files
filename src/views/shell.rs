@@ -318,6 +318,7 @@ impl FileExplorer {
                     .children(self.render_forks(active, palette, cx))
                     .children(self.render_finder_tags(active, palette, cx))
                     .children(self.render_mail_section(palette, cx))
+                    .children(self.render_music_section(palette, cx))
                     .children(self.render_extension_sections(palette, cx))
                     .child(
                         v_flex()

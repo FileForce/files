@@ -897,6 +897,78 @@ impl SettingsWindow {
         )
     }
 
+    /// Settings → Extensions → Music: library folders; signed-in services.
+    fn render_music_settings(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let language = self.draft.language;
+        let config = files_ext_music::config();
+        let folders = config.folders.iter().enumerate().map(|(index, folder)| {
+            let folder = folder.clone();
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(Icon::new(IconName::Folder).small().text_color(palette.folder))
+                .child(div().flex_1().min_w_0().truncate().text_sm().child(folder.display().to_string()))
+                .child(Button::new(("music-folder-remove", index)).ghost().xsmall().icon(IconName::X).on_click(cx.listener(move |_, _, _, cx| {
+                    let mut config = files_ext_music::config();
+                    config.folders.retain(|known| *known != folder);
+                    let _ = files_ext_music::save_config(&config);
+                    cx.notify();
+                })))
+        });
+        let service = |id: &'static str, name: &'static str, connected: bool, disconnect: fn() -> std::io::Result<()>, cx: &mut Context<Self>| {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().w(px(130.)).text_sm().child(name))
+                .child(div().flex_1().text_xs().text_color(palette.muted).child(if connected {
+                    tr(language, "Signed in", "Вход выполнен")
+                } else {
+                    tr(language, "Not signed in · connect in the Music tab", "Не подключено · подключите во вкладке Music")
+                }))
+                .when(connected, |this| {
+                    this.child(Button::new(id).ghost().xsmall().label(tr(language, "Sign out", "Выйти")).on_click(cx.listener(move |_, _, _, cx| {
+                        let _ = disconnect();
+                        cx.notify();
+                    })))
+                })
+        };
+        v_flex()
+            .gap_2()
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(tr(language, "Library folders", "Папки библиотеки")))
+            .children(folders)
+            .child(
+                h_flex().child(
+                    Button::new("music-folder-add").small().icon(IconName::FolderPlus).label(tr(language, "Add folder…", "Добавить папку…")).on_click(cx.listener(
+                        |_, _, _, cx| {
+                            let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: false, directories: true, multiple: true, prompt: Some("Add to the library".into()) });
+                            cx.spawn(async move |this, cx| {
+                                if let Ok(Ok(Some(paths))) = picked.await {
+                                    let mut config = files_ext_music::config();
+                                    for path in paths {
+                                        if !config.folders.contains(&path) {
+                                            config.folders.push(path);
+                                        }
+                                    }
+                                    let _ = files_ext_music::save_config(&config);
+                                    let _ = this.update(cx, |_, cx| cx.notify());
+                                }
+                            })
+                            .detach();
+                        },
+                    )),
+                ),
+            )
+            .child(div().pt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child(tr(language, "Services", "Сервисы")))
+            .child(service("music-spotify-sign-out", "Spotify", files_ext_music::spotify::connected(), files_ext_music::spotify::disconnect, cx))
+            .child(service("music-yandex-sign-out", "Yandex Music", files_ext_music::yandex::connected(), files_ext_music::yandex::disconnect, cx))
+            .child(div().text_xs().text_color(palette.faint).child(tr(
+                language,
+                "Spotify plays in the Spotify app (Premium); Files controls it. Yandex Music uses an unofficial API.",
+                "Spotify играет в приложении Spotify (нужен Premium), Files им управляет. Яндекс Музыка — через неофициальный API.",
+            )))
+            .into_any_element()
+    }
+
     /// Settings → Extensions → Mail: each special folder's color, and
     /// whether it is listed at all.
     fn render_mail_settings(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -978,6 +1050,11 @@ impl SettingsWindow {
             IconName::SquareTerminal,
             IconName::Trash,
             IconName::Info,
+            IconName::X,
+            IconName::ArrowLeftToLine,
+            IconName::Copy,
+            IconName::ArrowRightToLine,
+            IconName::Pin,
         ];
         let mut list = v_flex().gap_2();
         for ((key, name, _), icon) in crate::menu_colors::BASE.into_iter().zip(icons) {
@@ -1691,6 +1768,7 @@ impl SettingsWindow {
                 )
                 .into_any_element(),
             "mail" => self.render_mail_settings(palette, cx),
+            "music" => self.render_music_settings(palette, cx),
             "terminal" => setting_row(
                 tr(language, "Terminal app", "Приложение терминала"),
                 h_flex().gap_1().flex_wrap().children(crate::settings::TerminalApp::available().into_iter().map(|app| {

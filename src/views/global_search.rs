@@ -24,6 +24,7 @@ const MAX_RESULTS: usize = 8;
 enum SearchResult {
     File(&'static FileEntry),
     Mail(files_ext_mail::MailResult),
+    Track(files_ext_music::Track),
 }
 
 #[cfg(test)]
@@ -32,6 +33,7 @@ impl SearchResult {
         match self {
             Self::File(file) => file.name,
             Self::Mail(mail) => &mail.summary.subject,
+            Self::Track(track) => &track.title,
         }
     }
 }
@@ -181,6 +183,7 @@ impl GlobalSearch {
         let _ = explorer.update(cx, |explorer, cx| match result {
             SearchResult::File(file) => explorer.open_global_result(file, window, cx),
             SearchResult::Mail(mail) => explorer.open_mail_result(mail, window, cx),
+            SearchResult::Track(track) => explorer.play_track(track, cx),
         });
         self.close(window, cx);
     }
@@ -200,6 +203,20 @@ impl GlobalSearch {
                 file.kind.label().to_string(),
                 demo_human_size(file, self.appearance.read(cx).human_sizes),
             ),
+            SearchResult::Track(track) => {
+                let service = match &track.source {
+                    files_ext_music::Source::Local(_) => "Library",
+                    files_ext_music::Source::Spotify(_) => "Spotify",
+                    files_ext_music::Source::Yandex(_) => "Yandex Music",
+                };
+                (
+                    Icon::new(IconName::Music).text_color(palette.accent).into_any_element(),
+                    track.title.clone(),
+                    [track.artist.as_str(), track.album.as_str()].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(" · "),
+                    service.to_string(),
+                    track.duration(),
+                )
+            }
             SearchResult::Mail(mail) => {
                 let date = mail
                     .summary
@@ -265,7 +282,9 @@ impl Render for GlobalSearch {
         let palette = Palette::from_settings(&settings);
         let focus_handle = self.focus_handle(cx);
         let is_default = settings.search_filters.global_root().as_ref() == Some(&self.root);
-        let root_label = if mail_query(&self.query).is_some() {
+        let root_label = if music_query(&self.query).is_some() {
+            "Music".to_string()
+        } else if mail_query(&self.query).is_some() {
             "Mail".to_string()
         } else if dirs::home_dir().as_ref() == Some(&self.root) {
             crate::settings::localized(settings.language, "Home folder", "Домашняя папка").to_string()
@@ -430,6 +449,13 @@ impl Render for GlobalSearch {
     }
 }
 
+/// `music:words` when Music is on and its key is enabled for Cmd-K.
+fn music_query(query: &str) -> Option<&str> {
+    let (key, value) = query.split_once(':')?;
+    let enabled = crate::model::contributed_search_keys(crate::model::SearchScope::Global).iter().any(|search| search.key == "music");
+    (enabled && key.eq_ignore_ascii_case("music") && !value.trim().is_empty()).then_some(value)
+}
+
 fn mail_query(query: &str) -> Option<&str> {
     let (key, value) = query.split_once(':')?;
     let enabled = crate::model::contributed_search_keys(crate::model::SearchScope::Global)
@@ -439,6 +465,9 @@ fn mail_query(query: &str) -> Option<&str> {
 }
 
 fn ranked_results(root: &std::path::Path, query: &str, include_remote: bool) -> Vec<SearchResult> {
+    if let Some(query) = music_query(query) {
+        return files_ext_music::search_everywhere(query, MAX_RESULTS).into_iter().map(SearchResult::Track).collect();
+    }
     if let Some(query) = mail_query(query) {
         return files_ext_mail::global_search(query)
             .unwrap_or_default()

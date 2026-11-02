@@ -3,7 +3,7 @@ members = ["crates/*"]
 
 [package]
 name = "file-force"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 description = "Files: a fast file explorer for macOS and Linux with Git, SSH, AI agents and extensions."
 license = "FSL-1.1-MIT"
@@ -17,6 +17,7 @@ files-ext-ssh = { path = "crates/ext-ssh" }
 files-ext-forks = { path = "crates/ext-forks" }
 files-ext-agents = { path = "crates/ext-agents" }
 files-ext-mail = { path = "crates/ext-mail" }
+files-ext-music = { path = "crates/ext-music" }
 files-ext-git = { path = "crates/ext-git" }
 libloading = "0.8"
 libc = "0.2"
@@ -31,7 +32,8 @@ trash = "5"
 sysinfo = { version = "0.31", default-features = false, features = ["disk"] }
 toml = "0.8.23"
 unicode-normalization = "0.1"
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
@@ -46,6 +48,7 @@ xattr = "1"
 
 # Battery charge for automatic power saving.
 [target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
 windows-sys = { version = "0.61", features = ["Win32_System_Power"] }
 
 # The app icon inside file-force.exe (resource 1: window, taskbar, Explorer).

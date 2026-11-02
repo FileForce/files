@@ -3,9 +3,63 @@
 Every release takes its notes from its section here (`## <version>`): the
 release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
-version's notes under `## Unreleased`, then rename it when you tag.
+version's notes under `## Unreleased
 
-## Unreleased
+## 0.1.9
+
+### Music (new extension, experimental)
+
+A Music tab and a MUSIC entry in the sidebar.
+
+- **Your library**: the audio files in your music folders (Settings →
+  Extensions → Music), with tags, covers, search and a queue. Right-click
+  an audio file → Play in Music (its folder becomes the queue) or Add to
+  Queue.
+- **Spotify**: sign in in the browser; Liked Songs, playlists, search.
+  The music plays in the Spotify app (Premium) and Files controls it, as
+  Spotify requires.
+- **Yandex Music** (unofficial API): sign in with a token; «Мне нравится»,
+  playlists, search, and «Моя волна», the personal radio that plays
+  endlessly and learns from plays and skips. Tracks play in Files.
+- **Right-click a track**: Play Next, Add to Queue, Show in Files; for
+  Spotify and Yandex Music also Like, Remove from Liked, Add to Playlist,
+  Go to Artist and Artist Radio; Yandex Music also Dislike and Download
+  (an MP3 with tags, into Downloads). Spotify offers the artist's top
+  tracks instead of radio, which it closed to apps.
+- **Sound**: volume and a 10-band equalizer with presets (Rock, Pop,
+  Classical…), kept for every track and for previews.
+- **Media keys**: the keyboard's play/next keys, headphone buttons and the
+  system's Now Playing (macOS Control Center, the Windows media flyout,
+  MPRIS on Linux) control Music, with the title and cover.
+- The THIS COMPUTER, SPOTIFY and YANDEX MUSIC groups fold and unfold.
+
+### Previews
+
+- Quick Look (Space) on a song plays it, with its cover and tags.
+
+### Search
+
+- `music:` in global search (⌘K) finds tracks in the library, Spotify and
+  Yandex Music, and plays the one you pick.
+- `ext:` and `kind:` match the start of a name: `ext:web` finds .webp
+  and .webm, `kind:vid` finds videos.
+
+### Tabs
+
+- Drag a tab to move it (pinned tabs stay in front).
+- The tab menu shows its shortcuts: Close ⌘W, Close Other Tabs ⌥⌘W; the
+  rest can be set in Settings → Hotkeys. Its items can be colored in
+  Settings → Appearance.
+
+### Fixes
+
+- Memory: lists and grids show small copies of pictures instead of
+  decoding every photo full size, and a folder's pictures are freed when
+  you leave it. Long sessions in photo folders no longer grow to gigabytes.
+- Opening a file from search scrolls to it, also in folders with hundreds
+  of items.
+- The Music track list stays smooth with thousands of tracks, and rows
+  span the whole list.
 
 ## 0.1.8
 

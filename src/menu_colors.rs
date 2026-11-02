@@ -14,7 +14,7 @@ pub const DELETE: &str = "delete";
 
 /// The app's own menu items, set in Settings → Appearance (extensions set
 /// theirs on their own page): key, label, icon name.
-pub const BASE: [(&str, &str, &str); 8] = [
+pub const BASE: [(&str, &str, &str); 13] = [
     ("open", "Open", "folder-open"),
     ("quick-look", "Quick Look", "eye"),
     ("favorites", "Add to Favorites", "star"),
@@ -23,6 +23,12 @@ pub const BASE: [(&str, &str, &str); 8] = [
     ("terminal", "Open in Terminal", "square-terminal"),
     (DELETE, "Delete…", "trash"),
     ("properties", "Properties", "info"),
+    // The tab's own menu (right-click a tab).
+    ("tab-close", "Tab: Close", "x"),
+    ("tab-close-left", "Tab: Close Tabs to the Left", "arrow-left-to-line"),
+    ("tab-close-others", "Tab: Close Other Tabs", "copy"),
+    ("tab-close-right", "Tab: Close Tabs to the Right", "arrow-right-to-line"),
+    ("tab-pin", "Tab: Pin / Unpin", "pin"),
 ];
 
 /// A color name or `#rrggbb`; `None` for "none" or anything unknown.
