@@ -161,6 +161,35 @@ pub struct SidebarItem {
     pub command: &'static str,
     pub id: String,
     pub accessibility_label: Option<String>,
+    /// Right-click menu of the row; each item runs its command with
+    /// [`Context::sidebar_item`] set to `id` (Eject, Disconnect, Forget…).
+    pub menu: Vec<SidebarMenuItem>,
+}
+
+/// One item of a sidebar row's right-click menu.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SidebarMenuItem {
+    pub title: String,
+    pub icon: Option<Icon>,
+    pub command: &'static str,
+    /// Shown dimmed and not clickable (e.g. "Disconnect" while offline).
+    pub disabled: bool,
+}
+
+impl SidebarMenuItem {
+    pub fn new(title: impl Into<String>, command: &'static str) -> Self {
+        Self { title: title.into(), icon: None, command, disabled: false }
+    }
+
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
 }
 
 /// What a command runs on.
@@ -418,5 +447,17 @@ impl Host for DefaultHost {
             result.map_err(|error| (done, error))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sidebar_menu_tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_rows_carry_their_own_menu() {
+        let item = SidebarMenuItem::new("Eject", "disks.eject").icon(Icon::Builtin("eject")).disabled(true);
+        assert_eq!((item.title.as_str(), item.command, item.disabled), ("Eject", "disks.eject", true));
+        assert_eq!(item.icon, Some(Icon::Builtin("eject")));
     }
 }

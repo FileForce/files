@@ -107,6 +107,10 @@ impl FileExplorer {
         let id = entry.id;
         h_flex()
             .id(entry.id)
+            // Middle click on a folder: open it in a new tab, like a browser.
+            .when(entry.is_folder(), |this| {
+                this.on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx)))
+            })
             .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
             .relative()
             .children(self.reveal_marker(entry.id))
@@ -194,6 +198,10 @@ impl FileExplorer {
         let card = card.debug_selector(move || format!("card-{}", entry.name));
         card
             .id(entry.id)
+            // Middle click on a folder: open it in a new tab, like a browser.
+            .when(entry.is_folder(), |this| {
+                this.on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx)))
+            })
             .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
             .relative()
             .children(self.reveal_marker(entry.id))
@@ -326,6 +334,10 @@ impl FileExplorer {
             let row = row.debug_selector(move || format!("pro-row-{}", entry.name));
             row
                 .id(entry.id)
+                // Middle click on a folder: open it in a new tab, like a browser.
+                .when(entry.is_folder(), |this| {
+                    this.on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx)))
+                })
             .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
             .relative()
             .children(self.reveal_marker(entry.id))

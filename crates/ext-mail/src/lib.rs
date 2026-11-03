@@ -458,6 +458,17 @@ fn cache() -> std::sync::MutexGuard<'static, Cache> {
     CACHE.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// (messages in memory, bytes of their text and attachments), for the developer tools.
+pub fn cache_stats() -> (usize, u64) {
+    let cache = cache();
+    let bytes = cache
+        .bodies
+        .values()
+        .map(|message| (message.body.len() + message.html.as_ref().map_or(0, String::len) + message.attachments.iter().map(|attachment| attachment.bytes.len()).sum::<usize>()) as u64)
+        .sum();
+    (cache.bodies.len(), bytes)
+}
+
 /// The last list read for `folder`, shown at once while it is refreshed.
 pub fn cached_messages(account: &Account, folder: &str) -> Option<Vec<Summary>> {
     cache().lists.get(&(account.email.clone(), folder.to_string())).cloned()

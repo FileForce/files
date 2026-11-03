@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "file-force"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",

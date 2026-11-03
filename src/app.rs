@@ -193,6 +193,8 @@ pub struct FileExplorer {
     pub(crate) agent_sessions: Vec<files_ext_agents::Session>,
     /// Footer: the event console and the notifications card.
     pub(crate) console_open: bool,
+    /// Console → Resources instead of the event list.
+    pub(crate) console_resources: bool,
     pub(crate) notifications_open: bool,
     pub(crate) console_query: Entity<InputState>,
     /// Kinds shown (empty: all).
@@ -350,6 +352,7 @@ impl FileExplorer {
             _extension_events: Some(Self::watch_extension_events(window, cx)),
             agent_sessions: Vec::new(),
             console_open: false,
+            console_resources: false,
             notifications_open: false,
             console_query: cx.new(|cx| InputState::new(window, cx).placeholder("Filter: text, source, output")),
             console_kinds: Default::default(),
@@ -609,6 +612,20 @@ impl FileExplorer {
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
         self.restore_active_tab(window, cx);
+    }
+
+    /// A folder in a new tab, which becomes the active one (middle click,
+    /// or "Open in New Tab").
+    pub(crate) fn open_in_new_tab(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_tab(window, cx);
+        self.navigate(location, window, cx);
+        files_sdk::log::record("files", files_sdk::log::Kind::Info, format!("New tab: {}", location.label()), None);
+    }
+
+    pub(crate) fn open_entry_in_new_tab(&mut self, entry: &'static FileEntry, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(target) = entry.target.filter(|_| entry.is_folder()) {
+            self.open_in_new_tab(target, window, cx);
+        }
     }
 
     pub fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -2966,6 +2983,26 @@ mod tests {
     }
 
     #[test]
+    fn middle_click_and_the_menu_open_a_folder_in_a_new_tab() {
+        let dir = std::env::temp_dir().join(format!("file-force-middle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Projects")).unwrap();
+        let (view, cx) = rooted_window(&dir);
+        view.update(cx, |this, cx| this.set_mode(ViewMode::Pro, cx));
+        cx.run_until_parked();
+        let tabs = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).tabs.len());
+        let before = tabs(cx);
+        let row = cx.debug_bounds("pro-row-Projects").expect("no folder row");
+        cx.simulate_mouse_down(row.center(), gpui_kit::MouseButton::Middle, gpui_kit::Modifiers::none());
+        cx.simulate_mouse_up(row.center(), gpui_kit::MouseButton::Middle, gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(tabs(cx), before + 1, "middle click opens a new tab");
+        let opened = cx.read(|app| view.read(app).active_location().path());
+        assert_eq!(opened, Some(dir.join("Projects")), "the new tab shows the folder");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn revealing_a_file_in_a_long_folder_scrolls_to_it() {
         let dir = std::env::temp_dir().join(format!("file-force-reveal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3279,6 +3316,7 @@ mod tests {
                     command: "probe.open",
                     id: downloads.display().to_string(),
                     accessibility_label: None,
+                    menu: vec![files_sdk::SidebarMenuItem::new("Forget probe", "probe.forget")],
                 }]
             }
 
@@ -4103,6 +4141,26 @@ mod tests {
         assert!(!settings.menu_colors.contains_key("tortoise-git"));
         let written = toml::to_string(&settings).unwrap();
         assert!(written.contains("git = false") && !written.contains("tortoise"), "{written}");
+    }
+
+    #[test]
+    fn console_resources_show_memory_cpu_and_caches() {
+        let (view, cx) = pro_window();
+        view.update(cx, |this, cx| {
+            this.appearance.update(cx, |settings, _| {
+                settings.developer.enabled = true;
+                settings.developer.show_console = true;
+            });
+            this.console_open = true;
+            this.console_resources = true;
+            cx.notify();
+        });
+        crate::resources::sample();
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("console-resources").is_some(), "no Resources panel");
+        let parts = crate::resources::parts();
+        assert!(parts.iter().any(|part| part.name == "Mail in memory") && parts.iter().any(|part| part.name == "Thumbnails on disk"));
     }
 
     #[test]

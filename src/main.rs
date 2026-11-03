@@ -19,6 +19,7 @@ mod keymap;
 mod licensing;
 mod plugins;
 mod power;
+mod resources;
 mod media_keys;
 mod menu_colors;
 mod menus;

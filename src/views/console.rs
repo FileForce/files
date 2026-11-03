@@ -78,6 +78,7 @@ impl FileExplorer {
             let started = std::time::Instant::now();
             let mut last_disk = started - std::time::Duration::from_secs(60);
             let mut last_mail = started;
+            let mut last_sample = started;
             let mut update_checked = false;
             loop {
                 cx.background_executor()
@@ -90,6 +91,7 @@ impl FileExplorer {
                 let check_disk = maintenance_due(last_disk, now);
                 let check_mail = maintenance_due(last_mail, now);
                 let check_update = !update_checked && now.duration_since(started) >= std::time::Duration::from_secs(2);
+                let sample_due = now.duration_since(last_sample) >= crate::resources::EVERY;
                 let alive = this.update(cx, |this, cx| {
                     let generation = log::generation();
                     // Toasts on screen fade out on time.
@@ -107,6 +109,14 @@ impl FileExplorer {
                     if check_disk {
                         last_disk = now;
                         this.check_disk_space();
+                    }
+                    // Memory and CPU for Console → Resources (developer mode only).
+                    if sample_due && this.appearance.read(cx).developer.enabled {
+                        last_sample = now;
+                        crate::resources::sample();
+                        if this.console_open && this.console_resources {
+                            cx.notify();
+                        }
                     }
                     // The slower UI tick must not slow scheduled mail.
                     if check_mail {
@@ -243,7 +253,7 @@ impl FileExplorer {
                     }
                     cx.notify();
                 }))
-        });
+        }).collect::<Vec<_>>();
         let rows = events.into_iter().rev().take(SHOWN).map(|event| {
             let id = event.id;
             let expanded = self.console_expanded == Some(id);
@@ -327,7 +337,7 @@ impl FileExplorer {
             #[cfg(test)]
             let row = row.debug_selector(move || format!("console-event-{id}"));
             row
-        });
+        }).collect::<Vec<_>>();
         Some(
             v_flex()
                 .h(px(240.))
@@ -344,6 +354,17 @@ impl FileExplorer {
                         .border_b_1()
                         .border_color(palette.border)
                         .child(div().text_xs().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Console"))
+                        .when(developer, |this| {
+                            let tab = |id: &'static str, label: &'static str, resources: bool, cx: &mut Context<Self>| {
+                                let button = Button::new(id).xsmall().label(label);
+                                let button = if self.console_resources == resources { button.primary() } else { button.ghost() };
+                                button.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.console_resources = resources;
+                                    cx.notify();
+                                }))
+                            };
+                            this.child(tab("console-tab-events", "Events", false, cx)).child(tab("console-tab-resources", "Resources", true, cx))
+                        })
                         .child(div().text_xs().text_color(palette.faint).child(if developer {
                             format!("{total} events · developer mode")
                         } else {
@@ -361,7 +382,9 @@ impl FileExplorer {
                             cx.notify();
                         }))),
                 )
-                .child(
+                .child(if developer && self.console_resources {
+                    render_resources(palette)
+                } else {
                     div()
                         .id("console-rows")
                         .flex_1()
@@ -369,8 +392,9 @@ impl FileExplorer {
                         .overflow_y_scrollbar()
                         .child(v_flex().children(rows).when(total == 0, |list| {
                             list.child(div().p_3().text_xs().text_color(palette.faint).child("Nothing yet"))
-                        })),
-                )
+                        }))
+                        .into_any_element()
+                })
                 .into_any_element(),
         )
     }
@@ -566,4 +590,74 @@ mod tests {
         assert!(!super::maintenance_due(start, start + std::time::Duration::from_secs(58)));
         assert!(super::maintenance_due(start, start + std::time::Duration::from_secs(60)));
     }
+}
+
+/// A bar per sample, scaled to the highest one; the last bar is now.
+fn sparkline(values: &[f32], color: gpui_kit::Hsla, palette: Palette) -> gpui_kit::Div {
+    let peak = values.iter().copied().fold(0f32, f32::max).max(f32::EPSILON);
+    h_flex()
+        .h(px(56.))
+        .w_full()
+        .items_end()
+        .gap(px(1.))
+        .p_1()
+        .rounded_sm()
+        .bg(palette.surface)
+        .children(values.iter().map(|value| div().flex_1().min_w(px(1.)).h(gpui_kit::relative((value / peak).clamp(0.02, 1.))).bg(color).rounded_t_sm()))
+}
+
+/// Console → Resources: memory and CPU over two minutes, and what the app keeps.
+fn render_resources(palette: Palette) -> AnyElement {
+    let history = crate::resources::history();
+    let now = history.last().copied().unwrap_or_default();
+    let peak_memory = history.iter().map(|sample| sample.memory).max().unwrap_or(0);
+    let peak_cpu = history.iter().map(|sample| sample.cpu).fold(0f32, f32::max);
+    let memory: Vec<f32> = history.iter().map(|sample| sample.memory as f32).collect();
+    let cpu: Vec<f32> = history.iter().map(|sample| sample.cpu).collect();
+    let chart = |title: &'static str, value: String, detail: String, values: &[f32], color: gpui_kit::Hsla| {
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_baseline()
+                    .child(div().text_xs().text_color(palette.muted).child(title))
+                    .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(value))
+                    .child(div().text_xs().text_color(palette.faint).child(detail)),
+            )
+            .child(sparkline(values, color, palette))
+    };
+    let memory_label = if cfg!(target_os = "macos") { "Memory (as Activity Monitor)" } else { "Memory (resident)" };
+    let parts = crate::resources::parts().into_iter().map(|part| {
+        h_flex()
+            .gap_3()
+            .px_2()
+            .py_0p5()
+            .text_xs()
+            .border_b_1()
+            .border_color(palette.border)
+            .child(div().w(px(150.)).flex_shrink_0().text_color(palette.text).child(part.name))
+            .child(div().w(px(260.)).flex_shrink_0().text_color(palette.muted).child(part.count))
+            .child(div().w(px(70.)).flex_shrink_0().text_right().font_family("Menlo").text_color(palette.text).child(part.bytes.map(crate::resources::size).unwrap_or_else(|| "—".into())))
+            .child(div().flex_1().min_w_0().truncate().text_color(palette.faint).child(part.note))
+    });
+    v_flex()
+        .id("console-resources")
+        .debug_selector(|| "console-resources".into())
+        .flex_1()
+        .min_h_0()
+        .p_2()
+        .gap_2()
+        .overflow_y_scrollbar()
+        .child(
+            h_flex()
+                .gap_3()
+                .child(chart(memory_label, crate::resources::size(now.memory), format!("peak {}", crate::resources::size(peak_memory)), &memory, palette.accent))
+                .child(chart("CPU", format!("{:.0}%", now.cpu), format!("peak {:.0}% · 100% = one core", peak_cpu), &cpu, palette.code)),
+        )
+        .child(v_flex().children(parts))
+        .when(history.is_empty(), |this| this.child(div().text_xs().text_color(palette.faint).child("Measuring…")))
+        .into_any_element()
 }

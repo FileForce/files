@@ -6,7 +6,7 @@ use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::{Disableable as _, Icon, Selectable as _, Sizable as _, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{
+use gpui_kit::{MouseButton, 
     AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
 };
@@ -453,6 +453,7 @@ impl FileExplorer {
             .cursor_pointer()
             .overflow_hidden()
             .aria_label(format!("Disk {} of {}: {}", index + 1, disks.len(), disk.name))
+            .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
             .on_click(cx.listener(move |this, _, window, cx| this.navigate(location, window, cx)))
             // Two-finger swipes (or shift + wheel): one disk per ~60 px.
             .on_scroll(cx.listener(|this, event: &gpui_kit::ScrollEvent, _, cx| {
@@ -568,6 +569,7 @@ impl FileExplorer {
             .bg(if selected { palette.selection } else { palette.sidebar })
             .when(missing, |this| this.opacity(0.5))
             .hover(|style| style.bg(palette.hover).text_color(palette.text))
+            .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
             .on_click(cx.listener(move |this, _, window, cx| {
                 if !missing {
                     this.navigate(location, window, cx);
@@ -597,8 +599,12 @@ impl FileExplorer {
                 let location = Location::from_path(&path);
                 let selected = active == location;
                 let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+                let (eject_path, menu_path) = (path.clone(), path.clone());
+                let view = cx.entity();
+                let group = gpui_kit::SharedString::from(format!("volume-{index}"));
                 h_flex()
                     .id(("volume", index))
+                    .group(group.clone())
                     .h(px(31.))
                     .px_2()
                     .items_center()
@@ -608,12 +614,69 @@ impl FileExplorer {
                     .bg(if selected { palette.selection } else { palette.sidebar })
                     .text_color(if selected { palette.text } else { palette.muted })
                     .hover(|style| style.bg(palette.hover).text_color(palette.text))
+                    .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
                     .on_click(cx.listener(move |this, _, window, cx| this.navigate(location, window, cx)))
                     .child(Icon::new(IconName::HardDrive).small())
                     .child(div().flex_1().min_w_0().truncate().child(name))
+                    // ⏏ on hover, like Finder.
+                    .child(
+                        div().invisible().group_hover(group, |style| style.visible()).child(
+                            Button::new(("volume-eject", index)).ghost().xsmall().icon(IconName::Eject).tooltip("Eject").on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.eject_volume(eject_path.clone(), window, cx);
+                                },
+                            )),
+                        ),
+                    )
+                    .context_menu(move |menu, window, _| {
+                        let (open, tab, copy, info, eject) = (menu_path.clone(), menu_path.clone(), menu_path.clone(), menu_path.clone(), menu_path.clone());
+                        menu.item(PopupMenuItem::new("Open").icon(IconName::FolderOpen).on_click(window.listener_for(&view, move |this, _, window, cx| {
+                            this.navigate(Location::from_path(&open), window, cx);
+                        })))
+                        .item(PopupMenuItem::new("Open in New Tab").icon(IconName::PanelTop).on_click(window.listener_for(&view, move |this, _, window, cx| {
+                            this.new_tab(window, cx);
+                            this.navigate(Location::from_path(&tab), window, cx);
+                        })))
+                        .item(PopupMenuItem::new("Copy Path").icon(IconName::Copy).on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.display().to_string()));
+                        }))
+                        .item(PopupMenuItem::new("Properties").icon(IconName::Info).on_click(window.listener_for(&view, move |this, _, _, cx| {
+                            let location = Location::from_path(&info);
+                            this.run_folder_command(crate::commands::FolderCommand::Properties, location, cx);
+                        })))
+                        .separator()
+                        .item(PopupMenuItem::new("Eject").icon(IconName::Eject).on_click(window.listener_for(&view, move |this, _, window, cx| {
+                            this.eject_volume(eject.clone(), window, cx);
+                        })))
+                    })
                     .into_any_element()
             })
             .collect()
+    }
+
+    /// Ejects in the background; leaves the disk first if it is open.
+    pub(crate) fn eject_volume(&mut self, path: std::path::PathBuf, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        if self.active_location().path().is_some_and(|open| open.starts_with(&path)) {
+            self.navigate(Location::Home, window, cx);
+        }
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        self.notice = Some(format!("Ejecting {name}…"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let ejected = cx.background_executor().spawn(async move { crate::model::eject(&path) }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.notice = Some(match ejected {
+                    Ok(()) => format!("{name} ejected: safe to remove"),
+                    Err(error) => {
+                        files_sdk::log::notify("files", files_sdk::log::Level::Error, format!("{name} was not ejected"), Some(error.to_string()));
+                        format!("{name} was not ejected: {error}")
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Servers connected before: one click reconnects.
@@ -627,6 +690,7 @@ impl FileExplorer {
             .map(|(index, address)| {
                 let connect = address.clone();
                 let forget = address.clone();
+                let menu_address = address.clone();
                 h_flex()
                     .id(("saved-ssh", index))
                     .h(px(31.))
@@ -651,6 +715,22 @@ impl FileExplorer {
                                 this.forget_saved_ssh(&forget, cx);
                             })),
                     )
+                    .context_menu({
+                        let (view, address) = (cx.entity(), menu_address);
+                        move |menu, window, _| {
+                            let (connect, copy, forget) = (address.clone(), address.clone(), address.clone());
+                            menu.item(PopupMenuItem::new("Connect").icon(IconName::Plug).on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                this.connect_saved_ssh(&connect, window, cx);
+                            })))
+                            .item(PopupMenuItem::new("Copy Address").icon(IconName::Copy).on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
+                            }))
+                            .separator()
+                            .item(PopupMenuItem::new("Forget Server").icon(IconName::Trash).on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                this.forget_saved_ssh(&forget, cx);
+                            })))
+                        }
+                    })
                     .into_any_element()
             })
             .collect()
@@ -686,7 +766,7 @@ impl FileExplorer {
                 .child(
                     v_flex()
                         .min_w_0()
-                        .child(div().text_xs().child(address))
+                        .child(div().text_xs().child(address.clone()))
                         .child(
                             div()
                                 .text_size(px(9.))
@@ -706,6 +786,25 @@ impl FileExplorer {
                             this.disconnect_ssh(window, cx);
                         })),
                 )
+                .context_menu({
+                    let (view, copy) = (cx.entity(), address.clone());
+                    move |menu, window, _| {
+                        let copy = copy.clone();
+                        menu.item(PopupMenuItem::new("Open Home Folder").icon(IconName::House).on_click(window.listener_for(&view, move |this, _, window, cx| {
+                            this.navigate(home, window, cx);
+                        })))
+                        .item(PopupMenuItem::new("Open in Terminal").icon(IconName::SquareTerminal).on_click(window.listener_for(&view, move |this, _, _, cx| {
+                            this.run_folder_command(crate::commands::FolderCommand::OpenTerminal, home, cx);
+                        })))
+                        .item(PopupMenuItem::new("Copy Address").icon(IconName::Copy).on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
+                        }))
+                        .separator()
+                        .item(PopupMenuItem::new("Disconnect").icon(IconName::Unplug).on_click(window.listener_for(&view, |this, _, window, cx| {
+                            this.disconnect_ssh(window, cx);
+                        })))
+                    }
+                })
                 .into_any_element()
         } else {
             h_flex()
@@ -759,6 +858,7 @@ impl FileExplorer {
                 palette.sidebar
             })
             .hover(|style| style.bg(palette.hover).text_color(palette.text))
+            .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.navigate(location, window, cx);
             }))
@@ -881,6 +981,7 @@ impl FileExplorer {
                     .text_color(if selected { palette.text } else { palette.muted })
                     .bg(if selected { palette.selection } else { palette.sidebar })
                     .hover(|style| style.bg(palette.hover).text_color(palette.text))
+                    .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.navigate(location, window, cx);
                     }))
@@ -1021,6 +1122,7 @@ impl FileExplorer {
                     crumb
                         .cursor_pointer()
                         .hover(|style| style.bg(palette.hover).text_color(palette.text))
+                        .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
                         .on_click(cx.listener(move |this, _, window, cx| this.navigate(location, window, cx)))
                         .child(crate::views::text_fx::outlined(label, palette))
                         .into_any_element()

@@ -87,6 +87,11 @@ pub fn rescan() -> Vec<Track> {
 
 static LIBRARY: std::sync::Mutex<Option<Vec<Track>>> = std::sync::Mutex::new(None);
 
+/// Tracks read into memory so far (0 before the library is first opened).
+pub fn library_len() -> usize {
+    LIBRARY.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref().map_or(0, Vec::len)
+}
+
 /// The picture embedded in a file (front cover first), as encoded bytes.
 pub fn cover(path: &Path) -> Option<Vec<u8>> {
     let file = lofty::read_from_path(path).ok()?;

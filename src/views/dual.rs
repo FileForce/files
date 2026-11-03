@@ -92,6 +92,10 @@ impl FileExplorer {
             let is_selected = selected == Some(id);
             h_flex()
                 .id(entry.id)
+                // Middle click on a folder: open it in a new tab, like a browser.
+                .when(entry.is_folder(), |this| {
+                    this.on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx)))
+                })
                 .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
                 .h(px(34.))
                 .px_3()

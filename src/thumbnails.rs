@@ -194,7 +194,7 @@ fn cache_path(path: &Path) -> Option<PathBuf> {
     Some(cache_dir()?.join(format!("{:016x}.jpg", hasher.finish())))
 }
 
-fn cache_dir() -> Option<PathBuf> {
+pub(crate) fn cache_dir() -> Option<PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
         let dir = dirs::cache_dir()?.join("file-force").join("thumbnails");

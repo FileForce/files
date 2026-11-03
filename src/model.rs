@@ -319,6 +319,31 @@ pub fn mounted_volumes() -> Vec<PathBuf> {
     volumes
 }
 
+/// Ejects a disk, a USB drive or a mounted disk image (unmounts a share).
+pub fn eject(path: &Path) -> std::io::Result<()> {
+    let run = |program: &str, args: &[&std::ffi::OsStr]| -> std::io::Result<()> {
+        let output = files_sdk::log::run("files", files_sdk::log::command(program).args(args))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(std::io::Error::other(if reason.is_empty() { format!("{program} could not eject it") } else { reason }))
+        }
+    };
+    let target = path.as_os_str();
+    if cfg!(target_os = "macos") {
+        // diskutil handles drives and images; hdiutil is the fallback for images.
+        run("/usr/sbin/diskutil", &["eject".as_ref(), target]).or_else(|_| run("/usr/bin/hdiutil", &["detach".as_ref(), target]))
+    } else if cfg!(windows) {
+        // Explorer's own "Eject" verb on the drive.
+        let drive = path.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
+        let script = format!("(New-Object -ComObject Shell.Application).Namespace(17).ParseName('{drive}').InvokeVerb('Eject')");
+        run("powershell", &["-NoProfile".as_ref(), "-Command".as_ref(), script.as_ref()])
+    } else {
+        run("gio", &["mount".as_ref(), "-u".as_ref(), target]).or_else(|_| run("umount", &[target]))
+    }
+}
+
 /// The account name, as `whoami` prints it.
 pub fn user_name() -> &'static str {
     static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -728,6 +753,12 @@ pub fn invalidate_listings() {
 }
 
 /// Every indexed entry for global search: a bounded walk of the home folder.
+/// Memory bookkeeping for the developer tools: (entries known, entries made
+/// since launch, cached folder listings, global search index size).
+pub fn index_stats() -> (usize, u64, usize, usize) {
+    fs_index::stats()
+}
+
 /// The entry for a file on disk (to reveal it).
 pub fn entry_at(path: &Path) -> Option<&'static FileEntry> {
     fs_index::entry_for_path(path)
@@ -1249,6 +1280,21 @@ mod fs_index {
         search: Option<(Instant, PathBuf, Vec<&'static FileEntry>)>,
     }
 
+    /// Entries made since launch: they live until quit, so a number that
+    /// keeps growing is memory that keeps growing.
+    static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// (entries known now, entries made since launch, cached listings, search index size)
+    pub fn stats() -> (usize, u64, usize, usize) {
+        let registry = lock();
+        (
+            registry.entries.len(),
+            MADE.load(std::sync::atomic::Ordering::Relaxed),
+            registry.listings.len(),
+            registry.search.as_ref().map_or(0, |(_, _, entries)| entries.len()),
+        )
+    }
+
     fn registry() -> &'static Mutex<Registry> {
         static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
         REGISTRY.get_or_init(|| {
@@ -1326,6 +1372,7 @@ mod fs_index {
             return entry;
         }
         let entry: &'static FileEntry = Box::leak(Box::new(build_entry(path, metadata)));
+        MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         lock()
             .entries
             .insert(path.to_path_buf(), (modified, bytes, entry));
@@ -1746,6 +1793,12 @@ mod tests {
         assert_eq!(run("tag:work kind:text"), ["notes.md"]);
         assert_eq!(run("tag:WOR kind:text"), ["notes.md"], "tag: is partial and case-insensitive");
         assert_eq!(run("size:>1mb rep"), ["report.pdf"]);
+    }
+
+    #[test]
+    fn ejecting_something_that_is_not_mounted_says_why() {
+        let error = eject(Path::new("/Volumes/file-force-not-a-disk-xyz")).unwrap_err();
+        assert!(!error.to_string().is_empty(), "the reason is shown to the user");
     }
 
     #[test]

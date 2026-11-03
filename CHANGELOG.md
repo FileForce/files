@@ -3,7 +3,36 @@
 Every release takes its notes from its section here (`## <version>`): the
 release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
-version's notes under `## Unreleased
+version's notes under "Unreleased", then rename it when you tag.
+
+## Unreleased
+
+## 0.1.10
+
+### Tabs
+
+- Middle-click a folder (in any view, or in the sidebar) to open it in a
+  new tab, like a browser. Folders' right-click menu has Open in New Tab.
+
+### Disks and servers
+
+- CONNECTED in the sidebar: disks, USB drives and mounted disk images can
+  be ejected (⏏ on hover, or right-click → Eject), and have Open, Open in
+  New Tab, Copy Path and Properties.
+- SSH servers have a right-click menu: Connect / Disconnect, Open in
+  Terminal, Copy Address and Forget Server.
+
+### Developer tools
+
+- Console → Resources shows the app's memory (as Activity Monitor counts
+  it on macOS, the resident set on Windows and Linux) and CPU over the last
+  two minutes, and what the app keeps: file entries, the search index,
+  mail and music in memory, open media players, and the caches on disk.
+
+### Extensions SDK
+
+- Sidebar rows can carry their own right-click menu
+  (`SidebarItem::menu`, `SidebarMenuItem`).
 
 ## 0.1.9
 

@@ -63,6 +63,13 @@ pub(crate) fn file_context_menu(
                 window,
                 &view,
             ))
+            .when(entry.is_folder() && entry.target.is_some(), |menu| {
+                let tab_view = view.clone();
+                menu.item(
+                    tinted_item("Open in New Tab", IconName::PanelTop, tint("open"))
+                        .on_click(window.listener_for(&tab_view, move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx))),
+                )
+            })
             .item(tinted_command_item(
                 "Quick Look",
                 IconName::Eye,

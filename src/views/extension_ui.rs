@@ -4,6 +4,7 @@
 
 use files_sdk::{Context as ExtContext, Event, Extension, Manifest, MenuItem, Outcome, Permission, Scope, Targets};
 use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::menu::{ContextMenuExt as _};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
@@ -239,6 +240,30 @@ impl FileExplorer {
             .children(item.badge.map(|badge| div().text_xs().text_color(palette.faint).child(badge)));
         #[cfg(test)]
         let row = row.debug_selector(move || format!("ext-{section}-{index}"));
+        // The extension's own right-click menu for the row.
+        let menu_items = item.menu;
+        let menu_id = item.id;
+        let view = cx.entity();
+        let row = row.context_menu(move |mut menu, window, cx| {
+            if menu_items.is_empty() {
+                return menu;
+            }
+            let color = crate::menu_colors::color_for(view.read(cx).appearance.read(cx), manifest.id);
+            for entry in &menu_items {
+                let (command, id) = (entry.command, menu_id.clone());
+                menu = menu.item(
+                    crate::views::context_menu::tinted_item(entry.title.clone(), icon_for(manifest, entry.icon), color)
+                        .disabled(entry.disabled)
+                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                            let location = this.active_location();
+                            let mut context = this.extension_context(None, location);
+                            context.sidebar_item = Some(id.clone());
+                            this.run_extension_command(extension, command, context, window, cx);
+                        })),
+                );
+            }
+            menu
+        });
         row.into_any_element()
     }
 }

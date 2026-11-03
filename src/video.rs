@@ -343,6 +343,9 @@ pub struct Player {
 // SAFETY: libvlc's media player may be driven from any thread.
 unsafe impl Send for Player {}
 
+/// Players open now (videos in previews, the music player), for the developer tools.
+pub static OPEN_PLAYERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 impl Player {
     pub fn open(path: &Path) -> Result<Self, String> {
         let vlc = vlc().map_err(str::to_string)?;
@@ -365,6 +368,7 @@ impl Player {
             }
             (vlc.set_callbacks)(player, Some(lock), Some(unlock), Some(display), target as *mut c_void);
             (vlc.set_format_callbacks)(player, Some(setup), Some(cleanup));
+            OPEN_PLAYERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(Self { vlc, player, target, frame })
         }
     }
@@ -451,6 +455,7 @@ impl Drop for Player {
             (self.vlc.stop)(self.player);
             (self.vlc.player_release)(self.player);
             drop(Box::from_raw(self.target));
+            OPEN_PLAYERS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
