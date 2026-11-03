@@ -561,6 +561,87 @@ pub struct Message {
     /// The HTML version when the message has one (styles, line breaks, links).
     pub html: Option<String>,
     pub attachments: Vec<Attachment>,
+    /// Who sent it and how it travelled: for the details panel.
+    pub details: Details,
+}
+
+/// What the headers tell beyond the text.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Details {
+    pub message_id: Option<String>,
+    pub return_path: Option<String>,
+    pub reply_to: Option<String>,
+    /// The first public address in the trail (the sender's machine or server).
+    pub sender_ip: Option<String>,
+    /// Servers it passed, the sender's first.
+    pub hops: Vec<String>,
+    /// The mail program, from X-Mailer or User-Agent.
+    pub client: Option<String>,
+    /// SPF / DKIM / DMARC verdicts (Authentication-Results).
+    pub authentication: Option<String>,
+    /// The top MIME type, e.g. `multipart/mixed`.
+    pub mime: String,
+    /// Every part: MIME type, file name (attachments) and bytes.
+    pub parts: Vec<(String, Option<String>, usize)>,
+    /// The whole message's size in bytes.
+    pub size: usize,
+    /// Every header, as written (unfolded).
+    pub headers: Vec<(String, String)>,
+}
+
+/// An IPv4 or IPv6 address in brackets or after "from", that is not private.
+fn public_ip(text: &str) -> Option<String> {
+    text.split(|c: char| matches!(c, '[' | ']' | '(' | ')' | ' ' | ';' | '\t'))
+        .filter_map(|word| word.trim_start_matches("IPv6:").parse::<std::net::IpAddr>().ok())
+        .find(|ip| match ip {
+            std::net::IpAddr::V4(v4) => !(v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()),
+            std::net::IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00),
+        })
+        .map(|ip| ip.to_string())
+}
+
+/// Reads the trail, client, checks and structure out of a parsed message.
+fn details_of(parsed: &mail_parser::Message, raw_size: usize) -> Details {
+    let headers: Vec<(String, String)> = parsed
+        .headers()
+        .iter()
+        .map(|header| {
+            let value = String::from_utf8_lossy(header.raw_value()).split_whitespace().collect::<Vec<_>>().join(" ");
+            (header.raw_name().to_string(), value)
+        })
+        .collect();
+    let find = |name: &str| headers.iter().find(|(header, _)| header.eq_ignore_ascii_case(name)).map(|(_, value)| value.clone());
+    // Received lines are newest first: the sender's is the last one.
+    let received: Vec<&String> = headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("received")).map(|(_, value)| value).collect();
+    let hops: Vec<String> = received
+        .iter()
+        .rev()
+        .filter_map(|line| line.strip_prefix("from ").and_then(|rest| rest.split_whitespace().next()).map(str::to_string))
+        .collect();
+    let sender_ip = find("x-originating-ip")
+        .and_then(|value| public_ip(&value))
+        .or_else(|| received.iter().rev().find_map(|line| public_ip(line.split(" by ").next().unwrap_or(line))));
+    let type_of = |part: &mail_parser::MessagePart| {
+        part.content_type().map_or_else(|| "text/plain".to_string(), |kind| format!("{}/{}", kind.ctype(), kind.subtype().unwrap_or("*")))
+    };
+    let parts = parsed
+        .parts()
+        .filter(|part| !part.is_multipart())
+        .map(|part| (type_of(&part), part.attachment_name().map(str::to_string), part.decoded_len()))
+        .collect();
+    Details {
+        message_id: parsed.message_id().map(str::to_string),
+        return_path: find("return-path").map(|value| value.trim_matches(['<', '>']).to_string()),
+        reply_to: find("reply-to"),
+        sender_ip,
+        hops,
+        client: find("x-mailer").or_else(|| find("user-agent")),
+        authentication: find("authentication-results"),
+        mime: type_of(&parsed.root_part()),
+        parts,
+        size: raw_size,
+        headers,
+    }
 }
 
 /// The whole message `uid` of `folder`, from memory when it was read
@@ -857,6 +938,7 @@ pub fn parse_message(raw: &[u8]) -> Option<Message> {
             .any(|part| part.is_content_type("text", "html"))
             .then(|| parsed.body_html(0).map(|html| html.into_owned()))
             .flatten(),
+        details: details_of(&parsed, raw.len()),
         attachments,
     })
 }
@@ -1205,6 +1287,35 @@ mod more_tests {
         let plain = parse_message(b"From: ann@x.com\r\nSubject: Hi\r\n\r\nJust text\r\n").unwrap();
         assert_eq!(plain.html, None);
         assert_eq!(parse_summary(b"From: Ann Lee <ann@x.com>\r\n\r\n").address, "ann@x.com");
+    }
+
+    #[test]
+    fn details_show_the_trail_client_checks_and_parts() {
+        let raw = concat!(
+            "Return-Path: <ann@x.com>\r\n",
+            "Received: from mx.google.com (mx.google.com [142.250.27.26])\r\n by mail.yandex.net with ESMTPS; Mon, 2 Nov 2026 10:00:02 +0000\r\n",
+            "Received: from [192.168.1.20] (host.example [203.0.113.7])\r\n by smtp.x.com with ESMTPSA; Mon, 2 Nov 2026 10:00:00 +0000\r\n",
+            "Authentication-Results: mx.yandex.net; spf=pass smtp.mailfrom=x.com; dkim=pass header.d=x.com\r\n",
+            "X-Mailer: Apple Mail (2.3774)\r\n",
+            "Message-ID: <abc@x.com>\r\n",
+            "From: Ann <ann@x.com>\r\n",
+            "Subject: Report\r\n",
+            "Content-Type: multipart/mixed; boundary=b\r\n\r\n",
+            "--b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n",
+            "--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=report.pdf\r\n\r\n%PDF\r\n",
+            "--b--\r\n"
+        );
+        let details = parse_message(raw.as_bytes()).unwrap().details;
+        assert_eq!(details.sender_ip.as_deref(), Some("203.0.113.7"), "the first public address, not the private one");
+        assert_eq!(details.hops, ["[192.168.1.20]", "mx.google.com"], "the sender's server first");
+        assert_eq!(details.client.as_deref(), Some("Apple Mail (2.3774)"));
+        assert!(details.authentication.as_deref().is_some_and(|checks| checks.contains("spf=pass") && checks.contains("dkim=pass")));
+        assert_eq!(details.mime, "multipart/mixed");
+        assert_eq!(details.message_id.as_deref(), Some("abc@x.com"));
+        assert_eq!(details.return_path.as_deref(), Some("ann@x.com"));
+        assert!(details.parts.iter().any(|(kind, name, _)| kind == "application/pdf" && name.as_deref() == Some("report.pdf")));
+        assert!(details.headers.iter().any(|(name, _)| name == "X-Mailer"));
+        assert_eq!(details.size, raw.len());
     }
 
     #[test]

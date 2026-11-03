@@ -71,9 +71,41 @@ fn maintenance_due(last: std::time::Instant, now: std::time::Instant) -> bool {
     now.duration_since(last) >= std::time::Duration::from_secs(60)
 }
 
+/// The newest notification already chimed for, shared by every window.
+static CHIMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One chime for what arrived since the last one (the most serious kind).
+fn chime_for_new_notifications(settings: &crate::settings::AppSettings) {
+    use std::sync::atomic::Ordering;
+    let seen = CHIMED.load(Ordering::Relaxed);
+    let fresh: Vec<log::Notification> = log::notifications().into_iter().filter(|notification| notification.id > seen).collect();
+    let Some(newest) = fresh.iter().map(|notification| notification.id).max() else { return };
+    if CHIMED.fetch_max(newest, Ordering::Relaxed) >= newest || !settings.sound.notifications {
+        return;
+    }
+    let level = fresh
+        .iter()
+        .map(|notification| notification.level)
+        .max_by_key(|level| match level {
+            Level::Error => 3,
+            Level::Warning => 2,
+            Level::Success => 1,
+            Level::Info => 0,
+        })
+        .unwrap_or(Level::Info);
+    crate::sound::notify(settings.sound.chime, level, settings.sound.volume);
+}
+
+/// At launch: what is already in the journal never chimes.
+fn prime_chimes() {
+    let newest = log::notifications().iter().map(|notification| notification.id).max().unwrap_or(0);
+    CHIMED.fetch_max(newest, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl FileExplorer {
     /// Redraws when the journal changes, and checks the free disk space.
     pub(crate) fn watch_journal(cx: &mut Context<Self>) {
+        prime_chimes();
         cx.spawn(async move |this, cx| {
             let started = std::time::Instant::now();
             let mut last_disk = started - std::time::Duration::from_secs(60);
@@ -96,6 +128,9 @@ impl FileExplorer {
                     let generation = log::generation();
                     // Toasts on screen fade out on time.
                     if generation != this.journal_generation || !this.toasts().is_empty() {
+                        if generation != this.journal_generation {
+                            chime_for_new_notifications(this.appearance.read(cx));
+                        }
                         this.journal_generation = generation;
                         cx.notify();
                     }

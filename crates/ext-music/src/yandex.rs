@@ -299,12 +299,13 @@ fn cache_dir() -> PathBuf {
     std::env::temp_dir().join("file-force-music")
 }
 
-/// Downloads the best MP3 of a track (once; later plays use the cache).
-pub fn download(id: &str) -> io::Result<PathBuf> {
-    let file = cache_dir().join(format!("yandex-{}.mp3", id.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
-    if file.is_file() {
-        return Ok(file);
-    }
+/// Where a track is (or will be) cached.
+pub fn cached_file(id: &str) -> PathBuf {
+    cache_dir().join(format!("yandex-{}.mp3", id.replace(|c: char| !c.is_ascii_alphanumeric(), "_")))
+}
+
+/// The address the best MP3 of a track streams from (valid for a while).
+pub fn stream(id: &str) -> io::Result<String> {
     let options = get(&format!("/tracks/{id}/download-info"))?;
     let best = options
         .as_array()
@@ -316,20 +317,99 @@ pub fn download(id: &str) -> io::Result<PathBuf> {
     let info_url = best["downloadInfoUrl"].as_str().ok_or_else(|| io::Error::other("Yandex sent no download address"))?;
     let info = agent().get(info_url).call().map_err(http_error)?;
     let xml = check(info, "Yandex Music")?.body_mut().read_to_string().map_err(http_error)?;
-    let url = stream_url(&xml).ok_or_else(|| io::Error::other("Yandex download info could not be read"))?;
-    let audio = agent().get(&url).call().map_err(http_error)?;
-    let bytes = check(audio, "Yandex Music")?.body_mut().with_config().limit(200 * 1024 * 1024).read_to_vec().map_err(http_error)?;
+    stream_url(&xml).ok_or_else(|| io::Error::other("Yandex download info could not be read"))
+}
+
+/// How much of a download has arrived, shared with the player's buffer bar.
+#[derive(Debug, Default)]
+pub struct Progress {
+    pub received: std::sync::atomic::AtomicU64,
+    /// 0 until the server says how big it is.
+    pub total: std::sync::atomic::AtomicU64,
+}
+
+impl Progress {
+    /// 0…1 of the track downloaded.
+    pub fn fraction(&self) -> f32 {
+        let total = self.total.load(std::sync::atomic::Ordering::Relaxed);
+        if total == 0 { 0. } else { (self.received.load(std::sync::atomic::Ordering::Relaxed) as f32 / total as f32).min(1.) }
+    }
+}
+
+/// Downloads `url` into the cache of track `id`, reporting as it goes.
+pub fn fetch(id: &str, url: &str, progress: &Progress) -> io::Result<PathBuf> {
+    use std::io::{Read as _, Write as _};
+    use std::sync::atomic::Ordering;
+    let file = cached_file(id);
+    if file.is_file() {
+        let size = std::fs::metadata(&file)?.len();
+        progress.total.store(size, Ordering::Relaxed);
+        progress.received.store(size, Ordering::Relaxed);
+        return Ok(file);
+    }
+    let response = check(agent().get(url).call().map_err(http_error)?, "Yandex Music")?;
+    let total = response.headers().get("content-length").and_then(|value| value.to_str().ok()?.parse().ok()).unwrap_or(0);
+    progress.total.store(total, Ordering::Relaxed);
     std::fs::create_dir_all(cache_dir())?;
-    let partial = file.with_extension("partial");
-    std::fs::write(&partial, bytes)?;
+    let partial = file.with_extension(format!("partial-{}", std::process::id()));
+    let mut output = std::fs::File::create(&partial)?;
+    let mut body = response.into_body();
+    let mut reader = body.as_reader();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read])?;
+        progress.received.fetch_add(read as u64, Ordering::Relaxed);
+    }
+    drop(output);
     std::fs::rename(&partial, &file)?;
-    log("Yandex Music", format!("downloaded track {id}"));
+    log("Yandex Music", format!("cached track {id}"));
     Ok(file)
+}
+
+/// Downloads the best MP3 of a track (once; later plays use the cache).
+pub fn download(id: &str) -> io::Result<PathBuf> {
+    let file = cached_file(id);
+    if file.is_file() {
+        return Ok(file);
+    }
+    fetch(id, &stream(id)?, &Progress::default())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stream_is_cached_with_its_progress() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = vec![7u8; 100 * 1024];
+        let served = body.clone();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", served.len());
+            let _ = stream.write_all(&served);
+        });
+        let id = format!("test-{}", std::process::id());
+        let _ = std::fs::remove_file(cached_file(&id));
+        let progress = Progress::default();
+        assert_eq!(progress.fraction(), 0., "nothing yet");
+        let file = fetch(&id, &format!("http://127.0.0.1:{port}/track.mp3"), &progress).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), body);
+        assert_eq!(progress.fraction(), 1., "fully downloaded");
+        // Cached: a second fetch does not download again.
+        let again = Progress::default();
+        assert_eq!(fetch(&id, "http://127.0.0.1:1/never", &again).unwrap(), file);
+        assert_eq!(again.fraction(), 1.);
+        std::fs::remove_file(file).unwrap();
+    }
 
     #[test]
     fn tokens_are_read_from_a_paste_or_the_address() {

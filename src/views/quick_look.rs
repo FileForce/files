@@ -103,6 +103,22 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
     if crate::archive::is_supported(file) {
         return archive(path, palette, settings);
     }
+    if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("eml")) {
+        if let Some(message) = email(path) {
+            return v_flex()
+                .id("quick-look-email")
+                .debug_selector(|| "quick-look-email".into())
+                .size_full()
+                .rounded_md()
+                .bg(palette.surface)
+                .overflow_y_scrollbar()
+                .child(div().px_3().pt_3().text_base().font_weight(FontWeight::SEMIBOLD).child(message.subject.clone()))
+                .child(div().px_3().text_xs().text_color(palette.muted).child(message.from.clone()))
+                .child(div().px_3().pt_2().text_sm().whitespace_normal().child(message.body.chars().take(2000).collect::<String>()))
+                .child(crate::views::mail::render_details(&message, palette))
+                .into_any_element();
+        }
+    }
     if let Some(text) = read_text(path, file.kind) {
         return div()
             .id("quick-look-text")
@@ -126,6 +142,23 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
         crate::thumbnails::Preview::Pending => placeholder("Generating preview…"),
         crate::thumbnails::Preview::Unavailable(reason) => placeholder(&format!("No preview · {reason}")),
     }
+}
+
+/// A saved message (.eml), parsed once per file version.
+fn email(path: &Path) -> Option<files_ext_mail::Message> {
+    type Parsed = (Option<std::time::SystemTime>, Option<files_ext_mail::Message>);
+    static CACHE: std::sync::Mutex<Option<(std::path::PathBuf, Parsed)>> = std::sync::Mutex::new(None);
+    let modified = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+    let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached, (time, message))) = cache.as_ref()
+        && cached == path
+        && *time == modified
+    {
+        return message.clone();
+    }
+    let message = std::fs::read(path).ok().and_then(|raw| files_ext_mail::parse_message(&raw));
+    *cache = Some((path.to_path_buf(), (modified, message.clone())));
+    message
 }
 
 /// Items shown in an archive preview; the rest are counted.

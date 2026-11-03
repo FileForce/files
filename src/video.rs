@@ -26,6 +26,7 @@ struct Vlc {
     _core: Option<libloading::Library>,
     instance: *mut Instance,
     media_new_path: unsafe extern "C" fn(*mut Instance, *const c_char) -> *mut Media,
+    media_new_location: unsafe extern "C" fn(*mut Instance, *const c_char) -> *mut Media,
     media_release: unsafe extern "C" fn(*mut Media),
     player_new: unsafe extern "C" fn(*mut Media) -> *mut MediaPlayer,
     player_release: unsafe extern "C" fn(*mut MediaPlayer),
@@ -161,6 +162,7 @@ fn load() -> Result<Vlc, String> {
             let vlc = Vlc {
                 instance,
                 media_new_path: symbol!("libvlc_media_new_path"),
+                media_new_location: symbol!("libvlc_media_new_location"),
                 media_release: symbol!("libvlc_media_release"),
                 player_new: symbol!("libvlc_media_player_new_from_media"),
                 player_release: symbol!("libvlc_media_player_release"),
@@ -348,14 +350,23 @@ pub static OPEN_PLAYERS: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 
 impl Player {
     pub fn open(path: &Path) -> Result<Self, String> {
+        Self::open_media(&path.to_string_lossy(), false)
+    }
+
+    /// Plays from the network while it arrives (an https address).
+    pub fn open_url(url: &str) -> Result<Self, String> {
+        Self::open_media(url, true)
+    }
+
+    fn open_media(source: &str, remote: bool) -> Result<Self, String> {
         let vlc = vlc().map_err(str::to_string)?;
-        let location = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| "Unusual file name".to_string())?;
+        let location = CString::new(source.as_bytes()).map_err(|_| "Unusual file name".to_string())?;
         let frame = Arc::new(Mutex::new(Frame::default()));
         let target = Box::into_raw(Box::new(Target { decode: Vec::new(), width: 0, height: 0, front: frame.clone() }));
         // SAFETY: libvlc calls with a valid instance; the target outlives the
         // player (released in Drop after stop, which joins VLC's threads).
         unsafe {
-            let media = (vlc.media_new_path)(vlc.instance, location.as_ptr());
+            let media = if remote { (vlc.media_new_location)(vlc.instance, location.as_ptr()) } else { (vlc.media_new_path)(vlc.instance, location.as_ptr()) };
             if media.is_null() {
                 drop(Box::from_raw(target));
                 return Err("VLC cannot open this file".to_string());
@@ -476,6 +487,55 @@ mod tests {
         assert_eq!(clock(0), "0:00");
         assert_eq!(clock(65_000), "1:05");
         assert_eq!(clock(3_723_000), "1:02:03");
+    }
+
+    /// Streamed: VLC plays an http address while it downloads.
+    #[test]
+    #[ignore]
+    fn vlc_plays_a_stream() {
+        use std::io::{Read as _, Write as _};
+        let Some(video) = std::env::var_os("FILES_TEST_VIDEO") else { return };
+        let bytes = std::fs::read(&video).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let bytes = bytes.clone();
+                // Each request on its own thread, with Range like real servers.
+                std::thread::spawn(move || {
+                    let mut stream = stream;
+                    let mut request = [0u8; 4096];
+                    let read = stream.read(&mut request).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&request[..read]).to_lowercase();
+                    let start = request
+                        .lines()
+                        .find_map(|line| line.strip_prefix("range: bytes="))
+                        .and_then(|range| range.split('-').next()?.trim().parse::<usize>().ok())
+                        .unwrap_or(0)
+                        .min(bytes.len());
+                    let header = if start > 0 || request.contains("range:") {
+                        format!(
+                            "HTTP/1.1 206 Partial Content\r\nAccept-Ranges: bytes\r\nContent-Type: video/quicktime\r\nContent-Range: bytes {start}-{}/{}\r\nContent-Length: {}\r\n\r\n",
+                            bytes.len() - 1,
+                            bytes.len(),
+                            bytes.len() - start
+                        )
+                    } else {
+                        format!("HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Type: video/quicktime\r\nContent-Length: {}\r\n\r\n", bytes.len())
+                    };
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(&bytes[start..]);
+                });
+            }
+        });
+        let player = Player::open_url(&format!("http://127.0.0.1:{port}/clip.mov")).expect("VLC");
+        player.set_muted(true);
+        player.play();
+        let started = std::time::Instant::now();
+        while player.frame.lock().unwrap().sequence < 3 {
+            assert!(started.elapsed().as_secs() < 15, "no frames from the stream");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     /// Needs VLC and a video: `FILES_TEST_VIDEO=/path/to.mov cargo test -- --ignored`.

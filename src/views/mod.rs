@@ -6,6 +6,7 @@ mod delete_dialog;
 pub(crate) mod drag_drop;
 mod fork_views;
 pub(crate) mod git;
+pub(crate) mod equalizer;
 pub(crate) mod mail;
 pub(crate) mod music;
 pub(crate) mod video_player;

@@ -78,6 +78,14 @@ pub(crate) fn cover_path(track: &Track) -> Option<PathBuf> {
 
 // ------------------------------------------------------------------ player
 
+/// Volume or equalizer changed (from any panel): what plays hears it now.
+pub(crate) fn sound_changed(cx: &mut App) {
+    if let Some(global) = cx.try_global::<JukeboxGlobal>() {
+        let jukebox = global.0.clone();
+        jukebox.read(cx).sound_changed();
+    }
+}
+
 /// The saved sound (volume, equalizer), applied to every player.
 pub(crate) fn apply_sound(player: &Player) {
     let config = files_ext_music::config();
@@ -101,6 +109,8 @@ pub(crate) struct Jukebox {
     radio: Option<Radio>,
     /// The OS media keys and "Now Playing", made on the first track.
     system: Option<crate::media_keys::SystemControls>,
+    /// How much of a streamed track is downloaded (the grey bar).
+    pub(crate) buffer: Option<std::sync::Arc<yandex::Progress>>,
     system_failed: bool,
 }
 
@@ -130,7 +140,7 @@ pub(crate) fn jukebox(cx: &mut App) -> Entity<Jukebox> {
             }
         })
         .detach();
-        Jukebox { queue: Vec::new(), index: None, player: None, playing: false, position: 0, length: 0, loading: false, error: None, ticks: 0, radio: None, system: None, system_failed: false }
+        Jukebox { queue: Vec::new(), index: None, player: None, playing: false, position: 0, length: 0, loading: false, error: None, ticks: 0, radio: None, system: None, system_failed: false, buffer: None }
     });
     cx.set_global(JukeboxGlobal(entity.clone()));
     entity
@@ -254,6 +264,7 @@ impl Jukebox {
 
     fn start(&mut self, index: usize, cx: &mut Context<Self>) {
         self.player = None;
+        self.buffer = None;
         self.index = Some(index);
         self.position = 0;
         self.error = None;
@@ -271,21 +282,39 @@ impl Jukebox {
         match track.source.clone() {
             Source::Local(path) => self.open_file(&path, cx),
             Source::Yandex(id) => {
-                self.loading = true;
-                cx.spawn(async move |this, cx| {
-                    let file = cx.background_executor().spawn(async move { yandex::download(&id) }).await;
-                    let _ = this.update(cx, |this, cx| {
-                        if this.index != Some(index) {
-                            return;
-                        }
-                        this.loading = false;
-                        match file {
-                            Ok(file) => this.open_file(&file, cx),
-                            Err(error) => this.fail(error.to_string(), cx),
-                        }
-                    });
-                })
-                .detach();
+                let cached = yandex::cached_file(&id);
+                if cached.is_file() {
+                    self.buffer = None;
+                    self.open_file(&cached, cx);
+                } else {
+                    // Plays while it downloads: the stream starts at once,
+                    // the cache fills behind it (the grey bar).
+                    self.loading = true;
+                    cx.spawn(async move |this, cx| {
+                        let asked = id.clone();
+                        let url = cx.background_executor().spawn(async move { yandex::stream(&asked) }).await;
+                        let _ = this.update(cx, |this, cx| {
+                            if this.index != Some(index) {
+                                return;
+                            }
+                            this.loading = false;
+                            match url {
+                                Ok(url) => {
+                                    let progress = std::sync::Arc::new(yandex::Progress::default());
+                                    this.buffer = Some(progress.clone());
+                                    let (id, address) = (id.clone(), url.clone());
+                                    std::thread::spawn(move || {
+                                        let _ = yandex::fetch(&id, &address, &progress);
+                                    });
+                                    this.open_stream(&url, cx);
+                                }
+                                Err(error) => this.fail(error.to_string(), cx),
+                            }
+                        });
+                    })
+                    .detach();
+                }
+                self.prefetch_next(index);
             }
             Source::Spotify(_) => {
                 // Spotify plays the whole list in its app, from this track.
@@ -353,6 +382,43 @@ impl Jukebox {
             }
             Command::SeekTo(at) if self.length > 0 => self.seek(at as f32 / self.length as f32),
             _ => {}
+        }
+    }
+
+    fn open_stream(&mut self, url: &str, cx: &mut Context<Self>) {
+        match Player::open_url(url) {
+            Ok(player) => {
+                apply_sound(&player);
+                player.play();
+                self.player = Some(player);
+                self.playing = true;
+            }
+            Err(error) => self.fail(error, cx),
+        }
+        cx.notify();
+    }
+
+    /// Downloads the next Yandex track of the queue ahead (one at a time).
+    fn prefetch_next(&self, index: usize) {
+        static FETCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let Some(Source::Yandex(id)) = self.queue.get(index + 1).map(|track| track.source.clone()) else { return };
+        if yandex::cached_file(&id).is_file() || FETCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        std::thread::spawn(move || {
+            let _ = yandex::stream(&id).and_then(|url| yandex::fetch(&id, &url, &yandex::Progress::default()));
+            FETCHING.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+
+    /// 0…1 downloaded of what plays: 1 for files on disk, the stream's
+    /// progress for a track still arriving.
+    pub(crate) fn buffered(&self) -> f32 {
+        match (&self.buffer, self.current().map(|track| &track.source)) {
+            (_, Some(Source::Local(_))) => 1.,
+            (Some(progress), Some(Source::Yandex(_))) => progress.fraction(),
+            (None, Some(Source::Yandex(_))) => 1.,
+            _ => 0.,
         }
     }
 
@@ -461,7 +527,9 @@ impl Jukebox {
             if length > 0 {
                 self.length = length;
             }
-            if position != self.position {
+            // Redraw while the grey buffer bar is still growing.
+            let filling = self.buffer.as_ref().is_some_and(|progress| progress.fraction() < 1.);
+            if position != self.position || filling {
                 self.position = position;
                 cx.notify();
             }
@@ -567,8 +635,8 @@ pub(crate) struct MusicView {
     seeking: bool,
     volume: Entity<SliderState>,
     show_equalizer: bool,
-    /// Preamp, then one slider per band.
-    equalizer: Vec<Entity<SliderState>>,
+    /// The shared equalizer (also in Settings → Sound).
+    equalizer: Entity<crate::views::equalizer::EqualizerPanel>,
     spotify_playlists: Vec<Playlist>,
     yandex_playlists: Vec<Playlist>,
     busy: bool,
@@ -590,13 +658,10 @@ impl MusicView {
         let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001));
         let config = files_ext_music::config();
         let volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(config.volume as f32));
-        let saved = config.equalizer.clone();
-        let equalizer: Vec<Entity<SliderState>> = (0..=10)
-            .map(|index| {
-                let value = saved.as_ref().map_or(0., |saved| if index == 0 { saved.preamp } else { saved.bands.get(index - 1).copied().unwrap_or(0.) });
-                cx.new(|_| SliderState::new().min(-20.).max(20.).step(0.5).default_value(value))
-            })
-            .collect();
+        let equalizer = {
+            let appearance = appearance.clone();
+            cx.new(|cx| crate::views::equalizer::EqualizerPanel::new(appearance, cx))
+        };
         let mut subscriptions = vec![
             cx.observe(&appearance, |_, _, cx| cx.notify()),
             cx.observe(&jukebox, |_, _, cx| cx.notify()),
@@ -624,12 +689,10 @@ impl MusicView {
                 cx.notify();
             }
         }));
-        for slider in &equalizer {
-            subscriptions.push(cx.subscribe(slider, |this: &mut Self, _, event: &SliderEvent, cx| {
-                if let SliderEvent::Release(_) = event {
-                    this.save_equalizer(None, cx);
-                }
-            }));
+
+        if let Some(files) = explorer.upgrade() {
+            // The title bar's inspector button opens this tab's track panel too.
+            subscriptions.push(cx.observe(&files, |_, _, cx| cx.notify()));
         }
         let mut this = Self {
             appearance,
@@ -788,96 +851,62 @@ impl MusicView {
         self.jukebox.update(cx, |jukebox, cx| jukebox.play_queue(tracks, index, cx));
     }
 
-    /// Saves the sliders as the equalizer (on), naming the preset they came from.
-    fn save_equalizer(&mut self, preset: Option<String>, cx: &mut Context<Self>) {
-        let values: Vec<f32> = self.equalizer.iter().map(|slider| slider.read(cx).value().start()).collect();
-        // A slider moved by hand is no longer the preset: `preset` is None then.
-        let mut config = files_ext_music::config();
-        config.equalizer = Some(files_ext_music::EqualizerConfig { preset, preamp: values[0], bands: values[1..].to_vec() });
-        let _ = files_ext_music::save_config(&config);
-        self.jukebox.read(cx).sound_changed();
-        cx.notify();
-    }
-
-    fn equalizer_off(&mut self, cx: &mut Context<Self>) {
-        let mut config = files_ext_music::config();
-        config.equalizer = None;
-        let _ = files_ext_music::save_config(&config);
-        self.jukebox.read(cx).sound_changed();
-        cx.notify();
-    }
-
-    /// A preset fills the sliders and is applied.
-    fn use_preset(&mut self, index: usize, name: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(values) = crate::video::equalizer_preset(index) else { return };
-        for (slot, value) in std::iter::once(values.preamp).chain(values.bands).enumerate() {
-            if let Some(slider) = self.equalizer.get(slot) {
-                slider.update(cx, |slider, cx| slider.set_value(value, window, cx));
-            }
+    /// The right panel: the track that plays (or the first one listed).
+    fn render_track_panel(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.explorer.upgrade().is_some_and(|files| files.read(cx).show_inspector);
+        if !open {
+            return None;
         }
-        self.save_equalizer(Some(name), cx);
-    }
-
-    fn render_equalizer(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let config = files_ext_music::config();
-        let on = config.equalizer.is_some();
-        let current = config.equalizer.and_then(|equalizer| equalizer.preset);
-        // Presets as tags: small, wrapping, the chosen one filled.
-        let presets = crate::video::equalizer_presets().into_iter().enumerate().map(|(index, name)| {
-            let selected = current.as_deref() == Some(name.as_str());
-            div()
-                .id(("music-eq-preset", index))
-                .px_2()
-                .py_0p5()
-                .rounded_full()
-                .border_1()
+        let track = self.jukebox.read(cx).current().cloned().or_else(|| self.shown_tracks(cx).first().cloned())?;
+        let service = match &track.source {
+            Source::Local(path) => path.display().to_string(),
+            Source::Spotify(_) => "Spotify · plays in the Spotify app".to_string(),
+            Source::Yandex(id) if yandex::cached_file(id).is_file() => "Yandex Music · downloaded".to_string(),
+            Source::Yandex(_) => "Yandex Music · streamed".to_string(),
+        };
+        let row = |label: &'static str, value: String| {
+            h_flex()
+                .gap_2()
                 .text_xs()
-                .cursor_pointer()
-                .border_color(if selected { palette.accent } else { palette.border })
-                .bg(if selected { palette.accent_soft } else { palette.window })
-                .text_color(if selected { palette.accent } else { palette.muted })
-                .hover(|style| style.border_color(palette.accent).text_color(palette.text))
-                .child(name.clone())
-                .on_click(cx.listener(move |this, _, window, cx| this.use_preset(index, name.clone(), window, cx)))
-        });
-        let labels = std::iter::once("Pre".to_string()).chain(crate::video::equalizer_bands().into_iter().map(|hz| {
-            if hz >= 1000. { format!("{}k", (hz / 1000.).round()) } else { format!("{}", hz.round()) }
-        }));
-        // The bands spread over the whole width, like the controls below.
-        let sliders = self.equalizer.iter().zip(labels).enumerate().map(|(index, (slider, label))| {
+                .child(div().w(px(56.)).flex_shrink_0().text_color(palette.faint).child(label))
+                .child(div().flex_1().min_w_0().text_color(palette.text).whitespace_normal().child(value))
+        };
+        let action = |id: &'static str, icon: IconName, label: &'static str, what: TrackAction, cx: &mut Context<Self>| {
+            let track = track.clone();
+            Button::new(id).ghost().xsmall().icon(icon).label(label).on_click(cx.listener(move |this, _, window, cx| this.act(track.clone(), what.clone(), window, cx)))
+        };
+        let streaming = !matches!(track.source, Source::Local(_));
+        let yandex_track = matches!(track.source, Source::Yandex(_));
+        Some(
             v_flex()
-                .flex_1()
-                .min_w(px(28.))
-                .gap_1()
-                .items_center()
-                .when(index == 0, |this| this.border_r_1().border_color(palette.border))
-                .child(div().text_size(px(10.)).text_color(palette.faint).child(format!("{:+.0}", slider.read(cx).value().start())))
-                .child(div().h(px(96.)).child(Slider::new(slider).vertical()))
-                .child(div().text_size(px(10.)).text_color(palette.muted).child(label))
-        });
-        v_flex()
-            .w_full()
-            .flex_shrink_0()
-            .px_4()
-            .py_3()
-            .gap_3()
-            .border_t_1()
-            .border_color(palette.border)
-            .bg(palette.surface)
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .items_center()
-                    .child(Icon::new(IconName::SlidersVertical).small().text_color(palette.accent))
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Equalizer"))
-                    .child(div().text_xs().text_color(palette.muted).child(if on { "on" } else { "off" }))
-                    .child(div().flex_1())
-                    .when(on, |this| this.child(Button::new("music-eq-off").ghost().xsmall().label("Turn off").on_click(cx.listener(|this, _, _, cx| this.equalizer_off(cx))))),
-            )
-            .child(h_flex().w_full().gap_1().flex_wrap().children(presets))
-            .child(h_flex().w_full().children(sliders))
-            .into_any_element()
+                .id("music-track-panel")
+                .w(px(280.))
+                .flex_shrink_0()
+                .h_full()
+                .p_4()
+                .gap_3()
+                .border_l_1()
+                .border_color(palette.border)
+                .bg(palette.sidebar)
+                .overflow_y_scrollbar()
+                .child(div().flex().justify_center().child(cover_thumb(&track, 220., palette)))
+                .child(div().text_base().font_weight(FontWeight::SEMIBOLD).whitespace_normal().child(track.title.clone()))
+                .child(row("Artist", track.artist.clone()))
+                .child(row("Album", track.album.clone()))
+                .child(row("Length", track.duration()))
+                .child(row("From", service))
+                .child(
+                    v_flex()
+                        .gap_0p5()
+                        .when(!streaming, |this| this.child(action("music-panel-show", IconName::FolderOpen, "Show in Files", TrackAction::ShowInFiles, cx)))
+                        .when(streaming, |this| {
+                            this.child(action("music-panel-like", IconName::Heart, "Like", TrackAction::Like(true), cx))
+                                .child(action("music-panel-artist", IconName::User, "Go to Artist", TrackAction::GoToArtist, cx))
+                        })
+                        .when(yandex_track, |this| this.child(action("music-panel-download", IconName::Download, "Download", TrackAction::Download, cx))),
+                )
+                .into_any_element(),
+        )
     }
 
     fn act(&mut self, track: Track, action: TrackAction, window: &mut Window, cx: &mut Context<Self>) {
@@ -1342,7 +1371,25 @@ impl MusicView {
                         this.jukebox.update(cx, |jukebox, cx| jukebox.next(cx));
                     }))),
             )
-            .child(div().flex_1().when(!remote, |this| this.child(Slider::new(&self.seek).horizontal())))
+            .child(div().flex_1().when(!remote, |this| {
+                // Downloaded so far, in grey over the track (like a video site).
+                let buffered = jukebox.buffered();
+                this.relative()
+                    .child(Slider::new(&self.seek).horizontal())
+                    .when(buffered > 0. && buffered < 1., |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top(px(0.))
+                                .bottom(px(0.))
+                                .w(gpui_kit::relative(buffered))
+                                .flex()
+                                .items_center()
+                                .child(div().w_full().h(px(4.)).rounded_full().bg(gpui_kit::hsla(0., 0., 0.6, 0.35))),
+                        )
+                    })
+            }))
             .child(div().w(px(160.)).truncate().text_xs().text_color(palette.muted).child(status))
             .when(!remote, |this| {
                 this.child(Icon::new(IconName::Volume2).small().text_color(palette.muted))
@@ -1399,9 +1446,12 @@ impl Render for MusicView {
                     .flex_1()
                     .min_h_0()
                     .child(self.render_sources(palette, cx))
-                    .child(div().flex_1().min_w_0().h_full().debug_selector(|| "music-track-list".into()).child(self.render_tracks(palette, cx))),
+                    .child(div().flex_1().min_w_0().h_full().debug_selector(|| "music-track-list".into()).child(self.render_tracks(palette, cx)))
+                    .children(self.render_track_panel(palette, cx)),
             )
-            .when(self.show_equalizer, |this| this.child(self.render_equalizer(palette, cx)))
+            .when(self.show_equalizer, |this| {
+                this.child(div().w_full().flex_shrink_0().px_4().py_3().border_t_1().border_color(palette.border).bg(palette.surface).child(self.equalizer.clone()))
+            })
             .child(self.render_now_playing(palette, cx))
     }
 }

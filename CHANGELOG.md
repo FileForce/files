@@ -7,6 +7,39 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.11
+
+### Sound
+
+- Notifications chime: a different sound for info, success, warning and
+  error, at the volume you set (once, however many windows are open).
+- New Settings → Sound: notification sounds (on/off, Soft / Bright / Low,
+  volume, try each kind); a speaker test for headphones, 2.1, 3.1, 5.1 and
+  7.1 (a tone in each speaker, a low one for the subwoofer, or all in
+  turn); and the equalizer, shared with Music and song previews.
+
+### Mail
+
+- A Details panel (the ⓘ button, or the inspector when Mail is a tab)
+  shows who sent a message and how: From, Reply-To, Return-Path, the
+  sender's IP and the route through servers, the mail program, SPF / DKIM /
+  DMARC checks, Message-ID, the MIME type of each part, attachments, size
+  and every header, all selectable.
+- Quick Look on a saved message (.eml) shows it with the same details.
+
+### Music
+
+- Yandex Music tracks start at once, streamed while they download (a grey
+  bar on the seek slider shows how much has arrived); the next track of
+  the queue is downloaded ahead, and played tracks stay cached.
+- The inspector button opens a track panel on the right of the Music tab:
+  a big cover, artist, album, length, where it comes from, and Like, Go to
+  Artist, Download or Show in Files.
+
+### Tabs
+
+- Middle-click a tab to close it, like a browser.
+
 ## 0.1.10
 
 ### Tabs

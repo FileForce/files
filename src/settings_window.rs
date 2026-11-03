@@ -22,7 +22,7 @@ use crate::settings::{
 };
 
 /// Tabs in the sidebar: General … Accessibility, Developer.
-const SECTION_COUNT: usize = 9;
+const SECTION_COUNT: usize = 10;
 const EXTENSIONS_TAB: usize = 2;
 
 actions!(
@@ -71,6 +71,10 @@ pub struct SettingsWindow {
     opacity_slider: Entity<gpui_kit::component::slider::SliderState>,
     /// Settings → General → Power saving: below which charge it starts.
     power_slider: Entity<gpui_kit::component::slider::SliderState>,
+    /// Settings → Sound: the notification volume, and the shared equalizer.
+    sound_volume: Entity<gpui_kit::component::slider::SliderState>,
+    _sound_subscription: Subscription,
+    equalizer: Entity<crate::views::equalizer::EqualizerPanel>,
     _power_subscription: Subscription,
     text_scale_slider: Entity<gpui_kit::component::slider::SliderState>,
     _text_scale_subscription: Subscription,
@@ -128,6 +132,19 @@ impl SettingsWindow {
                 cx.notify();
             }
         });
+        let sound_volume = cx.new(|_| {
+            gpui_kit::component::slider::SliderState::new().min(0.).max(100.).step(5.).default_value(current.sound.volume as f32)
+        });
+        let sound_subscription = cx.subscribe(&sound_volume, |this: &mut Self, _, event, cx| {
+            if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
+                this.draft.sound.volume = value.end().round() as u8;
+                cx.notify();
+            }
+        });
+        let equalizer = {
+            let appearance = appearance.clone();
+            cx.new(|cx| crate::views::equalizer::EqualizerPanel::new(appearance, cx))
+        };
         // Text size: a slider whose steps are the presets.
         let text_scale_slider = cx.new(|_| {
             gpui_kit::component::slider::SliderState::new()
@@ -183,6 +200,9 @@ impl SettingsWindow {
             opacity_slider,
             power_slider,
             _power_subscription: power_subscription,
+            sound_volume,
+            _sound_subscription: sound_subscription,
+            equalizer,
             text_scale_slider,
             _text_scale_subscription: text_scale_subscription,
             background_hex,
@@ -276,6 +296,12 @@ impl SettingsWindow {
 
     fn select_section(&mut self, index: usize, cx: &mut Context<Self>) {
         self.active_tab = index.min(SECTION_COUNT - 1);
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_layout_for_test(&mut self, layout: crate::settings::SpeakerLayout, cx: &mut Context<Self>) {
+        self.draft.sound.layout = layout;
         cx.notify();
     }
 
@@ -895,6 +921,122 @@ impl SettingsWindow {
                 .children(rows)
                 .into_any_element(),
         )
+    }
+
+    /// Settings → Sound: notification chimes, the speaker test, the equalizer.
+    fn render_sound(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        use crate::settings::{Chime, SpeakerLayout};
+        let language = self.draft.language;
+        let sound = self.draft.sound.clone();
+        let chimes = Chime::ALL.map(|chime| {
+            option_button(gpui_kit::ElementId::Name(format!("sound-chime-{}", chime.label()).into()), chime.label(), sound.chime == chime)
+                .icon(IconName::Bell)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.draft.sound.chime = chime;
+                    // Hear it when choosing it.
+                    crate::sound::notify(chime, files_sdk::log::Level::Success, this.draft.sound.volume);
+                    cx.notify();
+                }))
+        });
+        let test_levels = [
+            (files_sdk::log::Level::Info, "Info"),
+            (files_sdk::log::Level::Success, "Success"),
+            (files_sdk::log::Level::Warning, "Warning"),
+            (files_sdk::log::Level::Error, "Error"),
+        ]
+        .map(|(level, label)| {
+            Button::new(gpui_kit::ElementId::Name(format!("sound-test-{label}").into())).ghost().xsmall().icon(IconName::Play).label(label).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    crate::sound::notify(this.draft.sound.chime, level, this.draft.sound.volume);
+                    cx.notify();
+                },
+            ))
+        });
+        let layouts = SpeakerLayout::ALL.map(|layout| {
+            option_button(gpui_kit::ElementId::Name(format!("sound-layout-{}", layout.label()).into()), layout.label(), sound.layout == layout)
+                .icon(if layout == SpeakerLayout::Headphones { IconName::Headphones } else { IconName::Speaker })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.draft.sound.layout = layout;
+                    cx.notify();
+                }))
+        });
+        let speakers = crate::sound::speakers(sound.layout).iter().enumerate().map(|(index, speaker)| {
+            let layout = sound.layout;
+            div().debug_selector(move || format!("sound-speaker-{index}")).child(
+                Button::new(("sound-speaker", index))
+                    .small()
+                    .icon(if speaker.short == "LFE" { IconName::AudioWaveform } else { IconName::Volume2 })
+                    .label(format!("{} · {}", speaker.short, speaker.name))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        crate::sound::test_speaker(layout, index, this.draft.sound.volume);
+                        cx.notify();
+                    })),
+            )
+        });
+        let count = crate::sound::speakers(sound.layout).len();
+        v_flex()
+            .p_5()
+            .gap_4()
+            .child(
+                card(palette)
+                    .child(section(IconName::Bell, tr(language, "Notifications", "Уведомления"), palette))
+                    .child(
+                        Switch::new("sound-notifications")
+                            .label(tr(language, "Play a sound when a notification arrives", "Звук при новом уведомлении"))
+                            .checked(sound.notifications)
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.draft.sound.notifications = *checked;
+                                cx.notify();
+                            })),
+                    )
+                    .child(setting_row(tr(language, "Sound", "Звук"), h_flex().gap_2().children(chimes), palette))
+                    .child(setting_row(
+                        tr(language, "Volume", "Громкость"),
+                        h_flex()
+                            .flex_1()
+                            .gap_3()
+                            .items_center()
+                            .child(div().flex_1().child(gpui_kit::component::slider::Slider::new(&self.sound_volume)))
+                            .child(div().w(px(40.)).text_xs().text_color(palette.muted).child(format!("{}%", sound.volume))),
+                        palette,
+                    ))
+                    .child(setting_row(tr(language, "Try", "Прослушать"), h_flex().gap_1().children(test_levels), palette))
+                    .child(note(tr(language, "Each kind sounds different: errors lower, successes rising.", "У каждого вида свой звук: ошибка ниже, успех — восходящий."), palette)),
+            )
+            .child(
+                card(palette)
+                    .child(section(IconName::Speaker, tr(language, "Speaker test", "Проверка динамиков"), palette))
+                    .child(setting_row(tr(language, "Your speakers", "Ваши динамики"), h_flex().gap_2().flex_wrap().children(layouts), palette))
+                    .child(h_flex().gap_2().flex_wrap().children(speakers))
+                    .child(
+                        Button::new("sound-play-all").primary().small().icon(IconName::Play).label(tr(language, "Play all in turn", "Все по очереди")).on_click(cx.listener(
+                            move |this, _, _, _| {
+                                let (layout, volume) = (this.draft.sound.layout, this.draft.sound.volume);
+                                std::thread::spawn(move || {
+                                    for index in 0..count {
+                                        crate::sound::test_speaker(layout, index, volume);
+                                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                                    }
+                                });
+                            },
+                        )),
+                    )
+                    .child(note(
+                        tr(
+                            language,
+                            "A tone in one speaker at a time (a low one for the subwoofer). A speaker you do not hear is not connected, or the system mixes it into another.",
+                            "Тон в одном динамике за раз (низкий — для сабвуфера). Если динамик не слышно, он не подключён или система смешивает его в другой.",
+                        ),
+                        palette,
+                    )),
+            )
+            .child(
+                card(palette)
+                    .child(section(IconName::SlidersVertical, tr(language, "Equalizer", "Эквалайзер"), palette))
+                    .child(self.equalizer.clone())
+                    .child(note(tr(language, "Used by Music and song previews; changes apply at once.", "Используется Music и превью песен; изменения применяются сразу."), palette)),
+            )
+            .into_any_element()
     }
 
     /// Settings → Extensions → Music: library folders; signed-in services.
@@ -3126,6 +3268,7 @@ impl Render for SettingsWindow {
             (IconName::Keyboard, tr(language, "Hotkeys", "Горячие клавиши")),
             (IconName::PersonStanding, tr(language, "Accessibility", "Доступность")),
             (IconName::SquareTerminal, tr(language, "Developer", "Разработчик")),
+            (IconName::Volume2, tr(language, "Sound", "Звук")),
         ];
         let content = match self.active_tab {
             0 => self.render_general(palette, cx),
@@ -3136,7 +3279,8 @@ impl Render for SettingsWindow {
             5 => self.render_default_apps(palette, cx),
             6 => self.render_hotkeys(palette, window, cx),
             7 => self.render_accessibility(palette, cx),
-            _ => self.render_developer(palette, cx),
+            8 => self.render_developer(palette, cx),
+            _ => self.render_sound(palette, cx),
         };
         let path = settings_path()
             .map(|path| path.display().to_string())

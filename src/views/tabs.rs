@@ -40,8 +40,10 @@ impl FileExplorer {
             let explorer = cx.entity();
             let drag_label = label.clone();
             // Right-click: close this / to the left / others / to the right, pin.
+            let selector = tab.id;
             let title = h_flex()
                 .id(("workspace-tab-title", tab.id))
+                .debug_selector(move || format!("workspace-tab-{selector}"))
                 .gap_1p5()
                 .items_center()
                 .child(Icon::new(if pinned { IconName::Pin } else { icon }).xsmall().text_color(if active { palette.accent } else { palette.muted }))
@@ -77,7 +79,17 @@ impl FileExplorer {
                             .on_click(window.listener_for(&explorer, move |this, _, _, cx| this.toggle_pin_tab(index, cx))),
                     )
                 });
-            Tab::new().prefix(title).when(tab_count > 1 && !pinned, |tab| tab.suffix(close))
+            Tab::new()
+                .prefix(title)
+                .when(tab_count > 1 && !pinned, |tab| tab.suffix(close))
+                // Middle click closes the tab, like a browser (never the last one).
+                .on_mouse_up(
+                    gpui_kit::MouseButton::Middle,
+                    cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.close_tab(index, window, cx);
+                    }),
+                )
         });
         let explorer = cx.entity();
 

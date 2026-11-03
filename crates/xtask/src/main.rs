@@ -297,7 +297,8 @@ fn wix_source(config: &Config, version: &str, exe: &str) -> String {
 /// files, the common containers and codecs, picture handed to the app
 /// (vmem), sound out, and the converters in between. About 20 MB of VLC's 80.
 const VLC_PLUGINS: &[&str] = &[
-    // access and containers
+    // access and containers (http/https/tls: music streamed while it downloads)
+    "http", "https", "gnutls", "securetransport", "prefetch", "cache_read",
     "filesystem", "mp4", "mkv", "avi", "es", "ps", "ts", "ogg", "wav", "avformat", "h26x", "mpgv",
     // decoders (hardware first)
     "avcodec", "videotoolbox", "d3d11va", "dxva2", "faad", "mpg123", "vorbis", "opus", "flac", "araw", "lpcm", "a52", "dts",

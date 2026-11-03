@@ -2999,6 +2999,14 @@ mod tests {
         assert_eq!(tabs(cx), before + 1, "middle click opens a new tab");
         let opened = cx.read(|app| view.read(app).active_location().path());
         assert_eq!(opened, Some(dir.join("Projects")), "the new tab shows the folder");
+        // Middle click on the tab closes it again.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let id = cx.read(|app| view.read(app).tabs.last().map(|tab| tab.id)).unwrap();
+        let tab = cx.debug_bounds(Box::leak(format!("workspace-tab-{id}").into_boxed_str())).expect("tab not drawn");
+        cx.simulate_mouse_down(tab.center(), gpui_kit::MouseButton::Middle, gpui_kit::Modifiers::none());
+        cx.simulate_mouse_up(tab.center(), gpui_kit::MouseButton::Middle, gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(tabs(cx), before, "middle click on a tab closes it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3915,6 +3923,26 @@ mod tests {
     }
 
     #[test]
+    fn quick_look_on_a_saved_email_shows_its_details() {
+        let dir = std::env::temp_dir().join(format!("file-force-eml-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("hello.eml"),
+            "Received: from mx (mx [198.51.100.9]) by me\r\nFrom: Ann <ann@x.com>\r\nSubject: Hello\r\nX-Mailer: Thunderbird\r\n\r\nHi there\r\n",
+        )
+        .unwrap();
+        let (view, cx) = rooted_window(&dir);
+        let file = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == "hello.eml").unwrap().id);
+        view.update(cx, |this, cx| this.select_entry(file, cx));
+        cx.simulate_keystrokes("space");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("quick-look-email").is_some(), "the email preview with its details");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn quick_look_on_archives_lists_their_members() {
         let dir = std::env::temp_dir().join(format!("file-force-quick-look-archive-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4144,6 +4172,28 @@ mod tests {
     }
 
     #[test]
+    fn settings_sound_tests_every_speaker_and_notifications_chime() {
+        use std::sync::atomic::Ordering;
+        let (view, cx) = pro_window();
+        let appearance = cx.read(|app| view.read(app).appearance.clone());
+        let settings = cx.update(|window, cx| cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone())));
+        assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(9, cx))), 9, "Sound is the 10th section");
+        // 5.1 lists six speakers; each plays its own tone.
+        settings.update(cx, |this, cx| this.set_layout_for_test(crate::settings::SpeakerLayout::Surround51, cx));
+        assert_eq!(crate::sound::speakers(crate::settings::SpeakerLayout::Surround51).len(), 6);
+        let before = crate::sound::PLAYED.load(Ordering::Relaxed);
+        crate::sound::test_speaker(crate::settings::SpeakerLayout::Surround51, 3, 50);
+        assert!(crate::sound::PLAYED.load(Ordering::Relaxed) > before, "the subwoofer test played");
+
+        // A new notification chimes once (also with several windows).
+        let before = crate::sound::PLAYED.load(Ordering::Relaxed);
+        files_sdk::log::notify("files", files_sdk::log::Level::Success, "Chime probe", None);
+        cx.executor().advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+        assert!(crate::sound::PLAYED.load(Ordering::Relaxed) > before, "no chime for a new notification");
+    }
+
+    #[test]
     fn console_resources_show_memory_cpu_and_caches() {
         let (view, cx) = pro_window();
         view.update(cx, |this, cx| {
@@ -4171,7 +4221,7 @@ mod tests {
         let settings = cx.update(|window, cx| cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone())));
         // Developer is the 9th tab; it used to be clamped to Accessibility.
         assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(8, cx))), 8);
-        assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(42, cx))), 8);
+        assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(42, cx))), 9, "clamped to the last section (Sound)");
 
         // No Console button until the user asks for it.
         cx.run_until_parked();

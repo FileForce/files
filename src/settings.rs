@@ -49,6 +49,73 @@ pub struct AppSettings {
     pub mail: MailSettings,
     /// Extension search filters (`git:`…) switched off per search box.
     pub search_filters: SearchFilterSettings,
+    /// Notification sounds and the speaker layout.
+    pub sound: SoundSettings,
+}
+
+/// `[sound]` in settings.toml.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SoundSettings {
+    /// A chime when a notification arrives.
+    pub notifications: bool,
+    /// 0…100.
+    pub volume: u8,
+    pub chime: Chime,
+    /// What the speaker test plays to.
+    pub layout: SpeakerLayout,
+}
+
+impl Default for SoundSettings {
+    fn default() -> Self {
+        Self { notifications: true, volume: 60, chime: Chime::Soft, layout: SpeakerLayout::Stereo21 }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Chime {
+    #[default]
+    Soft,
+    Bright,
+    Low,
+}
+
+impl Chime {
+    pub const ALL: [Self; 3] = [Self::Soft, Self::Bright, Self::Low];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Soft => "Soft",
+            Self::Bright => "Bright",
+            Self::Low => "Low",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeakerLayout {
+    Headphones,
+    #[default]
+    Stereo21,
+    Surround31,
+    Surround51,
+    Surround71,
+}
+
+impl SpeakerLayout {
+    pub const ALL: [Self; 5] = [Self::Headphones, Self::Stereo21, Self::Surround31, Self::Surround51, Self::Surround71];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Headphones => "Headphones",
+            Self::Stereo21 => "2.1",
+            Self::Surround31 => "3.1",
+            Self::Surround51 => "5.1",
+            Self::Surround71 => "7.1",
+        }
+    }
 }
 
 /// `[search_filters]`: keys that stay plain text in each search box.
@@ -520,6 +587,7 @@ impl Default for AppSettings {
             power_saving_below: 100,
             mail: MailSettings::default(),
             search_filters: SearchFilterSettings::default(),
+            sound: SoundSettings::default(),
         }
     }
 }

@@ -20,6 +20,7 @@ mod licensing;
 mod plugins;
 mod power;
 mod resources;
+mod sound;
 mod media_keys;
 mod menu_colors;
 mod menus;

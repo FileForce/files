@@ -184,6 +184,55 @@ fn open_reply(message: &Message, appearance: Entity<AppearanceSettings>, cx: &mu
     open_compose(Vec::new(), Some((message.reply_to.clone(), subject, body)), appearance, cx);
 }
 
+/// Sender, trail, checks, structure and every header of a message.
+pub(crate) fn render_details(message: &Message, palette: Palette) -> AnyElement {
+    let details = &message.details;
+    let section = |title: &'static str| div().pt_3().pb_1().text_size(px(10.)).font_weight(FontWeight::SEMIBOLD).text_color(palette.faint).child(title);
+    let row = |label: &'static str, value: String| {
+        h_flex()
+            .gap_2()
+            .items_start()
+            .text_xs()
+            .child(div().w(px(84.)).flex_shrink_0().text_color(palette.faint).child(label))
+            .child(div().flex_1().min_w_0().child(TextView::markdown(gpui_kit::ElementId::Name(format!("detail-{label}").into()), escape_markdown(&value)).selectable(true)))
+    };
+    let optional = |label: &'static str, value: &Option<String>| value.clone().map(|value| row(label, value));
+    let attachments = message.attachments.len();
+    v_flex()
+        .p_3()
+        .gap_1()
+        .child(section("SENDER"))
+        .child(row("From", message.from.clone()))
+        .children(optional("Reply-To", &details.reply_to))
+        .children(optional("Return-Path", &details.return_path))
+        .child(row("IP", details.sender_ip.clone().unwrap_or_else(|| "not in the headers".into())))
+        .children(optional("Client", &details.client))
+        .child(section("DELIVERY"))
+        .child(row("To", message.to.clone()))
+        .when(!message.cc.is_empty(), |this| this.child(row("Cc", message.cc.clone())))
+        .child(row("Date", time(message.date)))
+        .children(optional("Message-ID", &details.message_id))
+        .when(!details.hops.is_empty(), |this| this.child(row("Route", details.hops.join(" → "))))
+        .children(optional("Checks", &details.authentication))
+        .child(section("CONTENT"))
+        .child(row("MIME", details.mime.clone()))
+        .child(row("Size", crate::settings::format_size(details.size as u64, Default::default())))
+        .child(row("Attachments", if attachments == 0 { "none".into() } else { format!("{attachments}: {}", message.attachments.iter().map(|attachment| attachment.name.as_str()).collect::<Vec<_>>().join(", ")) }))
+        .children(details.parts.iter().map(|(kind, name, bytes)| {
+            row("Part", format!("{kind}{} · {}", name.as_ref().map(|name| format!(" · {name}")).unwrap_or_default(), crate::settings::format_size(*bytes as u64, Default::default())))
+        }))
+        .child(section("ALL HEADERS"))
+        .children(details.headers.iter().enumerate().map(|(index, (name, value))| {
+            v_flex()
+                .py_0p5()
+                .border_b_1()
+                .border_color(palette.border)
+                .child(div().text_size(px(10.)).text_color(palette.muted).child(name.clone()))
+                .child(div().text_xs().font_family("Menlo").child(TextView::markdown(("mail-header", index), escape_markdown(value)).selectable(true)))
+        }))
+        .into_any_element()
+}
+
 // ------------------------------------------------------------------ sidebar
 
 impl FileExplorer {
@@ -252,7 +301,8 @@ impl FileExplorer {
             self.select_tab(index, window, cx);
             return;
         }
-        let view = cx.new(|cx| MailWindow::new(window, cx, email, adding, true, appearance));
+        let files = cx.entity().downgrade();
+        let view = cx.new(|cx| MailWindow::new(window, cx, email, adding, true, appearance, Some(files)));
         self.open_panel_tab("Mail", IconName::Mail, view.into(), window, cx);
     }
 
@@ -275,7 +325,8 @@ impl FileExplorer {
             self.select_tab(index, window, cx);
             return;
         }
-        let view = cx.new(|cx| MailWindow::new(window, cx, Some(email), false, true, appearance));
+        let files = cx.entity().downgrade();
+        let view = cx.new(|cx| MailWindow::new(window, cx, Some(email), false, true, appearance, Some(files)));
         view.update(cx, |mail, cx| mail.show_result(result, cx));
         self.open_panel_tab("Mail", IconName::Mail, view.into(), window, cx);
     }
@@ -345,6 +396,10 @@ pub(crate) struct MailWindow {
     _subscriptions: Vec<Subscription>,
     /// Shown as a tab of the main window (Cmd-W closes the tab, not this).
     in_tab: bool,
+    /// The details panel (sender, IP, MIME…): its own button, or the
+    /// inspector button when Mail is a tab.
+    show_details: bool,
+    explorer: Option<gpui_kit::WeakEntity<FileExplorer>>,
     account: Option<Account>,
     folders: Vec<Folder>,
     folder: String,
@@ -380,6 +435,7 @@ impl MailWindow {
         adding: bool,
         in_tab: bool,
         appearance: Entity<AppearanceSettings>,
+        explorer: Option<gpui_kit::WeakEntity<FileExplorer>>,
     ) -> Self {
         let input = |placeholder: &str, window: &mut Window, cx: &mut Context<Self>| {
             let placeholder = placeholder.to_string();
@@ -398,6 +454,10 @@ impl MailWindow {
                 }
             }),
         ];
+        let mut subscriptions = subscriptions;
+        if let Some(files) = explorer.as_ref().and_then(gpui_kit::WeakEntity::upgrade) {
+            subscriptions.push(cx.observe(&files, |_, _, cx| cx.notify()));
+        }
         let all = accounts();
         let account = email.and_then(|email| all.iter().find(|account| account.email == email).cloned()).or_else(|| all.first().cloned());
         let mut this = Self {
@@ -405,6 +465,8 @@ impl MailWindow {
             appearance,
             focus_handle,
             in_tab,
+            show_details: false,
+            explorer: explorer.clone(),
             adding: adding || account.is_none(),
             account,
             folders: Vec::new(),
@@ -454,6 +516,10 @@ impl MailWindow {
         self.selected = None;
         self.open_message(result.summary.uid, cx);
         cx.notify();
+    }
+
+    fn details_open(&self, cx: &App) -> bool {
+        self.show_details || self.explorer.as_ref().and_then(gpui_kit::WeakEntity::upgrade).is_some_and(|files| files.read(cx).show_inspector)
     }
 
     fn close(&mut self, _: &CloseMail, window: &mut Window, cx: &mut Context<Self>) {
@@ -1169,6 +1235,17 @@ impl Render for MailWindow {
                         .disabled(self.busy)
                         .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
                 )
+                .child(
+                    Button::new("mail-details")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Info)
+                        .tooltip("Details: sender, IP, MIME, headers")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_details = !this.show_details;
+                            cx.notify();
+                        })),
+                )
                 .child(Button::new("mail-remove").ghost().small().icon(IconName::Trash).tooltip("Remove this account").on_click(cx.listener(
                     |this, _, _, cx| this.remove_account(cx),
                 )))
@@ -1186,6 +1263,18 @@ impl Render for MailWindow {
                 .child(self.render_folders(&settings, palette, cx))
                 .child(self.render_list(palette, cx))
                 .when(self.special != Some(Special::Scheduled), |this| this.child(self.render_message(palette, cx)))
+                .children(self.details_open(cx).then(|| self.open.as_ref().map(|message| {
+                    div()
+                        .id("mail-details")
+                        .w(px(320.))
+                        .flex_shrink_0()
+                        .h_full()
+                        .border_l_1()
+                        .border_color(palette.border)
+                        .bg(palette.sidebar)
+                        .overflow_y_scrollbar()
+                        .child(render_details(message, palette))
+                })).flatten())
                 .into_any_element()
         };
         v_flex()
@@ -1208,7 +1297,7 @@ pub(crate) fn open_mail_window(email: Option<String>, adding: bool, appearance: 
         titlebar: Some(gpui_kit::TitlebarOptions { title: Some("Mail".into()), ..Default::default() }),
         ..Default::default()
     };
-    gpui_kit::open_window(options, cx, move |window, cx| cx.new(|cx| MailWindow::new(window, cx, email, adding, false, appearance)))
+    gpui_kit::open_window(options, cx, move |window, cx| cx.new(|cx| MailWindow::new(window, cx, email, adding, false, appearance, None)))
         .ok()
         .map(|(_, view)| view)
 }
