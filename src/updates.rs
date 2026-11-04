@@ -212,6 +212,67 @@ pub fn offered() -> std::sync::MutexGuard<'static, Option<(String, Download)>> {
     OFFERED.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Installs a verified update and starts the new version once this one
+/// has quit (the caller quits right after `Ok`). Windows runs the MSI
+/// (its progress bar and the admin prompt show), macOS copies the app from
+/// the disk image over this one, Linux replaces the AppImage. `Err` means
+/// nothing was changed: the installer is then opened for the user instead.
+pub fn install_and_relaunch(installer: &std::path::Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let pid = std::process::id();
+    #[cfg(windows)]
+    {
+        let quote = |path: &std::path::Path| path.display().to_string().replace('\'', "''");
+        let script = format!(
+            "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
+             $run = Start-Process msiexec.exe -ArgumentList '/i', '\"{msi}\"', '/passive', '/norestart' -Wait -PassThru; \
+             Start-Process '{exe}'",
+            msi = quote(installer),
+            exe = quote(&exe),
+        );
+        files_sdk::log::command("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", &script])
+            .spawn()
+            .map_err(|error| format!("Could not start the installer: {error}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // …/Files.app/Contents/MacOS/file-force → …/Files.app
+        let bundle = exe.ancestors().nth(3).filter(|bundle| bundle.extension().is_some_and(|extension| extension == "app")).ok_or("Not running from an app bundle")?;
+        let quote = |path: &std::path::Path| format!("'{}'", path.display().to_string().replace('\'', r"'\''"));
+        let mount = std::env::temp_dir().join(format!("file-force-update-{pid}"));
+        let script = format!(
+            "while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; \
+             mkdir -p {mount} && /usr/bin/hdiutil attach -nobrowse -readonly -mountpoint {mount} {dmg} >/dev/null && \
+             app=$(ls -d {mount}/*.app | head -n1) && /usr/bin/ditto \"$app\" {bundle}.new && \
+             rm -rf {bundle} && mv {bundle}.new {bundle}; \
+             /usr/bin/hdiutil detach {mount} >/dev/null 2>&1; /usr/bin/open {bundle}",
+            mount = quote(&mount),
+            dmg = quote(installer),
+            bundle = quote(bundle),
+        );
+        std::process::Command::new("/bin/sh").args(["-c", &script]).spawn().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Only an AppImage can replace itself; a package manager owns the rest.
+        let image = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from).ok_or("Not running from an AppImage")?;
+        let quote = |path: &std::path::Path| format!("'{}'", path.display().to_string().replace('\'', r"'\''"));
+        let script = format!(
+            "while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; cp {new} {image}.new && chmod 755 {image}.new && mv {image}.new {image}; {image} &",
+            new = quote(installer),
+            image = quote(&image),
+        );
+        let _ = exe;
+        std::process::Command::new("/bin/sh").args(["-c", &script]).spawn().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("Installing is not supported here".to_string())
+}
+
 pub fn now_seconds() -> i64 {
     now()
 }

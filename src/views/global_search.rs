@@ -208,6 +208,7 @@ impl GlobalSearch {
                     files_ext_music::Source::Local(_) => "Library",
                     files_ext_music::Source::Spotify(_) => "Spotify",
                     files_ext_music::Source::Yandex(_) => "Yandex Music",
+                    files_ext_music::Source::Url(_) => "Stream",
                 };
                 (
                     Icon::new(IconName::Music).text_color(palette.accent).into_any_element(),

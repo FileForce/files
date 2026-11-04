@@ -78,6 +78,10 @@ impl UpdateDialog {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.install = match result {
+                    Ok(path) if crate::updates::install_and_relaunch(&path).is_ok() => {
+                        cx.quit();
+                        Install::Opened(path)
+                    }
                     Ok(path) => {
                         open_url(&path.display().to_string());
                         files_sdk::log::notify(
@@ -120,7 +124,7 @@ impl Render for UpdateDialog {
                             .primary()
                             .small()
                             .icon(IconName::Download)
-                            .label("Download & Install")
+                            .label("Install & Relaunch")
                             .loading(self.install == Install::Downloading)
                             .disabled(self.install == Install::Downloading)
                             .on_click(cx.listener(move |this, _, _, cx| this.download(download.clone(), cx)))
@@ -281,6 +285,10 @@ impl FileExplorer {
                     .await;
                 let _ = cx.update(|cx| match result {
                     Ok(path) => {
+                        if crate::updates::install_and_relaunch(&path).is_ok() {
+                            cx.quit();
+                            return;
+                        }
                         cx.open_url(&path.display().to_string());
                         files_sdk::log::notify(
                             "files",

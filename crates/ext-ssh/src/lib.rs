@@ -381,8 +381,9 @@ pub fn cache_path(connection: &SshConnection, remote: &str) -> PathBuf {
         .chars()
         .map(|char| if char.is_alphanumeric() || char == '.' || char == '@' { char } else { '_' })
         .collect();
-    std::env::temp_dir()
-        .join("file-force-remote")
+    // The extension's cache folder (Settings → Storage lists it).
+    files_sdk::storage::cache_dir(MANIFEST.id)
+        .unwrap_or_else(|_| std::env::temp_dir().join("file-force-remote"))
         .join(host)
         .join(remote.trim_start_matches('/'))
 }

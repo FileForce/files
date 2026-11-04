@@ -72,6 +72,8 @@ pub enum Source {
     Spotify(String),
     /// A Yandex Music track id, downloaded then played here.
     Yandex(String),
+    /// A web address an extension handed over, streamed.
+    Url(String),
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -99,8 +101,15 @@ impl Track {
     }
 }
 
-/// Where a track's cover is kept once fetched (by its address or file).
-pub fn cover_cache_path(track: &Track) -> Option<PathBuf> {
+/// Cover pixels kept on disk: big for the track panel, small for list rows.
+/// A file's own picture is often 1400 px or more, ~8 MB once decoded, while
+/// a row shows it at 32 px.
+pub const COVER_LARGE: u32 = 480;
+pub const COVER_SMALL: u32 = 96;
+
+/// Where a track's cover is kept once fetched (by its address or file),
+/// `small` for list rows.
+pub fn cover_cache_path(track: &Track, small: bool) -> Option<PathBuf> {
     use sha2::Digest as _;
     let key = match (&track.source, &track.cover_url) {
         (Source::Local(path), _) => format!("file:{}", path.display()),
@@ -108,15 +117,54 @@ pub fn cover_cache_path(track: &Track) -> Option<PathBuf> {
         _ => return None,
     };
     let hash: String = sha2::Sha256::digest(key.as_bytes()).iter().take(12).map(|byte| format!("{byte:02x}")).collect();
-    Some(std::env::temp_dir().join("file-force-music").join("covers").join(format!("{hash}.img")))
+    let name = if small { format!("{hash}-s.jpg") } else { format!("{hash}.jpg") };
+    Some(covers_dir().join(name))
 }
 
-/// Fetches a cover into the cache: the web address, or a file's own picture.
-/// `None` when the track has none.
+/// Downloaded tracks and covers: the extension's cache folder from the SDK
+/// (listed and limited in Settings → Storage).
+pub fn cache_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        files_sdk::storage::cache_dir(MANIFEST.id).unwrap_or_else(|_| std::env::temp_dir().join("file-force-music"))
+    })
+    .clone()
+}
+
+/// Before the SDK had storage, the cache lived in the temp folder: its files
+/// move over once (or are dropped when the move fails, e.g. another disk).
+/// The app calls it at start.
+pub fn move_old_cache() {
+    let (old, new) = (std::env::temp_dir().join("file-force-music"), cache_dir());
+    if old != new {
+        move_cache(&old, &new);
+    }
+}
+
+fn move_cache(old: &std::path::Path, new: &std::path::Path) {
+    if !old.is_dir() {
+        return;
+    }
+    for item in std::fs::read_dir(old).into_iter().flatten().flatten() {
+        let target = new.join(item.file_name());
+        if target.exists() || std::fs::rename(item.path(), &target).is_err() {
+            let _ = if item.path().is_dir() { std::fs::remove_dir_all(item.path()) } else { std::fs::remove_file(item.path()) };
+        }
+    }
+    let _ = std::fs::remove_dir_all(old);
+}
+
+pub fn covers_dir() -> PathBuf {
+    cache_dir().join("covers")
+}
+
+/// Fetches a cover into the cache, scaled down to both sizes: the web
+/// address, or a file's own picture. `None` when the track has none.
 pub fn fetch_cover(track: &Track) -> Option<PathBuf> {
-    let target = cover_cache_path(track)?;
-    if target.is_file() {
-        return Some(target);
+    let large = cover_cache_path(track, false)?;
+    let small = cover_cache_path(track, true)?;
+    if large.is_file() && small.is_file() {
+        return Some(large);
     }
     let bytes = match (&track.source, &track.cover_url) {
         (Source::Local(path), _) => local::cover(path)?,
@@ -126,11 +174,20 @@ pub fn fetch_cover(track: &Track) -> Option<PathBuf> {
         }
         _ => return None,
     };
-    std::fs::create_dir_all(target.parent()?).ok()?;
+    let picture = image::load_from_memory(&bytes).ok()?;
+    std::fs::create_dir_all(large.parent()?).ok()?;
+    for (target, side) in [(&small, COVER_SMALL), (&large, COVER_LARGE)] {
+        write_scaled(&picture, target, side)?;
+    }
+    Some(large)
+}
+
+/// Saves `picture` no bigger than `side` px as JPEG, via a partial file.
+fn write_scaled(picture: &image::DynamicImage, target: &std::path::Path, side: u32) -> Option<()> {
+    let scaled = if picture.width() > side || picture.height() > side { picture.thumbnail(side, side) } else { picture.clone() };
     let partial = target.with_extension("partial");
-    std::fs::write(&partial, bytes).ok()?;
-    std::fs::rename(&partial, &target).ok()?;
-    Some(target)
+    scaled.to_rgb8().save_with_format(&partial, image::ImageFormat::Jpeg).ok()?;
+    std::fs::rename(&partial, target).ok()
 }
 
 /// A list of tracks the sidebar shows: liked, a playlist…
@@ -264,4 +321,22 @@ pub(crate) fn check(mut response: ureq::http::Response<ureq::Body>, service: &st
 
 pub(crate) fn log(service: &str, message: String) {
     files_sdk::log::record(MANIFEST.id, files_sdk::log::Kind::Network, format!("{service} · {message}"), None);
+}
+
+#[cfg(test)]
+mod storage_tests {
+    #[test]
+    fn the_old_cache_moves_into_the_new_folder() {
+        let root = std::env::temp_dir().join(format!("files-music-move-{}", std::process::id()));
+        let (old, new) = (root.join("old"), root.join("new"));
+        std::fs::create_dir_all(old.join("covers")).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("yandex-1.mp3"), b"mp3").unwrap();
+        std::fs::write(old.join("covers").join("a.jpg"), b"jpg").unwrap();
+        super::move_cache(&old, &new);
+        assert!(!old.exists(), "the old folder is gone");
+        assert_eq!(std::fs::read(new.join("yandex-1.mp3")).unwrap(), b"mp3");
+        assert!(new.join("covers").join("a.jpg").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

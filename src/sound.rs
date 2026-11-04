@@ -122,7 +122,7 @@ pub fn chime_samples(chime: Chime, level: files_sdk::log::Level) -> Vec<f32> {
     }
 }
 
-fn cache_dir() -> PathBuf {
+pub(crate) fn cache_dir() -> PathBuf {
     std::env::temp_dir().join("file-force-sounds")
 }
 
@@ -236,4 +236,64 @@ mod tests {
         assert_ne!(success, error);
         assert!(success.iter().all(|sample| sample.abs() <= 1.));
     }
+}
+
+// ------------------------------------------------------------ for extensions
+
+/// The user's sound settings, for chimes extensions ask for off the UI thread.
+static SETTINGS: std::sync::Mutex<Option<crate::settings::SoundSettings>> = std::sync::Mutex::new(None);
+
+pub fn set_settings(settings: &crate::settings::SoundSettings) {
+    *SETTINGS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(settings.clone());
+}
+
+fn settings() -> crate::settings::SoundSettings {
+    SETTINGS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone().unwrap_or_default()
+}
+
+/// Player commands wait here for the UI thread (the music player lives there).
+static PENDING: std::sync::Mutex<Vec<files_sdk::audio::Command>> = std::sync::Mutex::new(Vec::new());
+
+pub fn take_pending() -> Vec<files_sdk::audio::Command> {
+    std::mem::take(&mut *PENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+}
+
+/// What an extension asked for: chimes and one-off sounds play at once,
+/// the rest goes to the music player.
+pub fn extension_audio(extension: &str, command: files_sdk::audio::Command) -> std::io::Result<()> {
+    use files_sdk::audio::{Command, Source};
+    files_sdk::log::record(extension, files_sdk::log::Kind::Info, format!("sound: {command:?}"), None);
+    match command {
+        Command::Chime(level) => {
+            let settings = settings();
+            notify(settings.chime, level, settings.volume);
+        }
+        Command::Play { source, volume } => {
+            let volume = volume.unwrap_or_else(|| settings().volume).min(100);
+            match source {
+                Source::File(path) if path.is_file() => play(path, volume, Duration::from_secs(30)),
+                Source::File(path) => return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} not found", path.display()))),
+                Source::Url(url) => play_url(url, volume),
+            }
+        }
+        other => PENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(other),
+    }
+    Ok(())
+}
+
+/// A one-off sound from the web.
+fn play_url(url: String, volume: u8) {
+    PLAYED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if cfg!(test) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let Ok(player) = crate::video::Player::open_url(&url) else { return };
+        player.set_volume(volume);
+        player.play();
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(60) && !player.ended() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
 }

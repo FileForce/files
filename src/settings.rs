@@ -51,6 +51,71 @@ pub struct AppSettings {
     pub search_filters: SearchFilterSettings,
     /// Notification sounds and the speaker layout.
     pub sound: SoundSettings,
+    /// Settings → Storage: the cache limit.
+    pub storage: StorageSettings,
+    /// Notifications in the system's own center (macOS, Windows, Linux).
+    pub system_notifications: SystemNotificationSettings,
+}
+
+/// `[system_notifications]` in settings.toml.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SystemNotificationSettings {
+    pub mode: SystemNotify,
+    /// The least serious kind still sent.
+    pub min_level: NotifyLevel,
+}
+
+/// When a notification also goes to the system.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemNotify {
+    Off,
+    /// Only while no Files window is in front (the toast is seen otherwise).
+    #[default]
+    Background,
+    Always,
+}
+
+impl SystemNotify {
+    pub const ALL: [SystemNotify; 3] = [SystemNotify::Off, SystemNotify::Background, SystemNotify::Always];
+}
+
+/// Which notifications reach the system.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyLevel {
+    #[default]
+    All,
+    Warnings,
+    Errors,
+}
+
+impl NotifyLevel {
+    pub const ALL: [NotifyLevel; 3] = [NotifyLevel::All, NotifyLevel::Warnings, NotifyLevel::Errors];
+
+    pub fn allows(self, level: files_sdk::log::Level) -> bool {
+        use files_sdk::log::Level;
+        match self {
+            NotifyLevel::All => true,
+            NotifyLevel::Warnings => matches!(level, Level::Warning | Level::Error),
+            NotifyLevel::Errors => level == Level::Error,
+        }
+    }
+}
+
+/// `[storage]` in settings.toml.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageSettings {
+    /// Caches together stay under this many MB (0: no limit).
+    pub limit_mb: u32,
+}
+
+impl Default for StorageSettings {
+    fn default() -> Self {
+        Self { limit_mb: 1024 }
+    }
 }
 
 /// `[sound]` in settings.toml.
@@ -588,6 +653,8 @@ impl Default for AppSettings {
             mail: MailSettings::default(),
             search_filters: SearchFilterSettings::default(),
             sound: SoundSettings::default(),
+            storage: StorageSettings::default(),
+            system_notifications: SystemNotificationSettings::default(),
         }
     }
 }

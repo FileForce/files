@@ -64,8 +64,8 @@ fn cover_worker() -> &'static std::sync::mpsc::Sender<Track> {
 }
 
 /// The cached cover of a track, or `None` while it is fetched (asked once).
-pub(crate) fn cover_path(track: &Track) -> Option<PathBuf> {
-    let path = files_ext_music::cover_cache_path(track)?;
+pub(crate) fn cover_path(track: &Track, small: bool) -> Option<PathBuf> {
+    let path = files_ext_music::cover_cache_path(track, small)?;
     if path.is_file() {
         return Some(path);
     }
@@ -77,6 +77,47 @@ pub(crate) fn cover_path(track: &Track) -> Option<PathBuf> {
 }
 
 // ------------------------------------------------------------------ player
+
+/// What extensions asked for (`files_sdk::audio`), on the UI thread.
+pub(crate) fn run_extension_commands(commands: Vec<files_sdk::audio::Command>, cx: &mut App) {
+    use files_sdk::audio::{Command, Source as From};
+    let jukebox = jukebox(cx);
+    jukebox.update(cx, |jukebox, cx| {
+        for command in commands {
+            match command {
+                Command::Queue { tracks, replace } => {
+                    let tracks: Vec<Track> = tracks
+                        .into_iter()
+                        .map(|track| Track {
+                            source: match track.source {
+                                From::File(path) => Source::Local(path),
+                                From::Url(url) => Source::Url(url),
+                            },
+                            title: track.title,
+                            artist: track.artist,
+                            album: track.album,
+                            duration_ms: 0,
+                            cover_url: None,
+                            artist_id: None,
+                            album_id: None,
+                        })
+                        .collect();
+                    if replace {
+                        jukebox.play_queue(tracks, 0, cx);
+                    } else {
+                        jukebox.enqueue(tracks, cx);
+                    }
+                }
+                Command::Pause if jukebox.playing => jukebox.toggle(cx),
+                Command::Resume if !jukebox.playing => jukebox.toggle(cx),
+                Command::Next => jukebox.next(cx),
+                Command::Previous => jukebox.previous(cx),
+                Command::Stop => jukebox.stop(cx),
+                _ => {}
+            }
+        }
+    });
+}
 
 /// Volume or equalizer changed (from any panel): what plays hears it now.
 pub(crate) fn sound_changed(cx: &mut App) {
@@ -281,10 +322,14 @@ impl Jukebox {
         self.length = track.duration_ms as i64;
         match track.source.clone() {
             Source::Local(path) => self.open_file(&path, cx),
+            // From an extension: streamed as it comes.
+            Source::Url(url) => self.open_stream(&url, cx),
             Source::Yandex(id) => {
                 let cached = yandex::cached_file(&id);
                 if cached.is_file() {
                     self.buffer = None;
+                    // Played again: kept longest under the cache limit.
+                    crate::storage::touch(&cached);
                     self.open_file(&cached, cx);
                 } else {
                     // Plays while it downloads: the stream starts at once,
@@ -360,7 +405,7 @@ impl Jukebox {
                 }
             }
         }
-        let cover = cover_path(track);
+        let cover = cover_path(track, false);
         if let Some(system) = self.system.as_mut() {
             system.show(&track.title, &track.artist, &track.album, cover.as_deref(), track.duration_ms);
         }
@@ -501,6 +546,16 @@ impl Jukebox {
         if let Some(player) = &self.player {
             apply_sound(player);
         }
+    }
+
+    /// Stops and empties the queue.
+    pub(crate) fn stop(&mut self, cx: &mut Context<Self>) {
+        self.player = None;
+        self.queue.clear();
+        self.index = None;
+        self.playing = false;
+        self.radio = None;
+        cx.notify();
     }
 
     pub(crate) fn seek(&mut self, fraction: f32) {
@@ -863,6 +918,7 @@ impl MusicView {
             Source::Spotify(_) => "Spotify · plays in the Spotify app".to_string(),
             Source::Yandex(id) if yandex::cached_file(id).is_file() => "Yandex Music · downloaded".to_string(),
             Source::Yandex(_) => "Yandex Music · streamed".to_string(),
+            Source::Url(url) => url.clone(),
         };
         let row = |label: &'static str, value: String| {
             h_flex()
@@ -913,7 +969,7 @@ impl MusicView {
         let service = match &track.source {
             Source::Spotify(_) => Some(Service::Spotify),
             Source::Yandex(_) => Some(Service::Yandex),
-            Source::Local(_) => None,
+            Source::Local(_) | Source::Url(_) => None,
         };
         match action {
             TrackAction::PlayNext => self.jukebox.update(cx, |jukebox, cx| jukebox.play_next(track, cx)),
@@ -1222,7 +1278,7 @@ impl MusicView {
                 let playlists = match &track.source {
                     Source::Spotify(_) => self.spotify_editable.clone(),
                     Source::Yandex(_) => self.yandex_playlists.clone(),
-                    Source::Local(_) => Vec::new(),
+                    Source::Local(_) | Source::Url(_) => Vec::new(),
                 };
                 move |menu, window, cx| {
                     let on = |action: TrackAction| {
@@ -1458,7 +1514,7 @@ impl Render for MusicView {
 
 /// A track's cover, small: the picture once it is downloaded, else a note.
 fn cover_thumb(track: &Track, size: f32, palette: Palette) -> AnyElement {
-    match crate::views::music::cover_path(track) {
+    match crate::views::music::cover_path(track, size <= files_ext_music::COVER_SMALL as f32) {
         Some(path) => gpui_kit::img(path).size(px(size)).rounded_sm().object_fit(gpui_kit::ObjectFit::Cover).into_any_element(),
         None => div()
             .size(px(size))

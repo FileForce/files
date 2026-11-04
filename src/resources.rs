@@ -82,7 +82,7 @@ pub struct Part {
     pub note: &'static str,
 }
 
-fn folder_size(dir: &std::path::Path) -> (usize, u64) {
+pub(crate) fn folder_size(dir: &std::path::Path) -> (usize, u64) {
     let mut files = 0;
     let mut bytes = 0;
     let mut stack = vec![dir.to_path_buf()];
@@ -102,7 +102,7 @@ fn folder_size(dir: &std::path::Path) -> (usize, u64) {
 }
 
 /// Rough size of a file entry: the struct and its strings.
-const ENTRY_BYTES: u64 = 400;
+pub(crate) const ENTRY_BYTES: u64 = 400;
 
 /// What the app holds, part by part (in memory, then on disk).
 pub fn parts() -> Vec<Part> {
@@ -113,7 +113,7 @@ pub fn parts() -> Vec<Part> {
     let players = crate::video::OPEN_PLAYERS.load(std::sync::atomic::Ordering::Relaxed);
     let tracks = files_ext_music::local::library_len();
     let thumbnails = crate::thumbnails::cache_dir().map(|dir| folder_size(&dir)).unwrap_or_default();
-    let music_cache = folder_size(&std::env::temp_dir().join("file-force-music"));
+    let music_cache = folder_size(&files_ext_music::cache_dir());
     vec![
         Part {
             name: "File entries",

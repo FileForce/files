@@ -296,7 +296,7 @@ pub fn stream_url(info_xml: &str) -> Option<String> {
 }
 
 fn cache_dir() -> PathBuf {
-    std::env::temp_dir().join("file-force-music")
+    crate::cache_dir()
 }
 
 /// Where a track is (or will be) cached.

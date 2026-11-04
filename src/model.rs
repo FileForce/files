@@ -759,6 +759,11 @@ pub fn index_stats() -> (usize, u64, usize, usize) {
     fs_index::stats()
 }
 
+/// Forgets global search's file list (built again on the next search).
+pub fn clear_search_index() {
+    fs_index::clear_search();
+}
+
 /// The entry for a file on disk (to reveal it).
 pub fn entry_at(path: &Path) -> Option<&'static FileEntry> {
     fs_index::entry_for_path(path)
@@ -1586,6 +1591,10 @@ mod fs_index {
                 super::trash_dir().map(|dir| read_children(&dir)).unwrap_or_default()
             }
         })
+    }
+
+    pub fn clear_search() {
+        lock().search = None;
     }
 
     pub fn search_index(root: &Path) -> Vec<&'static FileEntry> {

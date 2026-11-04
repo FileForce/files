@@ -21,10 +21,12 @@ pub enum Permission {
     PreventSleep,
     /// Read what is on screen through the accessibility API.
     Accessibility,
+    /// Play sounds and music (through the app's player).
+    Sound,
 }
 
 impl Permission {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::ReadFiles,
         Self::WriteFiles,
         Self::Network,
@@ -34,6 +36,7 @@ impl Permission {
         Self::Background,
         Self::PreventSleep,
         Self::Accessibility,
+        Self::Sound,
     ];
 
     /// The key in `settings.toml`.
@@ -48,6 +51,7 @@ impl Permission {
             Self::Background => "background",
             Self::PreventSleep => "prevent_sleep",
             Self::Accessibility => "accessibility",
+            Self::Sound => "sound",
         }
     }
 
@@ -66,6 +70,7 @@ impl Permission {
             Self::Background => "Run in the background",
             Self::PreventSleep => "Keep the computer awake",
             Self::Accessibility => "Accessibility",
+            Self::Sound => "Sound",
         }
     }
 
@@ -80,6 +85,7 @@ impl Permission {
             Self::Background => "Keep running tasks and receive events while the window is inactive.",
             Self::PreventSleep => "Stop the computer from sleeping while a task runs.",
             Self::Accessibility => "Read what is on screen through the accessibility API.",
+            Self::Sound => "Play sounds, and music in the app's player (shown in Now Playing).",
         }
     }
 }

@@ -5,7 +5,27 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
-## Unreleased
+## 0.1.12
+
+- Windows: Files has its own AppUserModelID (`dev.fileforce.files`), set by the app and on the Start menu shortcut, so its notifications show Files' name and icon and its windows group under one taskbar button.
+- Linux: Files writes its desktop entry and icon to your user folders (menus, notifications and "Open with" know it), and Settings → Default apps can make it the default file manager (folders from the desktop, browsers' "Show in folder", other apps).
+- Started with a folder or file (`file-force ~/Music`, `file://` addresses), Files opens it.
+- System notifications: notifications also reach macOS Notification Center, the Windows action center and Linux desktop notifications. Settings → Sound → System notifications: never, when Files is in the background (default) or always; all, warnings and errors, or errors only; and a test button.
+- Settings → Storage: a ring chart of what Files keeps on disk (thumbnails, extensions' caches, forks, the search index, sounds), each kind with its size and a Clear button, plus Clear all. Forks are shown but never deleted from here.
+- SDK: `files_sdk::storage` gives each extension its own cache folder (`cache_dir`, `cache_file`, `usage`, `clear`, `touch`). Settings → Storage lists every extension's cache with its size and a Clear button, and the cache limit covers it.
+- Music and SSH keep their caches through `files_sdk::storage`: Music's tracks and covers (moved over from the old temp folder at the first start) and files opened from SSH servers show as their own rows under Extensions.
+- Cache limit on a slider (1 GB by default; 256 MB to 20 GB or none): past it, files used least recently are deleted first.
+- Music covers are stored scaled down (96 and 480 px) instead of full size, so long libraries no longer fill memory with multi-megabyte pictures.
+- Updates: Install & Relaunch installs the verified update and starts the
+  new version: Windows runs the installer (with its progress bar),
+  macOS replaces the app from the disk image, Linux replaces the AppImage.
+  If that cannot be done, the installer opens as before.
+- Notifications appear at the bottom right, above everything (dialogs
+  too), newest at the bottom.
+- Extensions SDK: `files_sdk::audio` plays a notification chime, a sound
+  from a file or the web, or tracks in the app's music player (Now
+  Playing, media keys), with pause / resume / next / previous / stop. It
+  needs the new Sound permission, which users can revoke.
 
 ## 0.1.11
 

@@ -218,6 +218,15 @@ pub struct FileExplorer {
 
 /// Search filters of extensions switched off in Settings stop applying.
 fn update_search_extensions(settings: &crate::settings::AppSettings) {
+    // Extensions' chimes use the user's sound settings.
+    crate::sound::set_settings(&settings.sound);
+    crate::storage::set_limit_mb(settings.storage.limit_mb);
+    // Tests leave the user's real caches alone.
+    if !cfg!(test) {
+        std::thread::spawn(files_ext_music::move_old_cache);
+        crate::storage::watch();
+        std::thread::spawn(crate::storage::enforce);
+    }
     let off = crate::extensions::CATALOG
         .iter()
         .enumerate()
@@ -1696,7 +1705,6 @@ impl Render for FileExplorer {
                     .child(gpui_kit::StyledImage::object_fit(gpui_kit::img(path).size_full(), gpui_kit::ObjectFit::Cover))
             }))
             .child(self.render_title_bar(palette, cx))
-            .children(self.render_toasts(palette, cx))
             .children(self.render_folder_picker_bar(palette, cx))
             .child(
                 div().flex_1().min_h_0().child(
@@ -1735,6 +1743,8 @@ impl Render for FileExplorer {
             .children(self.render_console(palette, cx))
             .children(self.render_notifications(palette, cx))
             .child(self.render_status_bar(palette, cx))
+            // Last and deferred: toasts paint over everything, dialogs too.
+            .children(self.render_toasts(palette, cx))
     }
 }
 
@@ -4100,6 +4110,13 @@ mod tests {
         cx.simulate_click(row.center(), gpui_kit::Modifiers::none());
         assert_eq!(cx.read(|app| view.read(app).console_expanded), Some(process.id), "a click shows arguments and output");
         // The copy button gives the exact command, ready to paste in a terminal.
+        // Toasts from tests running alongside sit bottom right, over the row:
+        // close them first.
+        view.update(cx, |this, cx| {
+            this.hidden_toasts.extend(files_sdk::log::notifications().iter().map(|notification| notification.id));
+            cx.notify();
+        });
+        cx.run_until_parked();
         let copy = cx.debug_bounds(Box::leak(format!("console-copy-{}", process.id).into_boxed_str())).expect("no copy button");
         cx.simulate_click(copy.center(), gpui_kit::Modifiers::none());
         assert_eq!(
@@ -4172,6 +4189,42 @@ mod tests {
     }
 
     #[test]
+    fn extensions_play_sound_only_with_the_sound_permission() {
+        static WITH: files_sdk::Manifest = files_sdk::Manifest {
+            id: "sound-probe",
+            name: "Sound probe",
+            version: "1",
+            source: "test",
+            summary: "",
+            icon: files_sdk::Icon::Builtin("music"),
+            adds: &[],
+            permissions: &[files_sdk::Permission::Sound],
+            commands: &[],
+            menu: &[],
+            sidebar: &[],
+            menu_color: None,
+            tier: files_sdk::Tier::Free,
+        };
+        let (_view, cx) = pro_window();
+        // Not declared: refused, nothing plays.
+        let refused = files_sdk::audio::chime("no-sound-probe", files_sdk::log::Level::Info).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+        files_sdk::permissions::declare(&WITH);
+        let track = files_sdk::audio::Track::new("Probe tune", files_sdk::audio::Source::Url("http://127.0.0.1:1/tune.mp3".into()));
+        files_sdk::audio::queue("sound-probe", vec![track], true).unwrap();
+        // The UI thread hands it to the music player.
+        cx.executor().advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+        let jukebox = cx.update(|_, app| crate::views::music::jukebox(app));
+        let queued = cx.read(|app| jukebox.read(app).queue.iter().map(|track| track.title.clone()).collect::<Vec<_>>());
+        assert!(queued.contains(&"Probe tune".to_string()), "{queued:?}");
+        files_sdk::audio::stop("sound-probe").unwrap();
+        cx.executor().advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+        assert!(cx.read(|app| jukebox.read(app).queue.is_empty()), "Stop empties the queue");
+    }
+
+    #[test]
     fn settings_sound_tests_every_speaker_and_notifications_chime() {
         use std::sync::atomic::Ordering;
         let (view, cx) = pro_window();
@@ -4221,7 +4274,7 @@ mod tests {
         let settings = cx.update(|window, cx| cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone())));
         // Developer is the 9th tab; it used to be clamped to Accessibility.
         assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(8, cx))), 8);
-        assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(42, cx))), 9, "clamped to the last section (Sound)");
+        assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(42, cx))), 10, "clamped to the last section (Storage)");
 
         // No Console button until the user asks for it.
         cx.run_until_parked();
@@ -4239,6 +4292,10 @@ mod tests {
         cx.run_until_parked();
         let selector: &'static str = Box::leak(format!("toast-{id}").into_boxed_str());
         assert!(cx.debug_bounds(selector).is_some(), "no toast");
+        // Bottom right, like the system's notifications.
+        let toast = cx.debug_bounds(selector).unwrap();
+        let window = cx.update(|window, _| window.viewport_size());
+        assert!(toast.center().y > window.height / 2. && toast.center().x > window.width / 2., "the toast is not bottom right: {toast:?}");
         assert!(cx.read(|app| view.read(app).toasts().iter().any(|toast| toast.id == id)));
         view.update(cx, |this, cx| {
             this.hidden_toasts.insert(id);

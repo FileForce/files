@@ -75,12 +75,17 @@ fn maintenance_due(last: std::time::Instant, now: std::time::Instant) -> bool {
 static CHIMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One chime for what arrived since the last one (the most serious kind).
-fn chime_for_new_notifications(settings: &crate::settings::AppSettings) {
+fn chime_for_new_notifications(settings: &crate::settings::AppSettings, in_front: bool) {
     use std::sync::atomic::Ordering;
     let seen = CHIMED.load(Ordering::Relaxed);
     let fresh: Vec<log::Notification> = log::notifications().into_iter().filter(|notification| notification.id > seen).collect();
     let Some(newest) = fresh.iter().map(|notification| notification.id).max() else { return };
-    if CHIMED.fetch_max(newest, Ordering::Relaxed) >= newest || !settings.sound.notifications {
+    if CHIMED.fetch_max(newest, Ordering::Relaxed) >= newest {
+        return;
+    }
+    // Also in the system's notification center, when Settings allow it.
+    crate::system_notify::send(&settings.system_notifications, &fresh, in_front);
+    if !settings.sound.notifications {
         return;
     }
     let level = fresh
@@ -129,7 +134,8 @@ impl FileExplorer {
                     // Toasts on screen fade out on time.
                     if generation != this.journal_generation || !this.toasts().is_empty() {
                         if generation != this.journal_generation {
-                            chime_for_new_notifications(this.appearance.read(cx));
+                            let in_front = cx.active_window().is_some();
+                            chime_for_new_notifications(this.appearance.read(cx), in_front);
                         }
                         this.journal_generation = generation;
                         cx.notify();
@@ -152,6 +158,11 @@ impl FileExplorer {
                         if this.console_open && this.console_resources {
                             cx.notify();
                         }
+                    }
+                    // Extensions asked the music player for something.
+                    let commands = crate::sound::take_pending();
+                    if !commands.is_empty() {
+                        crate::views::music::run_extension_commands(commands, cx);
                     }
                     // The slower UI tick must not slow scheduled mail.
                     if check_mail {
@@ -517,11 +528,10 @@ impl FileExplorer {
                 |card, delta| card.ml(px((1. - delta) * 40.)).opacity(delta),
             )
         });
+        // Bottom right, above the status bar, newest at the bottom.
         Some(
-            div()
-                .relative()
-                .h_0()
-                .child(v_flex().absolute().top(px(8.)).right(px(12.)).gap_2().children(cards))
+            gpui_kit::deferred(v_flex().absolute().bottom(px(40.)).right(px(12.)).gap_2().children(cards.into_iter().rev()))
+                .with_priority(1)
                 .into_any_element(),
         )
     }

@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "file-force"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
@@ -1689,6 +1689,7 @@ dependencies = [
  "image",
  "libc",
  "libloading",
+ "notify-rust",
  "nucleo",
  "objc2 0.6.5",
  "objc2-av-foundation",
@@ -1707,6 +1708,7 @@ dependencies = [
  "toml 0.8.23",
  "trash",
  "unicode-normalization",
+ "url",
  "windows-sys 0.61.2",
  "winresource",
  "xattr",
@@ -1793,6 +1795,7 @@ dependencies = [
  "base64 0.22.1",
  "files-sdk",
  "getrandom 0.2.17",
+ "image",
  "lofty",
  "md-5",
  "serde",

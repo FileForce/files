@@ -9,6 +9,7 @@ license = "FSL-1.1-MIT"
 base64 = "0.22"
 files-sdk = { path = "../sdk" }
 getrandom = "0.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 lofty = "0.22"
 md-5 = "0.10"
 serde = { version = "1.0.229", features = ["derive"] }

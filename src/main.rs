@@ -21,6 +21,9 @@ mod plugins;
 mod power;
 mod resources;
 mod sound;
+mod storage;
+mod desktop;
+mod system_notify;
 mod media_keys;
 mod menu_colors;
 mod menus;
@@ -47,7 +50,9 @@ use crate::assets::AppAssets;
 use crate::palette::apply_theme;
 
 fn main() {
+    desktop::set_app_id();
     host::install();
+    let launch = desktop::launch_path(std::env::args());
     application().with_assets(AppAssets).run(|cx| {
         init(cx);
         model::set_system_dark(matches!(
@@ -69,12 +74,28 @@ fn main() {
         menus::register(cx);
         let appearance = cx.new(|_| loaded);
         power::watch(appearance.clone(), cx);
+        // Linux: the menu, notifications and "Open with" know Files.
+        std::thread::spawn(desktop::install_desktop_entry);
 
-        open_window(explorer_window_options(0), cx, move |window, cx| {
+        let window = open_window(explorer_window_options(0), cx, move |window, cx| {
             let appearance = appearance.clone();
             cx.new(|cx| FileExplorer::new(window, cx, appearance))
         })
         .expect("Failed to open File Explorer");
+        // Started with a folder (the default file manager, `files ~/Music`):
+        // open it; a file: its folder with it selected.
+        if let Some(path) = launch {
+            let (handle, explorer) = window;
+            let _ = handle.update(cx, |_, window, cx| {
+                explorer.update(cx, |explorer, cx| {
+                    if path.is_dir() {
+                        explorer.navigate(crate::model::Location::from_path(&path), window, cx);
+                    } else {
+                        explorer.reveal_path(&path, window, cx);
+                    }
+                })
+            });
+        }
     });
 }
 

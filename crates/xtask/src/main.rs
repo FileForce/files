@@ -273,7 +273,10 @@ fn wix_source(config: &Config, version: &str, exe: &str) -> String {
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut">
-        <Shortcut Id="StartMenu" Name="{name}" Target="[INSTALLFOLDER]{exe}" WorkingDirectory="INSTALLFOLDER" />
+        <Shortcut Id="StartMenu" Name="{name}" Target="[INSTALLFOLDER]{exe}" WorkingDirectory="INSTALLFOLDER">
+          <!-- Toasts and the taskbar know the app by this id (the app sets the same one). -->
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="{identifier}" />
+        </Shortcut>
         <RegistryValue Root="HKLM" Key="Software\{manufacturer}\{name}" Name="installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>
@@ -287,6 +290,7 @@ fn wix_source(config: &Config, version: &str, exe: &str) -> String {
 "#,
         manufacturer = escape_xml(&config.windows.manufacturer),
         upgrade = config.windows.upgrade_code,
+        identifier = escape_xml(&config.app.identifier),
         homepage = "https://github.com/FileForce/files",
     )
 }
@@ -669,8 +673,8 @@ fn bundle_linux(root: &Path, config: &Config, version: &str, icons: &Path, dist:
     std::fs::write(
         appdir.join(format!("{}.desktop", config.app.identifier)),
         format!(
-            "[Desktop Entry]\nType=Application\nName={}\nExec={}\nIcon={}\nCategories={}\nX-AppImage-Version={version}\n",
-            config.app.name, config.app.binary, config.app.identifier, config.linux.categories
+            "[Desktop Entry]\nType=Application\nName={}\nExec={} %U\nIcon={}\nCategories={}\nMimeType=inode/directory;\nStartupWMClass={}\nX-AppImage-Version={version}\n",
+            config.app.name, config.app.binary, config.app.identifier, config.linux.categories, config.app.identifier
         ),
     )
     .map_err(|error| error.to_string())?;
@@ -961,6 +965,7 @@ mod tests {
         let wxs = wix_source(&config, "1.2.3", "file-force.exe");
         assert!(wxs.contains(r#"Version="1.2.3""#) && wxs.contains(&config.windows.upgrade_code), "{wxs}");
         assert!(wxs.contains(r#"Source="file-force.exe""#) && wxs.contains("ProgramFiles64Folder") && wxs.contains("MajorUpgrade"));
+        assert!(wxs.contains(&format!(r#"Key="System.AppUserModel.ID" Value="{}""#, config.app.identifier)), "toasts need the shortcut's AppUserModelID");
         assert!(wxs.contains(r#"<Directory Id="VLCFOLDER" Name="vlc" />"#) && wxs.contains(r#"Include="vlc\**""#), "VLC goes into the MSI");
         // The VLC plugin list matches both systems' file names.
         assert!(plugin_wanted("libavcodec_plugin.dylib") && plugin_wanted("libvmem_plugin.dll") && plugin_wanted("libmmdevice_plugin.dll"));

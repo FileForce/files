@@ -22,7 +22,7 @@ use crate::settings::{
 };
 
 /// Tabs in the sidebar: General … Accessibility, Developer.
-const SECTION_COUNT: usize = 10;
+const SECTION_COUNT: usize = 11;
 const EXTENSIONS_TAB: usize = 2;
 
 actions!(
@@ -67,6 +67,16 @@ pub struct SettingsWindow {
     return_focus: Option<FocusHandle>,
     /// Set by Save so the footer can confirm it; cleared by the next edit.
     just_saved: bool,
+    /// Settings → Storage: the caches measured (`None` while measuring).
+    storage_usage: Option<Vec<(crate::storage::Kind, crate::storage::Usage)>>,
+    /// Each extension's own cache (`files_sdk::storage`).
+    storage_extensions: Vec<crate::storage::ExtensionUsage>,
+    storage_slider: Entity<gpui_kit::component::slider::SliderState>,
+    /// Linux: whether folders open in Files system-wide, and why making it
+    /// so failed.
+    default_file_manager: bool,
+    default_file_manager_error: Option<String>,
+    _storage_subscription: Subscription,
     /// Appearance: panel opacity slider and custom background color.
     opacity_slider: Entity<gpui_kit::component::slider::SliderState>,
     /// Settings → General → Power saving: below which charge it starts.
@@ -160,6 +170,20 @@ impl SettingsWindow {
                 cx.notify();
             }
         });
+        // Cache limit: a slider whose steps are the limits.
+        let storage_slider = cx.new(|_| {
+            gpui_kit::component::slider::SliderState::new()
+                .min(0.)
+                .max((STORAGE_LIMITS.len() - 1) as f32)
+                .step(1.)
+                .default_value(storage_step(current.storage.limit_mb) as f32)
+        });
+        let storage_subscription = cx.subscribe(&storage_slider, |this: &mut Self, _, event, cx| {
+            if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
+                this.draft.storage.limit_mb = STORAGE_LIMITS[(value.end().round() as usize).min(STORAGE_LIMITS.len() - 1)];
+                cx.notify();
+            }
+        });
         let background_hex = cx.new(|cx| {
             let hex = match &current.look.background {
                 crate::settings::Background::Color { hex } => hex.clone(),
@@ -197,6 +221,12 @@ impl SettingsWindow {
             expanded_extension: None,
             return_focus: None,
             just_saved: false,
+            storage_usage: None,
+            storage_extensions: Vec::new(),
+            storage_slider,
+            default_file_manager: cfg!(all(unix, not(target_os = "macos"))) && crate::desktop::is_default_file_manager(),
+            default_file_manager_error: None,
+            _storage_subscription: storage_subscription,
             opacity_slider,
             power_slider,
             _power_subscription: power_subscription,
@@ -280,6 +310,8 @@ impl SettingsWindow {
         let below = self.draft.power_saving_below as f32;
         self.power_slider.update(cx, |slider, cx| slider.set_value(below, window, cx));
         self.text_scale_slider.update(cx, |slider, cx| slider.set_value(scale, window, cx));
+        let step = storage_step(self.draft.storage.limit_mb) as f32;
+        self.storage_slider.update(cx, |slider, cx| slider.set_value(step, window, cx));
     }
 
     /// Closes the modal and gives focus back, so shortcuts work without a click.
@@ -296,7 +328,212 @@ impl SettingsWindow {
 
     fn select_section(&mut self, index: usize, cx: &mut Context<Self>) {
         self.active_tab = index.min(SECTION_COUNT - 1);
+        if self.active_tab == STORAGE_TAB {
+            self.measure_storage(cx);
+        }
         cx.notify();
+    }
+
+    /// Measures the caches in the background (or clears one first).
+    fn measure_storage(&mut self, cx: &mut Context<Self>) {
+        self.run_storage(|| {}, cx);
+    }
+
+    fn run_storage(&mut self, work: impl FnOnce() + Send + 'static, cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async move {
+            work();
+            (crate::storage::usage(), crate::storage::extensions())
+        });
+        cx.spawn(async move |this, cx| {
+            let (usage, extensions) = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.storage_usage = Some(usage);
+                this.storage_extensions = extensions;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Settings → Storage: a ring of what the caches hold, each kind with its
+    /// size and a Clear button, and the limit they stay under.
+    fn render_storage(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        use crate::storage::Kind;
+        let language = self.draft.language;
+        let color = move |kind: Kind| match kind {
+            Kind::Thumbnails => palette.video,
+            Kind::Extensions => palette.accent,
+            Kind::Forks => palette.archive,
+            Kind::SearchIndex => palette.document,
+            Kind::Sounds => palette.code,
+        };
+        let usage = self.storage_usage.clone().unwrap_or_default();
+        let total: u64 = usage.iter().map(|(_, usage)| usage.bytes).sum();
+        let measured = self.storage_usage.is_some();
+        let slices: Vec<(Kind, f32)> = usage.iter().filter(|(_, usage)| usage.bytes > 0).map(|(kind, usage)| (*kind, usage.bytes as f32)).collect();
+        let ring = div()
+            .relative()
+            .size(px(180.))
+            .flex_shrink_0()
+            .child(if slices.is_empty() {
+                div().size_full().rounded_full().border(px(28.)).border_color(palette.surface).into_any_element()
+            } else {
+                gpui_kit::component::chart::PieChart::new(slices)
+                    .id("storage-ring")
+                    .inner_radius(54.)
+                    .outer_radius(84.)
+                    .pad_angle(0.02)
+                    .value(|slice: &(Kind, f32)| slice.1)
+                    .color(move |slice: &(Kind, f32)| color(slice.0))
+                    .tooltip_name(move |slice: &(Kind, f32)| slice.0.label(language).into())
+                    .tooltip_value(|slice: &(Kind, f32), _, _| crate::resources::size(slice.1 as u64).into())
+                    .into_any_element()
+            })
+            .child(
+                v_flex()
+                    .absolute()
+                    .inset_0()
+                    .items_center()
+                    .justify_center()
+                    .child(div().text_lg().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(if measured { crate::resources::size(total) } else { "…".to_string() }))
+                    .child(div().text_xs().text_color(palette.muted).child(tr(language, "in cache", "в кэше"))),
+            );
+        let rows = usage.iter().map(|(kind, usage)| {
+            let kind = *kind;
+            let share = if total > 0 { usage.bytes as f32 / total as f32 } else { 0. };
+            h_flex()
+                .w_full()
+                .gap_3()
+                .items_center()
+                .child(div().size(px(10.)).flex_shrink_0().rounded_full().bg(color(kind)))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().child(kind.label(language)))
+                        .child(div().text_xs().text_color(palette.muted).child(kind.note(language))),
+                )
+                .child(
+                    v_flex()
+                        .items_end()
+                        .child(div().text_sm().child(crate::resources::size(usage.bytes)))
+                        .child(div().text_xs().text_color(palette.faint).child(format!("{} · {:.0}%", files_count(usage.files, language), share * 100.))),
+                )
+                .when(!kind.clearable(), |this| this.child(div().w(px(84.))))
+                .when(kind.clearable(), |this| this.child(
+                    Button::new(gpui_kit::ElementId::Name(format!("storage-clear-{kind:?}").into()))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Trash)
+                        .label(tr(language, "Clear", "Очистить"))
+                        .disabled(usage.files == 0)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.run_storage(move || {
+                                crate::storage::clear(kind);
+                            }, cx);
+                        })),
+                ))
+        });
+        let limit = self.draft.storage.limit_mb;
+        // Extensions one by one, under the Extensions row, so an SDK author
+        // sees which cache grows.
+        let extension_rows = self.storage_extensions.iter().map(|extension| {
+            let id = extension.id.clone();
+            h_flex()
+                .w_full()
+                .pl(px(22.))
+                .gap_3()
+                .items_center()
+                .child(Icon::new(IconName::Puzzle).xsmall().text_color(palette.muted))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().child(extension.name.clone()))
+                        .child(div().text_xs().text_color(palette.faint).truncate().child(extension.id.clone())),
+                )
+                .child(
+                    v_flex()
+                        .items_end()
+                        .child(div().text_sm().child(crate::resources::size(extension.usage.bytes)))
+                        .child(div().text_xs().text_color(palette.faint).child(files_count(extension.usage.files, language))),
+                )
+                .child(
+                    Button::new(gpui_kit::ElementId::Name(format!("storage-clear-ext-{id}").into()))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Trash)
+                        .label(tr(language, "Clear", "Очистить"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let id = id.clone();
+                            this.run_storage(move || {
+                                crate::storage::clear_extension(&id);
+                            }, cx);
+                        })),
+                )
+        });
+        let mut rows: Vec<AnyElement> = rows.map(IntoElement::into_any_element).collect();
+        if let Some(at) = usage.iter().position(|(kind, _)| *kind == Kind::Extensions) {
+            rows.splice(at + 1..at + 1, extension_rows.map(IntoElement::into_any_element));
+        }
+        let current_limit = limit_label(limit, language);
+        let ticks = STORAGE_LIMITS.map(|megabytes| div().w(px(2.)).h(px(6.)).rounded_full().bg(if megabytes == limit { palette.accent } else { palette.border }));
+        v_flex()
+            .p_5()
+            .gap_4()
+            .child(
+                card(palette)
+                    .child(section(IconName::HardDrive, tr(language, "Cache on this computer", "Кэш на этом компьютере"), palette))
+                    .child(h_flex().w_full().gap_6().items_center().child(ring).child(v_flex().flex_1().min_w_0().gap_3().children(rows)))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(div().flex_1())
+                            .child(Button::new("storage-refresh").ghost().small().icon(IconName::RefreshCw).label(tr(language, "Refresh", "Обновить")).on_click(cx.listener(|this, _, _, cx| this.measure_storage(cx))))
+                            .child(
+                                Button::new("storage-clear-all").danger().small().icon(IconName::Trash).label(tr(language, "Clear all", "Очистить всё")).disabled(total == 0).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.run_storage(|| {
+                                            for kind in Kind::ALL {
+                                                crate::storage::clear(kind);
+                                            }
+                                        }, cx);
+                                    }),
+                                ),
+                            ),
+                    ),
+            )
+            .child(
+                card(palette)
+                    .child(section(IconName::Gauge, tr(language, "Limit", "Лимит"), palette))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .child(div().text_xs().text_color(palette.muted).child(limit_label(STORAGE_LIMITS[0], language)))
+                            .child(div().flex_1().child(gpui_kit::component::slider::Slider::new(&self.storage_slider)))
+                            .child(div().text_xs().text_color(palette.muted).child(limit_label(0, language))),
+                    )
+                    .child(h_flex().px(px(18.)).justify_between().children(ticks))
+                    .child(
+                        h_flex()
+                            .justify_center()
+                            .gap_2()
+                            .text_sm()
+                            .child(tr(language, "Keep the cache under", "Держать кэш не больше"))
+                            .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.accent).child(current_limit)),
+                    )
+                    .child(note(
+                        tr(
+                            language,
+                            "Past the limit, files used least recently are deleted first. Your own files are never touched: only what Files downloaded or made.",
+                            "Сверх лимита первыми удаляются давно не использованные файлы. Ваши файлы не затрагиваются — только то, что Files скачал или создал сам.",
+                        ),
+                        palette,
+                    )),
+            )
+            .into_any_element()
     }
 
     #[cfg(test)]
@@ -973,6 +1210,32 @@ impl SettingsWindow {
                     })),
             )
         });
+        use crate::settings::{NotifyLevel, SystemNotify};
+        let system = self.draft.system_notifications.clone();
+        let system_modes = SystemNotify::ALL.map(|mode| {
+            let label = match mode {
+                SystemNotify::Off => tr(language, "Never", "Никогда"),
+                SystemNotify::Background => tr(language, "When Files is in the background", "Когда Files в фоне"),
+                SystemNotify::Always => tr(language, "Always", "Всегда"),
+            };
+            option_button(gpui_kit::ElementId::Name(format!("system-notify-{mode:?}").into()), label, system.mode == mode).on_click(cx.listener(move |this, _, _, cx| {
+                this.draft.system_notifications.mode = mode;
+                cx.notify();
+            }))
+        });
+        let system_levels = NotifyLevel::ALL.map(|level| {
+            let label = match level {
+                NotifyLevel::All => tr(language, "All", "Все"),
+                NotifyLevel::Warnings => tr(language, "Warnings and errors", "Предупреждения и ошибки"),
+                NotifyLevel::Errors => tr(language, "Errors only", "Только ошибки"),
+            };
+            option_button(gpui_kit::ElementId::Name(format!("system-level-{level:?}").into()), label, system.min_level == level)
+                .disabled(system.mode == SystemNotify::Off)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.draft.system_notifications.min_level = level;
+                    cx.notify();
+                }))
+        });
         let count = crate::sound::speakers(sound.layout).len();
         v_flex()
             .p_5()
@@ -1002,6 +1265,30 @@ impl SettingsWindow {
                     ))
                     .child(setting_row(tr(language, "Try", "Прослушать"), h_flex().gap_1().children(test_levels), palette))
                     .child(note(tr(language, "Each kind sounds different: errors lower, successes rising.", "У каждого вида свой звук: ошибка ниже, успех — восходящий."), palette)),
+            )
+            .child(
+                card(palette)
+                    .child(section(IconName::MessageSquare, tr(language, "System notifications", "Системные уведомления"), palette))
+                    .child(note(
+                        tr(
+                            language,
+                            "Notifications also appear in the system's notification center, so finished copies, updates and errors reach you outside Files.",
+                            "Уведомления приходят и в центр уведомлений системы — о завершённом копировании, обновлениях и ошибках вы узнаете и вне Files.",
+                        ),
+                        palette,
+                    ))
+                    .child(setting_row(tr(language, "Send to the system", "Отправлять в систему"), h_flex().gap_2().flex_wrap().children(system_modes), palette))
+                    .child(setting_row(tr(language, "Which ones", "Какие"), h_flex().gap_2().flex_wrap().children(system_levels), palette))
+                    .child(
+                        h_flex().child(
+                            Button::new("system-notify-test").ghost().xsmall().icon(IconName::Send).label(tr(language, "Send a test", "Отправить тестовое")).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    crate::system_notify::test(this.draft.language);
+                                    cx.notify();
+                                }),
+                            ),
+                        ),
+                    ),
             )
             .child(
                 card(palette)
@@ -1540,8 +1827,12 @@ impl SettingsWindow {
             let _ = this.update(cx, |this, cx| {
                 this.installing_update = false;
                 if let Ok(path) = &result {
-                    // Opens the .dmg / .msi / AppImage folder for the last step.
-                    cx.open_url(&path.display().to_string());
+                    // Install, then this copy quits and the new one starts.
+                    match crate::updates::install_and_relaunch(path) {
+                        Ok(()) => cx.quit(),
+                        // Could not do it here: the installer, for the user.
+                        Err(_) => cx.open_url(&path.display().to_string()),
+                    }
                 }
                 this.update_install = Some(result);
                 cx.notify();
@@ -1567,7 +1858,7 @@ impl SettingsWindow {
                             .primary()
                             .small()
                             .icon(IconName::Download)
-                            .label(tr(language, "Download & Install", "Скачать и установить"))
+                            .label(tr(language, "Install & Relaunch", "Установить и перезапустить"))
                             .loading(self.installing_update)
                             .disabled(self.installing_update)
                             .on_click(cx.listener(move |this, _, _, cx| this.install_update(download.clone(), cx)))
@@ -2392,9 +2683,56 @@ impl SettingsWindow {
             }
         }
 
+        // Linux: Files as the system's file manager (folders from the desktop,
+        // browsers' "Show in folder", other apps).
+        let file_manager = cfg!(all(unix, not(target_os = "macos"))).then(|| {
+            card(palette)
+                .child(section(IconName::FolderOpen, tr(language, "Default file manager", "Файловый менеджер по умолчанию"), palette))
+                .child(note(
+                    tr(
+                        language,
+                        "Folders open in Files everywhere: on the desktop, from a browser's \"Show in folder\" and from other apps (xdg-mime, inode/directory). To undo, choose another file manager in your system settings.",
+                        "Папки открываются в Files везде: на рабочем столе, по «Показать в папке» из браузера и из других приложений (xdg-mime, inode/directory). Чтобы вернуть прежний, выберите другой менеджер в настройках системы.",
+                    ),
+                    palette,
+                ))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(if self.default_file_manager {
+                            h_flex()
+                                .gap_2()
+                                .text_sm()
+                                .text_color(palette.accent)
+                                .child(Icon::new(IconName::CircleCheck).small())
+                                .child(tr(language, "Files opens folders", "Files открывает папки"))
+                                .into_any_element()
+                        } else {
+                            Button::new("make-default-file-manager")
+                                .primary()
+                                .small()
+                                .icon(IconName::FolderOpen)
+                                .label(tr(language, "Make Files the default", "Сделать Files менеджером по умолчанию"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    match crate::desktop::make_default_file_manager() {
+                                        Ok(()) => {
+                                            this.default_file_manager = crate::desktop::is_default_file_manager();
+                                            this.default_file_manager_error = None;
+                                        }
+                                        Err(error) => this.default_file_manager_error = Some(error.to_string()),
+                                    }
+                                    cx.notify();
+                                }))
+                                .into_any_element()
+                        })
+                        .children(self.default_file_manager_error.clone().map(|error| div().text_xs().text_color(palette.faint).child(error))),
+                )
+        });
         v_flex()
             .p_5()
             .gap_4()
+            .children(file_manager)
             .child(
                 card(palette)
                     .child(section(IconName::AppWindow, tr(language, "Default apps", "Приложения по умолчанию"), palette))
@@ -3269,6 +3607,7 @@ impl Render for SettingsWindow {
             (IconName::PersonStanding, tr(language, "Accessibility", "Доступность")),
             (IconName::SquareTerminal, tr(language, "Developer", "Разработчик")),
             (IconName::Volume2, tr(language, "Sound", "Звук")),
+            (IconName::HardDrive, tr(language, "Storage", "Хранилище")),
         ];
         let content = match self.active_tab {
             0 => self.render_general(palette, cx),
@@ -3280,7 +3619,8 @@ impl Render for SettingsWindow {
             6 => self.render_hotkeys(palette, window, cx),
             7 => self.render_accessibility(palette, cx),
             8 => self.render_developer(palette, cx),
-            _ => self.render_sound(palette, cx),
+            9 => self.render_sound(palette, cx),
+            _ => self.render_storage(palette, cx),
         };
         let path = settings_path()
             .map(|path| path.display().to_string())
@@ -3601,6 +3941,42 @@ pub(crate) fn menu_preview_titles(manifest: &'static files_sdk::Manifest) -> Vec
     menu_preview(manifest).into_iter().map(|item| (item.label, item.children.iter().map(|(label, _)| *label).collect())).collect()
 }
 
+/// Settings → Storage is the last section.
+const STORAGE_TAB: usize = 10;
+
+/// The cache limit slider's steps in MB, "no limit" (0) last.
+const STORAGE_LIMITS: [u32; 8] = [256, 512, 1024, 2048, 5120, 10240, 20480, 0];
+
+fn storage_step(megabytes: u32) -> usize {
+    STORAGE_LIMITS.iter().position(|step| *step == megabytes).unwrap_or_else(|| {
+        // A hand-edited value: the nearest step below it.
+        STORAGE_LIMITS.iter().rposition(|step| *step != 0 && *step <= megabytes).unwrap_or(0)
+    })
+}
+
+fn limit_label(megabytes: u32, language: crate::settings::Language) -> String {
+    match megabytes {
+        0 => tr(language, "No limit", "Без лимита").to_string(),
+        megabytes if megabytes >= 1024 => format!("{} GB", megabytes / 1024),
+        megabytes => format!("{megabytes} MB"),
+    }
+}
+
+/// "1 file", "12 files", "12 файлов".
+fn files_count(count: usize, language: crate::settings::Language) -> String {
+    match language {
+        crate::settings::Language::Russian => {
+            let word = match (count % 10, count % 100) {
+                (1, hundred) if hundred != 11 => "файл",
+                (2..=4, hundred) if !(12..=14).contains(&hundred) => "файла",
+                _ => "файлов",
+            };
+            format!("{count} {word}")
+        }
+        _ => format!("{count} {}", if count == 1 { "file" } else { "files" }),
+    }
+}
+
 fn option_button(
     id: impl Into<gpui_kit::ElementId>,
     label: impl Into<gpui_kit::SharedString>,
@@ -3660,4 +4036,22 @@ fn note(label: &'static str, palette: Palette) -> AnyElement {
         .text_color(palette.faint)
         .child(label)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn limit_steps_round_trip_and_read() {
+        for (index, megabytes) in STORAGE_LIMITS.iter().enumerate() {
+            assert_eq!(storage_step(*megabytes), index);
+        }
+        assert_eq!(storage_step(3000), 3, "a hand-edited value snaps to the step below");
+        assert_eq!(limit_label(1024, crate::settings::Language::English), "1 GB");
+        assert_eq!(limit_label(512, crate::settings::Language::English), "512 MB");
+        assert_eq!(limit_label(0, crate::settings::Language::Russian), "Без лимита");
+        assert_eq!(files_count(22, crate::settings::Language::Russian), "22 файла");
+        assert_eq!(files_count(11, crate::settings::Language::Russian), "11 файлов");
+    }
 }

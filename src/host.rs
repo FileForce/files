@@ -11,8 +11,17 @@ impl files_sdk::Host for AppHost {
         Some(crate::settings::settings_path()?.parent()?.to_path_buf())
     }
 
+    /// Extensions' caches, shown and limited in Settings → Storage.
+    fn cache_dir(&self) -> Option<PathBuf> {
+        Some(crate::storage::extensions_root())
+    }
+
     fn protection(&self, path: &Path, patterns: &[String], home: &Path) -> Option<String> {
         crate::delete::protection(path, patterns, home).map(str::to_string)
+    }
+
+    fn audio(&self, extension: &str, command: files_sdk::audio::Command) -> io::Result<()> {
+        crate::sound::extension_audio(extension, command)
     }
 
     fn delete(&self, paths: &[&Path], use_trash: bool) -> Result<(), (usize, io::Error)> {

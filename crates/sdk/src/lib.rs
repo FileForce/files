@@ -26,12 +26,14 @@ use std::sync::OnceLock;
 
 pub mod fs;
 pub mod license;
+pub mod audio;
 pub mod log;
 pub mod package;
 pub mod plugin;
 pub mod permissions;
 pub mod power;
 pub mod secrets;
+pub mod storage;
 
 pub use permissions::Permission;
 
@@ -405,6 +407,10 @@ pub trait SnapshotProvider: Send + Sync {
 pub trait Host: Send + Sync {
     /// A folder the extension may keep its own files in.
     fn config_dir(&self) -> Option<PathBuf>;
+    /// Where extensions' caches live, one folder each ([`storage`]).
+    fn cache_dir(&self) -> Option<PathBuf> {
+        Some(std::env::temp_dir().join("files-sdk-cache"))
+    }
     /// The user's rule that protects `path` from changes, if any.
     fn protection(&self, path: &Path, patterns: &[String], home: &Path) -> Option<String>;
     /// Deletes `paths` (to the Trash when `use_trash`); on failure reports
@@ -416,6 +422,12 @@ pub trait Host: Send + Sync {
     }
     /// Files changed on disk behind the app's back: refresh listings.
     fn files_changed(&self) {}
+    /// Plays sound for an extension (see [`audio`]); hosts without a
+    /// player say so.
+    fn audio(&self, extension: &str, command: audio::Command) -> io::Result<()> {
+        let _ = (extension, command);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "This host plays no sound"))
+    }
 }
 
 static HOST: OnceLock<Box<dyn Host>> = OnceLock::new();
