@@ -23,6 +23,7 @@ mod resources;
 mod sound;
 mod storage;
 mod desktop;
+mod instance;
 mod system_notify;
 mod media_keys;
 mod menu_colors;
@@ -50,13 +51,19 @@ use crate::assets::AppAssets;
 use crate::palette::apply_theme;
 
 fn main() {
+    desktop::hand_shell_folders_to_explorer();
     desktop::set_app_id();
     host::install();
     let launch = desktop::launch_path(std::env::args());
+    // Settings → General → One window: a running Files takes the folder.
+    let single = settings::load().single_instance;
+    if single && instance::hand_over(launch.as_deref()) {
+        return;
+    }
     let app = application().with_assets(AppAssets);
     // macOS: folders other apps ask Files to open (it is the folder viewer).
     app.on_open_urls(desktop::opened_from_system);
-    app.run(|cx| {
+    app.run(move |cx| {
         init(cx);
         model::set_system_dark(matches!(
             cx.window_appearance(),
@@ -87,13 +94,21 @@ fn main() {
         .expect("Failed to open File Explorer");
         // Started with a folder (the default file manager, `files ~/Music`):
         // open it; a file: its folder with it selected.
-        // Folders from the system while Files runs: each in a new tab.
+        if single {
+            instance::listen();
+            cx.on_app_quit(|_| async { instance::release() }).detach();
+        }
+        // Folders from the system (or a second start) while Files runs: each
+        // in a new tab; a start without one brings the window up.
         let (handle, explorer) = window.clone();
         cx.spawn(async move |cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
                 let opened = desktop::take_opened();
                 if opened.is_empty() {
+                    if instance::take_activate() && handle.update(cx, |_, window, _| window.activate_window()).is_err() {
+                        break;
+                    }
                     continue;
                 }
                 let alive = handle.update(cx, |_, window, cx| {

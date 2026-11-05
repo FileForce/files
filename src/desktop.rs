@@ -125,6 +125,13 @@ mod mac {
 
 /// Whether the system opens folders with Files.
 pub fn is_default_file_manager() -> bool {
+    #[cfg(windows)]
+    {
+        return files_sdk::log::command("reg")
+            .args(["query", WINDOWS_CLASSES[0], "/ve"])
+            .output()
+            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(WINDOWS_VERB));
+    }
     #[cfg(target_os = "macos")]
     {
         return mac::folder_handler().is_some_and(|handler| handler.eq_ignore_ascii_case(APP_ID));
@@ -144,6 +151,20 @@ pub fn is_default_file_manager() -> bool {
 /// folder" of browsers and other apps); on macOS what other apps reveal and
 /// `open` (the desktop and the Dock stay Finder's).
 pub fn make_default_file_manager() -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe()?;
+        let command = windows_command(&exe);
+        for classes in WINDOWS_CLASSES {
+            let verb = format!(r"{classes}\{WINDOWS_VERB}");
+            reg(&["add", &verb, "/ve", "/d", "Open in file FORCE", "/f"])?;
+            reg(&["add", &format!(r"{verb}\command"), "/ve", "/d", &command, "/f"])?;
+            // The default verb: what a double-click runs.
+            reg(&["add", classes, "/ve", "/d", WINDOWS_VERB, "/f"])?;
+        }
+        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, "Files now opens folders instead of Explorer".to_string(), None);
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     {
         mac::set_folder_handler(APP_ID)?;
@@ -166,6 +187,44 @@ pub fn make_default_file_manager() -> std::io::Result<()> {
     }
     #[allow(unreachable_code)]
     Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Only on Linux"))
+}
+
+// ------------------------------------------------------------ Windows
+
+/// The verb Explorer runs on a double-clicked folder or drive, under the
+/// user's own classes (no administrator needed; Restore Explorer and the
+/// uninstaller take it out).
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOWS_VERB: &str = "openinfiles";
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOWS_CLASSES: [&str; 2] = [r"HKCU\Software\Classes\Directory\shell", r"HKCU\Software\Classes\Drive\shell"];
+
+/// The command a folder verb runs: `"C:\…\file-force.exe" "%V"`.
+pub fn windows_command(exe: &std::path::Path) -> String {
+    format!("\"{}\" \"%V\"", exe.display())
+}
+
+/// Folders without a path ("This PC", Control Panel: `::{GUID}`,
+/// `shell:` names) are Explorer's: Files hands them back.
+pub fn is_shell_folder(arg: &str) -> bool {
+    arg.starts_with("::") || arg.to_ascii_lowercase().starts_with("shell:")
+}
+
+/// Windows: started for a shell folder, Explorer opens it and Files quits.
+pub fn hand_shell_folders_to_explorer() {
+    #[cfg(windows)]
+    if let Some(arg) = std::env::args().nth(1)
+        && is_shell_folder(&arg)
+    {
+        let _ = files_sdk::log::command("explorer.exe").arg(arg).spawn();
+        std::process::exit(0);
+    }
+}
+
+#[cfg(windows)]
+fn reg(args: &[&str]) -> std::io::Result<()> {
+    let status = files_sdk::log::command("reg").args(args).status()?;
+    if status.success() { Ok(()) } else { Err(std::io::Error::other(format!("reg {} failed", args.first().copied().unwrap_or_default()))) }
 }
 
 // ------------------------------------------------------- macOS `open`
@@ -266,6 +325,26 @@ pub fn set_open_script(install: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Windows: Explorer opens folders again.
+pub fn restore_explorer() -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        for classes in WINDOWS_CLASSES {
+            let _ = reg(&["delete", classes, "/ve", "/f"]);
+            let _ = reg(&["delete", &format!(r"{classes}\{WINDOWS_VERB}"), "/f"]);
+        }
+        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, "Explorer opens folders again".to_string(), None);
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Only on Windows"))
+}
+
+/// Gives folders back to the system's own manager (Finder, Explorer).
+pub fn restore_system_file_manager() -> std::io::Result<()> {
+    if cfg!(windows) { restore_explorer() } else { restore_finder() }
+}
+
 /// macOS: Finder opens folders again.
 pub fn restore_finder() -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
@@ -315,6 +394,13 @@ mod tests {
         assert!(std::process::Command::new("sh").arg("-n").arg(&script).status().unwrap().success(), "valid sh");
         assert!(OPEN_SCRIPT.contains("*.app|") && OPEN_SCRIPT.contains("-*) folders=0") && OPEN_SCRIPT.contains("exec /usr/bin/open \"$@\""));
         let _ = std::fs::remove_file(&script);
+    }
+
+    #[test]
+    fn windows_folders_open_by_path_shell_folders_stay_explorer_s() {
+        assert_eq!(windows_command(std::path::Path::new(r"C:\Program Files\Files\file-force.exe")), r#""C:\Program Files\Files\file-force.exe" "%V""#);
+        assert!(is_shell_folder("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}") && is_shell_folder("shell:Downloads"));
+        assert!(!is_shell_folder(r"C:\Users\me"));
     }
 
     #[test]

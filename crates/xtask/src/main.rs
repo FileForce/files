@@ -278,6 +278,9 @@ fn wix_source(config: &Config, version: &str, exe: &str) -> String {
           <ShortcutProperty Key="System.AppUserModel.ID" Value="{identifier}" />
         </Shortcut>
         <RegistryValue Root="HKLM" Key="Software\{manufacturer}\{name}" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        <!-- "Open folders in Files" (Settings) points Explorer at the exe: gone with it. -->
+        <RemoveRegistryKey Root="HKCU" Key="Software\Classes\Directory\shell\openinfiles" Action="removeOnUninstall" />
+        <RemoveRegistryKey Root="HKCU" Key="Software\Classes\Drive\shell\openinfiles" Action="removeOnUninstall" />
       </Component>
     </StandardDirectory>
     <Feature Id="Main">
@@ -982,6 +985,7 @@ mod tests {
         let wxs = wix_source(&config, "1.2.3", "file-force.exe");
         assert!(wxs.contains(r#"Version="1.2.3""#) && wxs.contains(&config.windows.upgrade_code), "{wxs}");
         assert!(wxs.contains(r#"Source="file-force.exe""#) && wxs.contains("ProgramFiles64Folder") && wxs.contains("MajorUpgrade"));
+        assert!(wxs.contains(r#"Key="Software\Classes\Directory\shell\openinfiles" Action="removeOnUninstall""#), "uninstalling gives folders back to Explorer");
         assert!(wxs.contains(&format!(r#"Key="System.AppUserModel.ID" Value="{}""#, config.app.identifier)), "toasts need the shortcut's AppUserModelID");
         assert!(wxs.contains(r#"<Directory Id="VLCFOLDER" Name="vlc" />"#) && wxs.contains(r#"Include="vlc\**""#), "VLC goes into the MSI");
         // The VLC plugin list matches both systems' file names.

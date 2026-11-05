@@ -5,6 +5,11 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.14
+
+- One Files at a time (Settings → General → Windows, on by default): opening a folder or starting Files again uses the running one, which opens the folder in a new tab and comes to the front. The second start talks to it over 127.0.0.1 with a random token only your user can read.
+- Windows: Settings → Default apps can make Files open folders and drives instead of Explorer (double-click on the desktop and in Explorer, downloads, other apps), through your user's registry without administrator rights. "This PC", Control Panel and other shell folders go back to Explorer; Restore Explorer and uninstalling Files undo it.
+
 ## 0.1.13
 
 - macOS: Settings → Default apps can make Files open folders instead of Finder: "Show in Finder" from other apps, downloads and `open .` open in Files, each in a new tab (the desktop, the Dock and Spotlight stay Finder's). Restore Finder undoes it.

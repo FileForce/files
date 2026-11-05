@@ -45,6 +45,9 @@ pub struct AppSettings {
     /// Automatic: power saving starts when the battery drops to this
     /// percent (100: as soon as the computer runs on battery).
     pub power_saving_below: u8,
+    /// One Files at a time: opening another hands its folder to the running
+    /// one (a new tab) instead of a second window.
+    pub single_instance: bool,
     /// Mail: colors of the special folders (Inbox, Sent, Trash…).
     pub mail: MailSettings,
     /// Extension search filters (`git:`…) switched off per search box.
@@ -650,6 +653,7 @@ impl Default for AppSettings {
             updates: UpdateSettings::default(),
             power_saving: PowerSavingMode::Automatic,
             power_saving_below: 100,
+            single_instance: true,
             mail: MailSettings::default(),
             search_filters: SearchFilterSettings::default(),
             sound: SoundSettings::default(),

@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "file-force"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
@@ -1684,6 +1684,7 @@ dependencies = [
  "files-ext-ssh",
  "files-sdk",
  "flate2",
+ "getrandom 0.3.4",
  "gpui-kit",
  "gpui-pre",
  "image",

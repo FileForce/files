@@ -224,7 +224,7 @@ impl SettingsWindow {
             storage_usage: None,
             storage_extensions: Vec::new(),
             storage_slider,
-            default_file_manager: cfg!(unix) && crate::desktop::is_default_file_manager(),
+            default_file_manager: crate::desktop::is_default_file_manager(),
             default_file_manager_error: None,
             _storage_subscription: storage_subscription,
             opacity_slider,
@@ -710,6 +710,20 @@ impl SettingsWindow {
                     .checked(self.draft.updates.automatic)
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.draft.updates.automatic = *checked;
+                        cx.notify();
+                    })),
+            )
+            .child(section(IconName::AppWindow, tr(language, "Windows", "Окна"), palette))
+            .child(
+                Switch::new("single-instance")
+                    .label(tr(
+                        language,
+                        "One Files at a time: opening a folder or Files again uses the running one (a new tab) (after a restart)",
+                        "Один экземпляр Files: папка или повторный запуск открываются в уже запущенном (новой вкладкой) (после перезапуска)",
+                    ))
+                    .checked(self.draft.single_instance)
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.draft.single_instance = *checked;
                         cx.notify();
                     })),
             )
@@ -2686,11 +2700,18 @@ impl SettingsWindow {
         // Linux and macOS: Files as the system's file manager (folders from
         // the desktop, browsers' "Show in folder", other apps).
         let mac = cfg!(target_os = "macos");
-        let file_manager = cfg!(unix).then(|| {
+        let windows = cfg!(windows);
+        let file_manager = Some(()).map(|()| {
             card(palette)
                 .child(section(IconName::FolderOpen, tr(language, "Default file manager", "Файловый менеджер по умолчанию"), palette))
                 .child(note(
-                    if mac {
+                    if windows {
+                        tr(
+                            language,
+                            "Double-clicked folders and drives open in Files: on the desktop, in Explorer windows, from downloads and other apps (your user's registry, no administrator). \"This PC\", Control Panel and Win+E stay Explorer's. Restore Explorer undoes it; uninstalling Files does too.",
+                            "Папки и диски по двойному клику открываются в Files: на рабочем столе, в окнах Проводника, из загрузок и других приложений (реестр вашего пользователя, без администратора). «Этот компьютер», Панель управления и Win+E остаются за Проводником. «Вернуть Проводник» всё отменяет, удаление Files — тоже.",
+                        )
+                    } else if mac {
                         tr(
                             language,
                             "Folders that other apps reveal (\"Show in Finder\", downloads, the Terminal's open .) open in Files, each in a new tab. The desktop, the Dock and Spotlight stay Finder's: macOS does not let any app replace it there. Restore Finder undoes it.",
@@ -2716,10 +2737,11 @@ impl SettingsWindow {
                                 .text_color(palette.accent)
                                 .child(Icon::new(IconName::CircleCheck).small())
                                 .child(tr(language, "Files opens folders", "Files открывает папки"))
-                                .when(mac, |this| {
-                                    this.child(Button::new("restore-finder").ghost().xsmall().icon(IconName::RotateCcw).label(tr(language, "Restore Finder", "Вернуть Finder")).on_click(
+                                .when(mac || windows, |this| {
+                                    let label = if windows { tr(language, "Restore Explorer", "Вернуть Проводник") } else { tr(language, "Restore Finder", "Вернуть Finder") };
+                                    this.child(Button::new("restore-finder").ghost().xsmall().icon(IconName::RotateCcw).label(label).on_click(
                                         cx.listener(|this, _, _, cx| {
-                                            match crate::desktop::restore_finder() {
+                                            match crate::desktop::restore_system_file_manager() {
                                                 Ok(()) => {
                                                     this.default_file_manager = crate::desktop::is_default_file_manager();
                                                     this.default_file_manager_error = None;
@@ -2736,7 +2758,7 @@ impl SettingsWindow {
                                 .primary()
                                 .small()
                                 .icon(IconName::FolderOpen)
-                                .label(if mac { tr(language, "Open folders in Files instead of Finder", "Открывать папки в Files вместо Finder") } else { tr(language, "Make Files the default", "Сделать Files менеджером по умолчанию") })
+                                .label(if windows { tr(language, "Open folders in Files instead of Explorer", "Открывать папки в Files вместо Проводника") } else if mac { tr(language, "Open folders in Files instead of Finder", "Открывать папки в Files вместо Finder") } else { tr(language, "Make Files the default", "Сделать Files менеджером по умолчанию") })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     match crate::desktop::make_default_file_manager() {
                                         Ok(()) => {
