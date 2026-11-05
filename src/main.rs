@@ -53,7 +53,10 @@ fn main() {
     desktop::set_app_id();
     host::install();
     let launch = desktop::launch_path(std::env::args());
-    application().with_assets(AppAssets).run(|cx| {
+    let app = application().with_assets(AppAssets);
+    // macOS: folders other apps ask Files to open (it is the folder viewer).
+    app.on_open_urls(desktop::opened_from_system);
+    app.run(|cx| {
         init(cx);
         model::set_system_dark(matches!(
             cx.window_appearance(),
@@ -84,6 +87,33 @@ fn main() {
         .expect("Failed to open File Explorer");
         // Started with a folder (the default file manager, `files ~/Music`):
         // open it; a file: its folder with it selected.
+        // Folders from the system while Files runs: each in a new tab.
+        let (handle, explorer) = window.clone();
+        cx.spawn(async move |cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
+                let opened = desktop::take_opened();
+                if opened.is_empty() {
+                    continue;
+                }
+                let alive = handle.update(cx, |_, window, cx| {
+                    window.activate_window();
+                    explorer.update(cx, |explorer, cx| {
+                        for path in opened {
+                            if path.is_dir() {
+                                explorer.open_in_new_tab(crate::model::Location::from_path(&path), window, cx);
+                            } else {
+                                explorer.reveal_path(&path, window, cx);
+                            }
+                        }
+                    })
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         if let Some(path) = launch {
             let (handle, explorer) = window;
             let _ = handle.update(cx, |_, window, cx| {

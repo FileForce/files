@@ -1,7 +1,9 @@
 //! How the system knows Files: the launch argument (a folder or file to
 //! open, `file://` too), the Windows AppUserModelID that toasts and the taskbar
 //! group by, and on Linux the desktop entry (menu, notifications' name and
-//! icon) and being the default file manager (`inode/directory`).
+//! icon) and being the default file manager: `inode/directory` on Linux,
+//! `public.folder` plus `NSFileViewer` on macOS (Finder keeps the desktop,
+//! the Dock and Spotlight).
 
 use std::path::PathBuf;
 
@@ -18,6 +20,20 @@ pub fn launch_path(args: impl IntoIterator<Item = String>) -> Option<PathBuf> {
         None => PathBuf::from(arg),
     };
     path.exists().then(|| path.canonicalize().unwrap_or(path))
+}
+
+/// Folders the system asked Files to open while it runs (macOS: "Show in
+/// Finder" of other apps, `open ~/Music`), waiting for the window.
+static OPENED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// The system's open-URL event: `file://` addresses become paths.
+pub fn opened_from_system(urls: Vec<String>) {
+    let paths = urls.into_iter().filter_map(|url| launch_path(["files".to_string(), url]));
+    OPENED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).extend(paths);
+}
+
+pub fn take_opened() -> Vec<PathBuf> {
+    std::mem::take(&mut *OPENED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
 }
 
 /// Windows groups the taskbar button and shows toasts under this id; the
@@ -78,8 +94,41 @@ pub fn install_desktop_entry() {
     }
 }
 
+#[cfg(target_os = "macos")]
+mod mac {
+    use core_foundation::base::TCFType as _;
+    use core_foundation::string::{CFString, CFStringRef};
+
+    #[link(name = "CoreServices", kind = "framework")]
+    unsafe extern "C" {
+        fn LSSetDefaultRoleHandlerForContentType(content_type: CFStringRef, role: u32, handler: CFStringRef) -> i32;
+        fn LSCopyDefaultRoleHandlerForContentType(content_type: CFStringRef, role: u32) -> CFStringRef;
+    }
+
+    /// kLSRolesViewer | kLSRolesEditor | …: every role.
+    const ROLES_ALL: u32 = u32::MAX;
+
+    pub fn set_folder_handler(bundle: &str) -> std::io::Result<()> {
+        let (kind, handler) = (CFString::new("public.folder"), CFString::new(bundle));
+        // SAFETY: both strings live for the call; LaunchServices copies them.
+        let status = unsafe { LSSetDefaultRoleHandlerForContentType(kind.as_concrete_TypeRef(), ROLES_ALL, handler.as_concrete_TypeRef()) };
+        if status == 0 { Ok(()) } else { Err(std::io::Error::other(format!("LaunchServices refused ({status}): Files must run from its installed app"))) }
+    }
+
+    pub fn folder_handler() -> Option<String> {
+        let kind = CFString::new("public.folder");
+        // SAFETY: a "copy" function: we own the returned string (or null).
+        let handler = unsafe { LSCopyDefaultRoleHandlerForContentType(kind.as_concrete_TypeRef(), ROLES_ALL) };
+        (!handler.is_null()).then(|| unsafe { CFString::wrap_under_create_rule(handler) }.to_string())
+    }
+}
+
 /// Whether the system opens folders with Files.
 pub fn is_default_file_manager() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return mac::folder_handler().is_some_and(|handler| handler.eq_ignore_ascii_case(APP_ID));
+    }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         return files_sdk::log::command("xdg-mime")
@@ -91,9 +140,20 @@ pub fn is_default_file_manager() -> bool {
     false
 }
 
-/// Makes Files open folders everywhere (the desktop, "Show in folder" of
-/// browsers and other apps). Linux only.
+/// Makes Files open folders: on Linux everywhere (the desktop, "Show in
+/// folder" of browsers and other apps); on macOS what other apps reveal and
+/// `open` (the desktop and the Dock stay Finder's).
 pub fn make_default_file_manager() -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        mac::set_folder_handler(APP_ID)?;
+        // Cocoa apps' "Show in Finder" (NSWorkspace) asks this one.
+        let _ = files_sdk::log::command("defaults").args(["write", "-g", "NSFileViewer", "-string", APP_ID]).status();
+        // The terminal's `open <folder>` too (new terminal windows).
+        set_open_script(true)?;
+        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, "Files now opens folders instead of Finder".to_string(), None);
+        return Ok(());
+    }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         install_desktop_entry();
@@ -106,6 +166,118 @@ pub fn make_default_file_manager() -> std::io::Result<()> {
     }
     #[allow(unreachable_code)]
     Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Only on Linux"))
+}
+
+// ------------------------------------------------------- macOS `open`
+
+/// `open <folder>` in a terminal goes to Finder whatever LaunchServices says,
+/// so a small `open` placed before /usr/bin in PATH sends folders to Files.
+/// It checks that Files is still installed every time: once the app is
+/// deleted, folders open in Finder again, with nothing to undo.
+pub const OPEN_SCRIPT: &str = r#"#!/bin/sh
+# Written by file FORCE (Settings → Default apps). Folders open in Files;
+# everything else, and every folder once Files is deleted, goes to
+# /usr/bin/open as usual. Remove with "Restore Finder" in Settings.
+APP_ID="dev.fileforce.files"
+folders=1
+[ "$#" -eq 0 ] && folders=0
+for arg in "$@"; do
+  case "$arg" in
+    -*) folders=0 ;;
+    # Packages are folders that open as apps or documents.
+    *.app|*.app/|*.bundle|*.bundle/|*.framework|*.framework/|*.pkg|*.pkg/|*.xcodeproj|*.xcodeproj/|*.xcworkspace|*.xcworkspace/|*.playground|*.playground/|*.photoslibrary|*.photoslibrary/|*.rtfd|*.rtfd/|*.key|*.pages|*.numbers|*.plugin|*.kext) folders=0 ;;
+    *) [ -d "$arg" ] || folders=0 ;;
+  esac
+done
+if [ "$folders" -eq 1 ] && /usr/bin/open -b "$APP_ID" "$@" 2>/dev/null; then
+  exit 0
+fi
+exec /usr/bin/open "$@"
+"#;
+
+/// Lines added to shell profiles, between these markers (so they can be
+/// taken out again exactly).
+const PROFILE_BEGIN: &str = "# >>> file FORCE open >>>";
+const PROFILE_END: &str = "# <<< file FORCE open <<<";
+
+/// Where the `open` script lives.
+pub fn open_script_dir() -> Option<PathBuf> {
+    Some(dirs::data_dir()?.join("file-force").join("bin"))
+}
+
+/// The profile text with the PATH block added (once) or removed.
+pub fn with_profile_block(profile: &str, dir: Option<&std::path::Path>) -> String {
+    let mut kept = String::new();
+    let mut inside = false;
+    for line in profile.lines() {
+        match line.trim() {
+            PROFILE_BEGIN => inside = true,
+            PROFILE_END => inside = false,
+            _ if !inside => {
+                kept.push_str(line);
+                kept.push('\n');
+            }
+            _ => {}
+        }
+    }
+    if let Some(dir) = dir {
+        if !kept.is_empty() && !kept.ends_with("\n\n") {
+            kept.push('\n');
+        }
+        kept.push_str(&format!("{PROFILE_BEGIN}\n# `open <folder>` opens it in file FORCE (Settings → Default apps).\nexport PATH=\"{}:$PATH\"\n{PROFILE_END}\n", dir.display()));
+    }
+    kept
+}
+
+/// zsh (the default) and bash profiles in the home folder.
+fn profiles() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else { return Vec::new() };
+    let mut list = vec![home.join(".zshrc")];
+    let bash = home.join(".bash_profile");
+    if bash.exists() {
+        list.push(bash);
+    }
+    list
+}
+
+/// Writes the `open` script and puts its folder first in PATH (new
+/// terminals; `install`: true), or takes both out again.
+pub fn set_open_script(install: bool) -> std::io::Result<()> {
+    let dir = open_script_dir().ok_or_else(|| std::io::Error::other("No data folder"))?;
+    if install {
+        std::fs::create_dir_all(&dir)?;
+        let script = dir.join("open");
+        std::fs::write(&script, OPEN_SCRIPT)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+        }
+    } else {
+        let _ = std::fs::remove_file(dir.join("open"));
+    }
+    for profile in profiles() {
+        let before = std::fs::read_to_string(&profile).unwrap_or_default();
+        let after = with_profile_block(&before, install.then_some(dir.as_path()));
+        if after != before {
+            std::fs::write(&profile, after)?;
+        }
+    }
+    Ok(())
+}
+
+/// macOS: Finder opens folders again.
+pub fn restore_finder() -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = files_sdk::log::command("defaults").args(["delete", "-g", "NSFileViewer"]).status();
+        set_open_script(false)?;
+        mac::set_folder_handler("com.apple.finder")?;
+        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, "Finder opens folders again".to_string(), None);
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Only on macOS"))
 }
 
 #[cfg(test)]
@@ -121,6 +293,28 @@ mod tests {
         assert_eq!(launch_path(["files".to_string(), "--flag".to_string(), url]).unwrap(), dir.canonicalize().unwrap());
         assert_eq!(launch_path(["files".to_string()]), None);
         assert_eq!(launch_path(["files".to_string(), "/no/such/folder".to_string()]), None);
+    }
+
+    #[test]
+    fn the_profile_block_goes_in_once_and_out_exactly() {
+        let dir = std::path::Path::new("/Users/me/Library/Application Support/file-force/bin");
+        let profile = "export EDITOR=vim\n";
+        let added = with_profile_block(profile, Some(dir));
+        assert!(added.starts_with("export EDITOR=vim\n") && added.contains("export PATH=\"/Users/me/Library/Application Support/file-force/bin:$PATH\""));
+        assert_eq!(with_profile_block(&added, Some(dir)), added, "added once");
+        assert_eq!(with_profile_block(&added, None).trim_end(), "export EDITOR=vim", "removed exactly");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_open_script_passes_everything_but_folders_on() {
+        // A stand-in /usr/bin/open is not possible, so check the script with sh -n
+        // and that packages and flags never count as folders.
+        let script = std::env::temp_dir().join(format!("file-force-open-script-{}.sh", std::process::id()));
+        std::fs::write(&script, OPEN_SCRIPT).unwrap();
+        assert!(std::process::Command::new("sh").arg("-n").arg(&script).status().unwrap().success(), "valid sh");
+        assert!(OPEN_SCRIPT.contains("*.app|") && OPEN_SCRIPT.contains("-*) folders=0") && OPEN_SCRIPT.contains("exec /usr/bin/open \"$@\""));
+        let _ = std::fs::remove_file(&script);
     }
 
     #[test]

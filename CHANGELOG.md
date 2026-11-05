@@ -5,6 +5,11 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.13
+
+- macOS: Settings → Default apps can make Files open folders instead of Finder: "Show in Finder" from other apps, downloads and `open .` open in Files, each in a new tab (the desktop, the Dock and Spotlight stay Finder's). Restore Finder undoes it.
+- macOS: with that on, `open <folder>` in a terminal opens Files too: a small `open` script goes first in PATH (`~/.zshrc`, `~/.bash_profile`, between marked lines). Files, apps, packages and flags go to `/usr/bin/open` as before, and once Files is deleted folders open in Finder again. Restore Finder removes the script and the lines.
+
 ## 0.1.12
 
 - Windows: Files has its own AppUserModelID (`dev.fileforce.files`), set by the app and on the Start menu shortcut, so its notifications show Files' name and icon and its windows group under one taskbar button.

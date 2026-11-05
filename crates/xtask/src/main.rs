@@ -547,6 +547,16 @@ fn info_plist(config: &Config, version: &str) -> String {
     <key>NSHumanReadableCopyright</key><string>{copyright}</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <!-- Folders: lets Settings make Files the folder viewer instead of Finder. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Folder</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>public.folder</string><string>public.volume</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 "#,
@@ -958,6 +968,13 @@ fn doctor(root: &Path, config: &Config) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mac_bundle_can_open_folders() {
+        let (_, config) = load().unwrap();
+        let plist = info_plist(&config, "1.2.3");
+        assert!(plist.contains("<string>public.folder</string>") && plist.contains("<string>Viewer</string>"), "{plist}");
+    }
 
     #[test]
     fn windows_installer_source_and_icon() {

@@ -224,7 +224,7 @@ impl SettingsWindow {
             storage_usage: None,
             storage_extensions: Vec::new(),
             storage_slider,
-            default_file_manager: cfg!(all(unix, not(target_os = "macos"))) && crate::desktop::is_default_file_manager(),
+            default_file_manager: cfg!(unix) && crate::desktop::is_default_file_manager(),
             default_file_manager_error: None,
             _storage_subscription: storage_subscription,
             opacity_slider,
@@ -2683,17 +2683,26 @@ impl SettingsWindow {
             }
         }
 
-        // Linux: Files as the system's file manager (folders from the desktop,
-        // browsers' "Show in folder", other apps).
-        let file_manager = cfg!(all(unix, not(target_os = "macos"))).then(|| {
+        // Linux and macOS: Files as the system's file manager (folders from
+        // the desktop, browsers' "Show in folder", other apps).
+        let mac = cfg!(target_os = "macos");
+        let file_manager = cfg!(unix).then(|| {
             card(palette)
                 .child(section(IconName::FolderOpen, tr(language, "Default file manager", "Файловый менеджер по умолчанию"), palette))
                 .child(note(
-                    tr(
-                        language,
-                        "Folders open in Files everywhere: on the desktop, from a browser's \"Show in folder\" and from other apps (xdg-mime, inode/directory). To undo, choose another file manager in your system settings.",
-                        "Папки открываются в Files везде: на рабочем столе, по «Показать в папке» из браузера и из других приложений (xdg-mime, inode/directory). Чтобы вернуть прежний, выберите другой менеджер в настройках системы.",
-                    ),
+                    if mac {
+                        tr(
+                            language,
+                            "Folders that other apps reveal (\"Show in Finder\", downloads, the Terminal's open .) open in Files, each in a new tab. The desktop, the Dock and Spotlight stay Finder's: macOS does not let any app replace it there. Restore Finder undoes it.",
+                            "Папки, которые показывают другие приложения («Показать в Finder», загрузки, open . в Терминале), открываются в Files, каждая в новой вкладке. Рабочий стол, Dock и Spotlight остаются за Finder — macOS не даёт заменить его там. «Вернуть Finder» всё отменяет.",
+                        )
+                    } else {
+                        tr(
+                            language,
+                            "Folders open in Files everywhere: on the desktop, from a browser's \"Show in folder\" and from other apps (xdg-mime, inode/directory). To undo, choose another file manager in your system settings.",
+                            "Папки открываются в Files везде: на рабочем столе, по «Показать в папке» из браузера и из других приложений (xdg-mime, inode/directory). Чтобы вернуть прежний, выберите другой менеджер в настройках системы.",
+                        )
+                    },
                     palette,
                 ))
                 .child(
@@ -2707,13 +2716,27 @@ impl SettingsWindow {
                                 .text_color(palette.accent)
                                 .child(Icon::new(IconName::CircleCheck).small())
                                 .child(tr(language, "Files opens folders", "Files открывает папки"))
+                                .when(mac, |this| {
+                                    this.child(Button::new("restore-finder").ghost().xsmall().icon(IconName::RotateCcw).label(tr(language, "Restore Finder", "Вернуть Finder")).on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            match crate::desktop::restore_finder() {
+                                                Ok(()) => {
+                                                    this.default_file_manager = crate::desktop::is_default_file_manager();
+                                                    this.default_file_manager_error = None;
+                                                }
+                                                Err(error) => this.default_file_manager_error = Some(error.to_string()),
+                                            }
+                                            cx.notify();
+                                        }),
+                                    ))
+                                })
                                 .into_any_element()
                         } else {
                             Button::new("make-default-file-manager")
                                 .primary()
                                 .small()
                                 .icon(IconName::FolderOpen)
-                                .label(tr(language, "Make Files the default", "Сделать Files менеджером по умолчанию"))
+                                .label(if mac { tr(language, "Open folders in Files instead of Finder", "Открывать папки в Files вместо Finder") } else { tr(language, "Make Files the default", "Сделать Files менеджером по умолчанию") })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     match crate::desktop::make_default_file_manager() {
                                         Ok(()) => {
