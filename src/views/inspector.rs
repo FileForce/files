@@ -161,6 +161,26 @@ impl FileExplorer {
                         ),
                 );
 
+            // Everything the file itself says: EXIF, streams, compression.
+            if let Some(path) = file.path.filter(|path| crate::media_info::applies(path)) {
+                match crate::media_info::sections(path) {
+                    Some(sections) => {
+                        for section in sections {
+                            details = details.child(
+                                v_flex()
+                                    .gap_3()
+                                    .child(inspector_section(section.title, palette))
+                                    .children(section.rows.into_iter().map(|(label, value)| owned_row(label, value, palette))),
+                            );
+                        }
+                    }
+                    None => {
+                        details = details.child(div().text_xs().text_color(palette.faint).child("Reading details…"));
+                        self.redraw_when_details_arrive(cx);
+                    }
+                }
+            }
+
             if !file.tags.is_empty() {
                 details = details.child(
                     v_flex()
@@ -383,6 +403,42 @@ impl FileExplorer {
             )
             .into_any_element()
     }
+}
+
+/// Waits for the details being read in the background, then redraws.
+static WAITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+impl FileExplorer {
+    fn redraw_when_details_arrive(&self, cx: &mut Context<Self>) {
+        use std::sync::atomic::Ordering;
+        if WAITING.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let seen = crate::media_info::generation();
+        cx.spawn(async move |this, cx| {
+            for _ in 0..80 {
+                cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
+                if crate::media_info::generation() != seen {
+                    break;
+                }
+            }
+            WAITING.store(false, Ordering::Relaxed);
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+}
+
+/// A detail row whose label and value are made at run time.
+fn owned_row(label: String, value: String, palette: Palette) -> AnyElement {
+    h_flex()
+        .w_full()
+        .gap_3()
+        .items_start()
+        .text_xs()
+        .child(div().w(px(104.)).flex_shrink_0().text_color(palette.muted).child(label))
+        .child(div().flex_1().min_w_0().text_color(palette.text).child(value))
+        .into_any_element()
 }
 
 fn inspector_section(title: &'static str, palette: Palette) -> AnyElement {

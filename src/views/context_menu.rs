@@ -70,6 +70,14 @@ pub(crate) fn file_context_menu(
                         .on_click(window.listener_for(&tab_view, move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx))),
                 )
             })
+            .when(entry.path.is_some_and(crate::model::mountable), |menu| {
+                let mount_view = view.clone();
+                menu.item(tinted_item("Mount", IconName::HardDrive, tint("open")).on_click(window.listener_for(&mount_view, move |this, _, _, cx| {
+                    if let Some(path) = entry.path {
+                        this.mount_image(path.to_path_buf(), cx);
+                    }
+                })))
+            })
             .item(tinted_command_item(
                 "Quick Look",
                 IconName::Eye,

@@ -24,6 +24,7 @@ mod sound;
 mod storage;
 mod desktop;
 mod instance;
+mod media_info;
 mod system_notify;
 mod media_keys;
 mod menu_colors;
@@ -63,6 +64,17 @@ fn main() {
     let app = application().with_assets(AppAssets);
     // macOS: folders other apps ask Files to open (it is the folder viewer).
     app.on_open_urls(desktop::opened_from_system);
+    // macOS: a click on the Dock icon with every window closed (or
+    // minimized) opens one again; otherwise the windows come to the front.
+    app.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            let _ = open_main_window(cx);
+        } else {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.activate_window());
+            }
+        }
+    });
     app.run(move |cx| {
         init(cx);
         model::set_system_dark(matches!(
@@ -87,48 +99,44 @@ fn main() {
         // Linux: the menu, notifications and "Open with" know Files.
         std::thread::spawn(desktop::install_desktop_entry);
 
-        let window = open_window(explorer_window_options(0), cx, move |window, cx| {
-            let appearance = appearance.clone();
-            cx.new(|cx| FileExplorer::new(window, cx, appearance))
-        })
-        .expect("Failed to open File Explorer");
-        // Started with a folder (the default file manager, `files ~/Music`):
-        // open it; a file: its folder with it selected.
+        MAIN.with(|main| main.borrow_mut().appearance = Some(appearance));
+        let window = open_main_window(cx).expect("Failed to open File Explorer");
         if single {
             instance::listen();
             cx.on_app_quit(|_| async { instance::release() }).detach();
         }
         // Folders from the system (or a second start) while Files runs: each
-        // in a new tab; a start without one brings the window up.
-        let (handle, explorer) = window.clone();
+        // in a new tab; a start without one brings the window up. With every
+        // window closed, a new one opens for them.
         cx.spawn(async move |cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
                 let opened = desktop::take_opened();
-                if opened.is_empty() {
-                    if instance::take_activate() && handle.update(cx, |_, window, _| window.activate_window()).is_err() {
-                        break;
-                    }
+                let activate = instance::take_activate();
+                if opened.is_empty() && !activate {
                     continue;
                 }
-                let alive = handle.update(cx, |_, window, cx| {
-                    window.activate_window();
-                    explorer.update(cx, |explorer, cx| {
-                        for path in opened {
-                            if path.is_dir() {
-                                explorer.open_in_new_tab(crate::model::Location::from_path(&path), window, cx);
-                            } else {
-                                explorer.reveal_path(&path, window, cx);
+                let _ = cx.update(|cx| {
+                    let Some((handle, explorer)) = main_window(cx).or_else(|| open_main_window(cx)) else { return };
+                    cx.activate(true);
+                    let _ = handle.update(cx, |_, window, cx| {
+                        window.activate_window();
+                        explorer.update(cx, |explorer, cx| {
+                            for path in opened {
+                                if path.is_dir() {
+                                    explorer.open_in_new_tab(crate::model::Location::from_path(&path), window, cx);
+                                } else {
+                                    explorer.reveal_path(&path, window, cx);
+                                }
                             }
-                        }
-                    })
+                        })
+                    });
                 });
-                if alive.is_err() {
-                    break;
-                }
             }
         })
         .detach();
+        // Started with a folder (the default file manager, `files ~/Music`):
+        // open it; a file: its folder with it selected.
         if let Some(path) = launch {
             let (handle, explorer) = window;
             let _ = handle.update(cx, |_, window, cx| {
@@ -142,6 +150,36 @@ fn main() {
             });
         }
     });
+}
+
+/// The main windows (the first one, and those reopened from the Dock), and
+/// the settings they share.
+#[derive(Default)]
+struct Main {
+    appearance: Option<gpui_kit::Entity<app::AppearanceSettings>>,
+    windows: Vec<(gpui_kit::AnyWindowHandle, gpui_kit::WeakEntity<FileExplorer>)>,
+}
+
+thread_local! {
+    static MAIN: std::cell::RefCell<Main> = std::cell::RefCell::new(Main::default());
+}
+
+/// Opens a main window.
+fn open_main_window(cx: &mut gpui_kit::App) -> Option<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<FileExplorer>)> {
+    let appearance = MAIN.with(|main| main.borrow().appearance.clone())?;
+    let (handle, explorer) = open_window(explorer_window_options(0), cx, move |window, cx| cx.new(|cx| FileExplorer::new(window, cx, appearance.clone()))).ok()?;
+    MAIN.with(|main| main.borrow_mut().windows.push((handle, explorer.downgrade())));
+    Some((handle, explorer))
+}
+
+/// A main window still open.
+fn main_window(cx: &mut gpui_kit::App) -> Option<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<FileExplorer>)> {
+    let open: Vec<gpui_kit::AnyWindowHandle> = cx.windows();
+    MAIN.with(|main| {
+        let mut main = main.borrow_mut();
+        main.windows.retain(|(handle, explorer)| open.contains(handle) && explorer.upgrade().is_some());
+        main.windows.first().and_then(|(handle, explorer)| Some((*handle, explorer.upgrade()?)))
+    })
 }
 
 pub(crate) fn explorer_window_options(index: usize) -> WindowOptions {

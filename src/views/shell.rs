@@ -655,6 +655,31 @@ impl FileExplorer {
             .collect()
     }
 
+    /// Mounts a disk image in the background and opens it in a new tab; it
+    /// shows in CONNECTED, where Eject unmounts it.
+    pub(crate) fn mount_image(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        self.notice = Some(format!("Mounting {name}…"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let mounted = cx.background_executor().spawn(async move { crate::model::mount_image(&path) }).await;
+            let _ = this.update(cx, |this, cx| {
+                match mounted {
+                    Ok(target) => {
+                        this.notice = Some(format!("{name} mounted at {}", target.display()));
+                        crate::desktop::opened_from_system(vec![target.display().to_string()]);
+                    }
+                    Err(error) => {
+                        files_sdk::log::notify("files", files_sdk::log::Level::Error, format!("{name} was not mounted"), Some(error.to_string()));
+                        this.notice = Some(format!("{name} was not mounted: {error}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Ejects in the background; leaves the disk first if it is open.
     pub(crate) fn eject_volume(&mut self, path: std::path::PathBuf, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         if self.active_location().path().is_some_and(|open| open.starts_with(&path)) {

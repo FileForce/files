@@ -7,6 +7,8 @@ use files_sdk::{Permission, ArchiveItem, ArchiveProvider, Command, ConflictPolic
 
 pub mod compress;
 pub mod extract;
+pub mod info;
+pub mod iso;
 
 pub use extract::{ArchiveKind, describe_error, extract_archive, find_conflicts, list_items, parent_path};
 
@@ -15,7 +17,7 @@ pub static MANIFEST: Manifest = Manifest {
     name: "Archives",
     version: env!("CARGO_PKG_VERSION"),
     source: "Built-in",
-    summary: "Browse and extract .zip, .tar, .tar.gz, .tgz and .gz; create ZIP, 7z, TAR.GZ and RAR.",
+    summary: "Browse and extract .zip, .tar, .tar.gz, .tgz, .gz, .rar and .iso; create ZIP, 7z, TAR.GZ and RAR.",
     icon: Icon::Builtin("file-archive"),
     adds: &[
         "Double-click an archive to browse it",
@@ -70,5 +72,9 @@ impl ArchiveProvider for Archives {
 
     fn extract(&self, archive: &Path, target: &Path, policy: ConflictPolicy) -> io::Result<ExtractReport> {
         extract_archive(archive, target, policy)
+    }
+
+    fn info(&self, archive: &Path) -> io::Result<files_sdk::ArchiveInfo> {
+        info::info(archive)
     }
 }

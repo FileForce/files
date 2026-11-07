@@ -299,6 +299,17 @@ static RECENTS_FOLDER: FileEntry = FileEntry {
 /// disk images. On macOS these live in `/Volumes`; on Linux in `/media/$USER`
 /// and `/run/media/$USER`.
 pub fn mounted_volumes() -> Vec<PathBuf> {
+    // Windows: every drive letter but the system one (USB sticks, DVDs,
+    // mounted images, network drives).
+    if cfg!(windows) {
+        let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_ascii_uppercase();
+        return ('A'..='Z')
+            .map(|letter| format!("{letter}:"))
+            .filter(|drive| *drive != system && drive != "A:" && drive != "B:")
+            .map(|drive| PathBuf::from(format!("{drive}\\")))
+            .filter(|root| root.is_dir())
+            .collect();
+    }
     let user = std::env::var("USER").unwrap_or_default();
     let roots = if cfg!(target_os = "macos") {
         vec![PathBuf::from("/Volumes")]
@@ -317,6 +328,73 @@ pub fn mounted_volumes() -> Vec<PathBuf> {
         .collect();
     volumes.sort();
     volumes
+}
+
+/// Disk images the system can mount: ISO and IMG everywhere, DMG on macOS,
+/// VHD/VHDX on Windows.
+pub fn mountable(path: &Path) -> bool {
+    let extension = path.extension().map(|extension| extension.to_string_lossy().to_lowercase()).unwrap_or_default();
+    match extension.as_str() {
+        "iso" | "img" => true,
+        "dmg" | "sparseimage" | "sparsebundle" => cfg!(target_os = "macos"),
+        "vhd" | "vhdx" => cfg!(windows),
+        _ => false,
+    }
+}
+
+/// The mount point from hdiutil's or udisksctl's output.
+fn mount_point(output: &str) -> Option<PathBuf> {
+    output.lines().rev().find_map(|line| {
+        // hdiutil: "/dev/disk4s1 \t Apple_HFS \t /Volumes/Name"; udisksctl:
+        // "Mounted /dev/loop0 at /media/me/LABEL" (sometimes with a dot).
+        if let Some(at) = line.find("/Volumes/") {
+            return Some(PathBuf::from(line[at..].trim()));
+        }
+        line.split_once(" at ").map(|(_, path)| PathBuf::from(path.trim().trim_end_matches('.')))
+    })
+}
+
+/// Mounts a disk image read-only and returns where its files are: macOS
+/// hdiutil, Windows Mount-DiskImage (a drive letter), Linux udisksctl (no
+/// administrator rights).
+pub fn mount_image(path: &Path) -> std::io::Result<PathBuf> {
+    let run = |command: &mut std::process::Command| -> std::io::Result<String> {
+        let output = files_sdk::log::run("files", command)?;
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        if output.status.success() {
+            Ok(text)
+        } else {
+            let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(std::io::Error::other(if reason.is_empty() { text.trim().to_string() } else { reason }))
+        }
+    };
+    if cfg!(target_os = "macos") {
+        let output = run(files_sdk::log::command("/usr/bin/hdiutil").args(["attach", "-readonly"]).arg(path))?;
+        return mount_point(&output).ok_or_else(|| std::io::Error::other("The image has no volume to open"));
+    }
+    if cfg!(windows) {
+        let quoted = path.display().to_string().replace('\'', "''");
+        let script = format!("$v = Mount-DiskImage -ImagePath '{quoted}' -Access ReadOnly -PassThru | Get-Volume; ($v | Where-Object DriveLetter | Select-Object -First 1).DriveLetter");
+        let letter = run(files_sdk::log::command("powershell").args(["-NoProfile", "-Command", &script]))?;
+        let letter = letter.trim().chars().next().filter(char::is_ascii_alphabetic).ok_or_else(|| std::io::Error::other("Windows mounted the image without a drive letter"))?;
+        return Ok(PathBuf::from(format!("{letter}:\\")));
+    }
+    let setup = run(files_sdk::log::command("udisksctl").args(["loop-setup", "-r", "-f"]).arg(path))?;
+    // "Mapped file X as /dev/loop0."
+    let device = setup.split_whitespace().last().map(|device| device.trim_end_matches('.').to_string()).filter(|device| device.starts_with("/dev/")).ok_or_else(|| std::io::Error::other("udisksctl gave no loop device"))?;
+    // The desktop may mount it by itself; otherwise mount it, or its first partition.
+    for _ in 0..10 {
+        for candidate in [device.clone(), format!("{device}p1")] {
+            if let Ok(target) = run(files_sdk::log::command("findmnt").args(["-no", "TARGET", &candidate]))
+                && !target.trim().is_empty()
+            {
+                return Ok(PathBuf::from(target.trim()));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let mounted = run(files_sdk::log::command("udisksctl").args(["mount", "-b", &device])).or_else(|_| run(files_sdk::log::command("udisksctl").args(["mount", "-b", &format!("{device}p1")])))?;
+    mount_point(&mounted).ok_or_else(|| std::io::Error::other("udisksctl did not say where it mounted the image"))
 }
 
 /// Ejects a disk, a USB drive or a mounted disk image (unmounts a share).
@@ -340,6 +418,21 @@ pub fn eject(path: &Path) -> std::io::Result<()> {
         let script = format!("(New-Object -ComObject Shell.Application).Namespace(17).ParseName('{drive}').InvokeVerb('Eject')");
         run("powershell", &["-NoProfile".as_ref(), "-Command".as_ref(), script.as_ref()])
     } else {
+        // A mounted image: unmount, then free its loop device.
+        let source = files_sdk::log::run("files", files_sdk::log::command("findmnt").args(["-no", "SOURCE"]).arg(path))
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|source| source.starts_with("/dev/loop"));
+        if let Some(source) = source {
+            run("udisksctl", &["unmount".as_ref(), "-b".as_ref(), source.as_ref()])?;
+            // /dev/loop0p1 → /dev/loop0.
+            let device = match source.rfind('p') {
+                Some(at) if at > "/dev/loo".len() => &source[..at],
+                _ => source.as_str(),
+            };
+            let _ = run("udisksctl", &["loop-delete".as_ref(), "-b".as_ref(), device.as_ref()]);
+            return Ok(());
+        }
         run("gio", &["mount".as_ref(), "-u".as_ref(), target]).or_else(|_| run("umount", &[target]))
     }
 }
@@ -1805,6 +1898,16 @@ mod tests {
     }
 
     #[test]
+    fn images_mount_where_the_system_says() {
+        assert!(mountable(Path::new("ubuntu.ISO")) && mountable(Path::new("disk.img")));
+        assert_eq!(mountable(Path::new("Files.dmg")), cfg!(target_os = "macos"));
+        assert!(!mountable(Path::new("notes.txt")));
+        let hdiutil = "/dev/disk4          \tGUID_partition_scheme\t\n/dev/disk4s1        \tApple_HFS                      \t/Volumes/Files 0.1.14\n";
+        assert_eq!(mount_point(hdiutil), Some(PathBuf::from("/Volumes/Files 0.1.14")));
+        assert_eq!(mount_point("Mounted /dev/loop0 at /media/me/Ubuntu 24.04."), Some(PathBuf::from("/media/me/Ubuntu 24.04")));
+    }
+
+    #[test]
     fn ejecting_something_that_is_not_mounted_says_why() {
         let error = eject(Path::new("/Volumes/file-force-not-a-disk-xyz")).unwrap_err();
         assert!(!error.to_string().is_empty(), "the reason is shown to the user");
@@ -1988,5 +2091,19 @@ mod tests {
         assert_eq!(names("mode:rx-rx-rx"), ["script.sh"]);
         assert_eq!(names("private mode:rw-------"), ["private.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod mount_live {
+    #[test]
+    #[ignore]
+    fn mount_and_eject_an_image() {
+        let image = std::path::PathBuf::from(std::env::var("IMAGE").unwrap());
+        let target = super::mount_image(&image).unwrap();
+        println!("mounted at {}", target.display());
+        assert!(std::fs::read_dir(&target).unwrap().count() > 0);
+        super::eject(&target).unwrap();
+        assert!(!target.exists());
     }
 }

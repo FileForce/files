@@ -5,6 +5,16 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.15
+
+- macOS: a click on the Dock icon brings Files back when its window was closed (a new window opens) or minimized; folders sent from the system or a second start open a window again too.
+- Preview shows everything a file says about itself. Photos: size, megapixels and shape, format, color space, orientation; camera, lens, software, date taken, author; aperture, shutter, ISO, focal length, exposure, flash, white balance; GPS location. Video and audio (through the bundled VLC): duration, overall bitrate, resolution; per stream codec, frame rate, channels, sample rate, bitrate, language; tags (title, artist, album, director, season…).
+- Archives: the preview tells the format and how it is compressed: method and level (Deflate, gzip level, RAR Fastest…Best, Store), size before and after with the saving, file and folder counts, encryption, solid RAR, recovery record, comment.
+- ISO disc images (.iso) open and extract like other archives (ISO 9660 with Joliet long names); the preview shows the label, disc size, bootable, created, publisher and the program that made it.
+- Disk images mount from the context menu (Mount): ISO and IMG everywhere, DMG on macOS (hdiutil), VHD/VHDX on Windows (Mount-DiskImage, a drive letter), Linux through udisksctl without administrator rights. The image opens in a new tab and shows in CONNECTED, where Eject unmounts it (on Linux the loop device is freed too).
+- Windows: CONNECTED lists the other drives (USB sticks, DVDs, mounted images, network drives).
+- SDK: `ArchiveProvider::info` lets archive extensions describe an archive for the preview (`ArchiveInfo`).
+
 ## 0.1.14
 
 - One Files at a time (Settings → General → Windows, on by default): opening a folder or starting Files again uses the running one, which opens the folder in a new tab and comes to the front. The second start talks to it over 127.0.0.1 with a random token only your user can read.

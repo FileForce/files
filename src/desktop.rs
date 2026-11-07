@@ -64,6 +64,7 @@ fn applications_dir() -> Option<PathBuf> {
 }
 
 /// The desktop entry's text for `program`.
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
 pub fn desktop_entry(program: &std::path::Path) -> String {
     let quoted = program.display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
     format!(
@@ -200,12 +201,14 @@ const WINDOWS_VERB: &str = "openinfiles";
 const WINDOWS_CLASSES: [&str; 2] = [r"HKCU\Software\Classes\Directory\shell", r"HKCU\Software\Classes\Drive\shell"];
 
 /// The command a folder verb runs: `"C:\…\file-force.exe" "%V"`.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn windows_command(exe: &std::path::Path) -> String {
     format!("\"{}\" \"%V\"", exe.display())
 }
 
 /// Folders without a path ("This PC", Control Panel: `::{GUID}`,
 /// `shell:` names) are Explorer's: Files hands them back.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_shell_folder(arg: &str) -> bool {
     arg.starts_with("::") || arg.to_ascii_lowercase().starts_with("shell:")
 }

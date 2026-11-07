@@ -54,6 +54,46 @@ struct Vlc {
     equalizer_band_count: unsafe extern "C" fn() -> c_uint,
     equalizer_band_frequency: unsafe extern "C" fn(c_uint) -> f32,
     set_equalizer: unsafe extern "C" fn(*mut MediaPlayer, *mut c_void) -> c_int,
+    // Reading a file's tracks and tags (the preview's details).
+    media_parse_with_options: unsafe extern "C" fn(*mut Media, c_int, c_int) -> c_int,
+    media_get_parsed_status: unsafe extern "C" fn(*mut Media) -> c_int,
+    media_tracks_get: unsafe extern "C" fn(*mut Media, *mut *mut *mut TrackInfo) -> c_uint,
+    media_tracks_release: unsafe extern "C" fn(*mut *mut TrackInfo, c_uint),
+    media_get_duration: unsafe extern "C" fn(*mut Media) -> i64,
+    media_get_meta: unsafe extern "C" fn(*mut Media, c_int) -> *mut c_char,
+    codec_description: unsafe extern "C" fn(c_int, u32) -> *const c_char,
+    free: unsafe extern "C" fn(*mut c_void),
+}
+
+/// libvlc_media_track_t (libvlc 3).
+#[repr(C)]
+struct TrackInfo {
+    codec: u32,
+    original_fourcc: u32,
+    id: c_int,
+    kind: c_int,
+    profile: c_int,
+    level: c_int,
+    details: *mut c_void,
+    bitrate: c_uint,
+    language: *mut c_char,
+    description: *mut c_char,
+}
+
+#[repr(C)]
+struct AudioTrackInfo {
+    channels: c_uint,
+    rate: c_uint,
+}
+
+#[repr(C)]
+struct VideoTrackInfo {
+    height: c_uint,
+    width: c_uint,
+    sar_num: c_uint,
+    sar_den: c_uint,
+    frame_rate_num: c_uint,
+    frame_rate_den: c_uint,
 }
 
 // SAFETY: libvlc's instance and functions may be used from any thread.
@@ -190,6 +230,14 @@ fn load() -> Result<Vlc, String> {
                 equalizer_band_count: symbol!("libvlc_audio_equalizer_get_band_count"),
                 equalizer_band_frequency: symbol!("libvlc_audio_equalizer_get_band_frequency"),
                 set_equalizer: symbol!("libvlc_media_player_set_equalizer"),
+                media_parse_with_options: symbol!("libvlc_media_parse_with_options"),
+                media_get_parsed_status: symbol!("libvlc_media_get_parsed_status"),
+                media_tracks_get: symbol!("libvlc_media_tracks_get"),
+                media_tracks_release: symbol!("libvlc_media_tracks_release"),
+                media_get_duration: symbol!("libvlc_media_get_duration"),
+                media_get_meta: symbol!("libvlc_media_get_meta"),
+                codec_description: symbol!("libvlc_media_get_codec_description"),
+                free: symbol!("libvlc_free"),
                 _library: library,
                 _core: core,
             };
@@ -203,6 +251,137 @@ fn load() -> Result<Vlc, String> {
 fn vlc() -> Result<&'static Vlc, &'static str> {
     static VLC: OnceLock<Result<Vlc, String>> = OnceLock::new();
     VLC.get_or_init(load).as_ref().map_err(String::as_str)
+}
+
+/// One stream of a media file.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Stream {
+    /// "Video", "Audio", "Subtitles".
+    pub kind: &'static str,
+    pub codec: String,
+    pub language: String,
+    pub description: String,
+    pub bitrate: u32,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: f64,
+    pub channels: u32,
+    pub sample_rate: u32,
+    pub profile: i32,
+}
+
+/// What VLC reads from a media file without playing it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Probe {
+    pub duration_ms: i64,
+    /// Tags: ("Title", "…"), ("Artist", "…")…
+    pub tags: Vec<(&'static str, String)>,
+    pub streams: Vec<Stream>,
+}
+
+/// libvlc_meta_t, with the names shown.
+const META: [(c_int, &str); 20] = [
+    (0, "Title"),
+    (1, "Artist"),
+    (23, "Album artist"),
+    (4, "Album"),
+    (2, "Genre"),
+    (8, "Date"),
+    (5, "Track"),
+    (24, "Disc"),
+    (18, "Director"),
+    (21, "Show"),
+    (19, "Season"),
+    (20, "Episode"),
+    (22, "Actors"),
+    (13, "Publisher"),
+    (3, "Copyright"),
+    (14, "Encoded by"),
+    (9, "Setting"),
+    (11, "Language"),
+    (6, "Description"),
+    (7, "Rating"),
+];
+
+/// Reads a file's streams and tags (waits up to ~5 s; off the UI thread).
+pub fn probe(path: &Path) -> Option<Probe> {
+    let vlc = vlc().ok()?;
+    let c_path = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+    // SAFETY: the media is made, parsed, read and released here; every
+    // string libvlc hands out is copied and freed with libvlc_free.
+    unsafe {
+        let media = (vlc.media_new_path)(vlc.instance, c_path.as_ptr());
+        if media.is_null() {
+            return None;
+        }
+        // libvlc_media_parse_local | libvlc_media_fetch_local, 5 s.
+        (vlc.media_parse_with_options)(media, 0x02, 5000);
+        let started = std::time::Instant::now();
+        // libvlc_media_parsed_status_done (4), or skipped/failed/timeout.
+        while !matches!((vlc.media_get_parsed_status)(media), 1..=4) && started.elapsed() < std::time::Duration::from_secs(6) {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        let text = |pointer: *const c_char| if pointer.is_null() { String::new() } else { std::ffi::CStr::from_ptr(pointer).to_string_lossy().trim().to_string() };
+        let mut probe = Probe { duration_ms: (vlc.media_get_duration)(media).max(0), ..Default::default() };
+        for (meta, name) in META {
+            let value = (vlc.media_get_meta)(media, meta);
+            let string = text(value);
+            if !value.is_null() {
+                (vlc.free)(value.cast());
+            }
+            // VLC falls back to the file name for a missing title.
+            let file_name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            if !string.is_empty() && !(meta == 0 && string == file_name) {
+                probe.tags.push((name, string));
+            }
+        }
+        let mut tracks: *mut *mut TrackInfo = std::ptr::null_mut();
+        let count = (vlc.media_tracks_get)(media, &mut tracks);
+        for index in 0..count as usize {
+            let track = &**tracks.add(index);
+            let mut stream = Stream {
+                kind: match track.kind {
+                    0 => "Audio",
+                    1 => "Video",
+                    2 => "Subtitles",
+                    _ => "Data",
+                },
+                codec: text((vlc.codec_description)(track.kind, track.codec)),
+                language: text(track.language),
+                description: text(track.description),
+                bitrate: track.bitrate,
+                profile: track.profile,
+                ..Default::default()
+            };
+            if stream.codec.is_empty() {
+                stream.codec = String::from_utf8_lossy(&track.codec.to_le_bytes()).trim().to_string();
+            }
+            if !track.details.is_null() {
+                match track.kind {
+                    0 => {
+                        let audio = &*(track.details as *const AudioTrackInfo);
+                        stream.channels = audio.channels;
+                        stream.sample_rate = audio.rate;
+                    }
+                    1 => {
+                        let video = &*(track.details as *const VideoTrackInfo);
+                        stream.width = video.width;
+                        stream.height = video.height;
+                        if video.frame_rate_den > 0 {
+                            stream.frame_rate = f64::from(video.frame_rate_num) / f64::from(video.frame_rate_den);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            probe.streams.push(stream);
+        }
+        if count > 0 {
+            (vlc.media_tracks_release)(tracks, count);
+        }
+        (vlc.media_release)(media);
+        Some(probe)
+    }
 }
 
 /// The equalizer's settings: a gain per band, in dB (−20…20), and the

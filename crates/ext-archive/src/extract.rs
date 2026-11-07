@@ -17,9 +17,12 @@ pub enum ArchiveKind {
     Gz,
     /// Read-only: RARLAB's unrar library lists and extracts, never creates.
     Rar,
+    /// A disc image (ISO 9660 / Joliet), read-only.
+    Iso,
 }
 impl ArchiveKind {
-    pub const SUFFIXES: [(&'static str, Self); 6] = [
+    pub const SUFFIXES: [(&'static str, Self); 7] = [
+        (".iso", Self::Iso),
         (".rar", Self::Rar),
         (".tar.gz", Self::TarGz),
         (".tgz", Self::TarGz),
@@ -116,7 +119,7 @@ fn unix_time(seconds: u64) -> Option<chrono::NaiveDateTime> {
         .map(|time| time.with_timezone(&chrono::Local).naive_local())
 }
 /// The trailer's ISIZE: the original size modulo 2^32.
-fn gz_original_size(path: &Path) -> std::io::Result<u64> {
+pub(crate) fn gz_original_size(path: &Path) -> std::io::Result<u64> {
     use std::io::{Read as _, Seek as _, SeekFrom};
     let mut file = std::fs::File::open(path)?;
     file.seek(SeekFrom::End(-4))?;
@@ -186,6 +189,17 @@ pub fn list_items(path: &Path) -> std::io::Result<Vec<Item>> {
                     });
                 }
                 archive = header.skip().map_err(rar_error)?;
+            }
+        }
+        ArchiveKind::Iso => {
+            for entry in crate::iso::entries(path)? {
+                let Some(name) = sanitize(Path::new(&entry.path)) else { continue };
+                items.push(Item {
+                    name: slash_name(&name),
+                    dir: entry.dir,
+                    size: entry.size,
+                    modified: entry.modified.and_then(|time| chrono::DateTime::from_timestamp(time, 0)).map(|time| time.naive_utc()),
+                });
             }
         }
         ArchiveKind::Gz => {
@@ -355,6 +369,19 @@ pub fn extract_archive(
                     let (bytes, next) = header.read().map_err(rar_error)?;
                     extractor.entry(&relative, false, &mut bytes.as_slice(), None)?;
                     rar = next;
+                }
+            }
+        }
+        ArchiveKind::Iso => {
+            for entry in crate::iso::entries(archive)? {
+                let Some(relative) = sanitize(Path::new(&entry.path)) else {
+                    extractor.report.skipped += 1;
+                    continue;
+                };
+                if entry.dir {
+                    extractor.entry(&relative, true, &mut std::io::empty(), None)?;
+                } else {
+                    extractor.entry(&relative, false, &mut crate::iso::reader(archive, &entry)?, None)?;
                 }
             }
         }

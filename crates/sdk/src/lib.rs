@@ -323,6 +323,21 @@ pub trait ArchiveProvider: Send + Sync {
     /// Members whose destination under `target` already exists.
     fn conflicts(&self, archive: &Path, target: &Path) -> io::Result<Vec<String>>;
     fn extract(&self, archive: &Path, target: &Path, policy: ConflictPolicy) -> io::Result<ExtractReport>;
+    /// What the preview shows about the archive itself: format, how it is
+    /// compressed, how much it saves.
+    fn info(&self, archive: &Path) -> io::Result<ArchiveInfo> {
+        let _ = archive;
+        Err(io::Error::new(io::ErrorKind::Unsupported, "No details for this archive"))
+    }
+}
+
+/// An archive described for the preview.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ArchiveInfo {
+    /// "ZIP", "TAR + gzip", "ISO 9660 disc image"…
+    pub format: String,
+    /// Label and value rows, in order ("Compression" → "Deflate · 82%").
+    pub details: Vec<(String, String)>,
 }
 
 // ------------------------------------------------------------------ remote
