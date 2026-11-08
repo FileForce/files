@@ -31,6 +31,7 @@ static ALLOCATOR: alloc_stats::Counting = alloc_stats::Counting;
 mod desktop;
 mod instance;
 mod media_info;
+mod pe_info;
 mod system_notify;
 mod media_keys;
 mod menu_colors;

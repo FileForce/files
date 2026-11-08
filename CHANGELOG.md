@@ -5,6 +5,11 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.18
+
+- Windows programs (.exe, .dll…) show their own icon, as in Explorer — in the grid, the Pro list and the preview, on every system — and the preview tells what they are: product, description, company, versions, copyright, original name; built for x64, x86 or ARM64, a windowed or console app or a library, .NET, signed (Authenticode), build date. Programs (.exe, .msi, .app, .AppImage) are their own kind, Application.
+- Release builds: appimagetool comes from a pinned version with a mirror (GitHub served 504s for its usual file, which failed the Linux builds of 0.1.16 and 0.1.17).
+
 ## 0.1.17
 
 - Big folders are much lighter: the Pro list and the Expressive grid build only the rows on screen (and a few around), not every file. A redraw of a 5,000-file folder went from ~595,000 allocations and ~390 MB allocated to ~7,000 and ~4 MB; scrolling and selecting got as light.

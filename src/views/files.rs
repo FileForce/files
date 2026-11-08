@@ -389,7 +389,7 @@ impl FileExplorer {
                         .min_w_0()
                         .items_center()
                         .gap_3()
-                        .child(file_icon(entry, palette, 16.))
+                        .child(file_icon_or_app(entry, palette, 16.))
                         .child(div().text_sm().flex_1().min_w_0().child(name_with_badges(entry, 64, palette))),
                 )
                 .child(
@@ -656,6 +656,14 @@ impl FileExplorer {
     }
 }
 
+/// The program's own icon when it has one (a Windows .exe), else the kind's.
+pub(crate) fn file_icon_or_app(entry: &FileEntry, palette: Palette, size: f32) -> AnyElement {
+    match entry.path.and_then(crate::thumbnails::app_icon) {
+        Some(icon) => img(icon).size(px(size)).flex_shrink_0().object_fit(ObjectFit::Contain).into_any_element(),
+        None => file_icon(entry, palette, size).into_any_element(),
+    }
+}
+
 pub(crate) fn file_icon(entry: &FileEntry, palette: Palette, size: f32) -> Icon {
     kind_icon(entry.kind, palette, size)
 }
@@ -671,6 +679,7 @@ pub(crate) fn kind_icon(kind: FileKind, palette: Palette, size: f32) -> Icon {
         FileKind::Code => (IconName::FileCode, palette.code),
         FileKind::Archive => (IconName::FileArchive, palette.archive),
         FileKind::Audio => (IconName::FileMusic, palette.video),
+        FileKind::Application => (IconName::AppWindow, palette.accent),
         FileKind::Text => (IconName::FileText, palette.muted),
     };
     let color = match palette.icon_theme {
@@ -758,6 +767,14 @@ pub(crate) fn file_thumbnail(entry: &FileEntry, palette: Palette, height: f32) -
         // A small cached copy (HEIC/AVIF converted); until it is ready the icon shows.
         (None, Some(path)) if entry.kind == FileKind::Image => {
             crate::thumbnails::thumbnail(path).map(gpui_kit::ImageSource::from)
+        }
+        // A program's own icon, centred like Explorer shows it.
+        (None, Some(path)) => {
+            if let Some(icon) = crate::thumbnails::app_icon(path) {
+                let size = (height * 0.62).min(128.);
+                return base.flex().items_center().justify_center().child(img(icon).size(px(size)).object_fit(ObjectFit::Contain)).into_any_element();
+            }
+            None
         }
         _ => None,
     };

@@ -137,6 +137,24 @@ fn enqueue(path: &Path, cached: PathBuf) {
     }
 }
 
+/// A program's own icon (from a Windows .exe or .dll), made once in the
+/// background. `None` while it is made, or when it has none (the generic
+/// icon shows).
+pub fn app_icon(path: &Path) -> Option<PathBuf> {
+    if !crate::pe_info::applies(path) {
+        return None;
+    }
+    let cached = cache_path(path)?.with_extension("icon.png");
+    if cached.is_file() {
+        return Some(cached);
+    }
+    if state().failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains_key(&cached) {
+        return None;
+    }
+    enqueue(path, cached);
+    None
+}
+
 /// Bumped whenever a conversion finishes, so views know to repaint.
 pub fn generation() -> u64 {
     state().generation.load(Ordering::Relaxed)
@@ -216,6 +234,9 @@ fn convert(source: &Path, target: &Path) -> std::io::Result<()> {
     }
     if target.to_string_lossy().ends_with(".thumb.jpg") {
         return shrink(source, target);
+    }
+    if target.to_string_lossy().ends_with(".icon.png") {
+        return crate::pe_info::save_icon(source, target, 256);
     }
     let partial = target.with_extension("partial.jpg");
     let output = converter(source, &partial)?;

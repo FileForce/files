@@ -205,6 +205,8 @@ pub enum FileKind {
     Code,
     Archive,
     Audio,
+    /// Programs: .exe, .msi, .app, .AppImage…
+    Application,
     Text,
 }
 
@@ -219,6 +221,7 @@ impl FileKind {
             Self::Code => "Code",
             Self::Archive => "Archive",
             Self::Audio => "Audio",
+            Self::Application => "Application",
             Self::Text => "Text",
         }
     }
@@ -239,6 +242,7 @@ impl FileKind {
             "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "crate" | "dmg"
             | "iso" | "jar" => Self::Archive,
             "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "aiff" => Self::Audio,
+            "exe" | "msi" | "appimage" | "app" | "bat" | "cmd" | "com" | "scr" => Self::Application,
             _ => Self::Text,
         }
     }

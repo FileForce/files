@@ -80,8 +80,15 @@ jobs:
           sudo apt-get install -y libvlc5 libvlccore9 vlc-plugin-base vlc-plugin-video-output
           # Downloads from GitHub sometimes fail halfway: retry, and check
           # what arrived is an executable, not an error page.
-          sudo curl -fL --retry 5 --retry-all-errors --retry-delay 5 -o /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          # A mirror when the main release's file is unavailable (GitHub served
+          # 504s for it in November 2026).
+          fetch() { sudo curl -fL --retry 4 --retry-all-errors --retry-delay 5 -o "$1" "$2"; }
+          fetch /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage \
+            || fetch /usr/local/bin/appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           sudo chmod +x /usr/local/bin/appimagetool
+          # Runs without FUSE (the older tool from the mirror needs this).
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
           appimagetool --version
           # The runtime appimagetool would fetch itself during the build.
           sudo mkdir -p /opt/appimage

@@ -3,7 +3,7 @@ members = ["crates/*"]
 
 [package]
 name = "file-force"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2024"
 description = "Files: a fast file explorer for macOS and Linux with Git, SSH, AI agents and extensions."
 license = "FSL-1.1-MIT"
@@ -35,10 +35,11 @@ trash = "5"
 sysinfo = { version = "0.31", default-features = false, features = ["disk", "system"] }
 toml = "0.8.23"
 unicode-normalization = "0.1"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff", "ico"] }
 souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
 kamadak-exif = "0.6.2"
 ureq = { version = "3.5.1", features = ["json"] }
+pelite = "0.10.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

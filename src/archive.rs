@@ -968,6 +968,7 @@ fn archive_icon(kind: FileKind, palette: Palette, size: f32) -> Icon {
         FileKind::Code => (IconName::FileCode, palette.code),
         FileKind::Archive => (IconName::FileArchive, palette.archive),
         FileKind::Audio => (IconName::FileMusic, palette.video),
+        FileKind::Application => (IconName::AppWindow, palette.accent),
         FileKind::Text => (IconName::FileText, palette.muted),
     };
     Icon::new(icon).with_size(px(size)).text_color(color)

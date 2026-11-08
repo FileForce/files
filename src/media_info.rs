@@ -83,6 +83,7 @@ pub fn applies(path: &Path) -> bool {
     let extension = path.extension().map(|extension| extension.to_string_lossy().to_lowercase()).unwrap_or_default();
     matches!(FileKind::from_extension(&extension), FileKind::Image | FileKind::Video | FileKind::Audio)
         || files_ext_archive::ArchiveKind::of(path).is_some()
+        || crate::pe_info::applies(path)
 }
 
 fn read(path: &Path) -> Vec<Section> {
@@ -90,6 +91,9 @@ fn read(path: &Path) -> Vec<Section> {
     let extension = path.extension().map(|extension| extension.to_string_lossy().to_lowercase()).unwrap_or_default();
     if files_ext_archive::ArchiveKind::of(path).is_some() {
         return archive(path);
+    }
+    if crate::pe_info::applies(path) {
+        return crate::pe_info::sections(path);
     }
     match FileKind::from_extension(&extension) {
         FileKind::Image => image(path),
