@@ -22,6 +22,12 @@ mod power;
 mod resources;
 mod sound;
 mod storage;
+mod bug_report;
+mod alloc_stats;
+
+#[cfg(debug_assertions)]
+#[global_allocator]
+static ALLOCATOR: alloc_stats::Counting = alloc_stats::Counting;
 mod desktop;
 mod instance;
 mod media_info;

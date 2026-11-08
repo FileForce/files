@@ -78,6 +78,17 @@ pub struct PaneState {
     pub selected: Option<&'static str>,
 }
 
+/// What a built file list depends on (see `entries_for`).
+#[derive(Clone, PartialEq)]
+pub(crate) struct EntriesKey {
+    location: Location,
+    query: String,
+    sort: crate::model::SortOrder,
+    folders_only: bool,
+    listings: u64,
+    sizes: u64,
+}
+
 #[derive(Clone)]
 pub struct WorkspaceTab {
     pub id: u64,
@@ -180,6 +191,11 @@ pub struct FileExplorer {
     pub(crate) tab_scroll: ScrollHandle,
     /// The Expressive / Pro list's scroll position.
     pub(crate) list_scroll: ScrollHandle,
+    /// Where each virtual grid (Pro rows, Expressive folders, files) was
+    /// painted last frame: only the rows on screen are built.
+    pub(crate) grid_bounds: [std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>; 3],
+    /// The last list `entries_for` built, and what it was built from.
+    pub(crate) entries_cache: std::cell::RefCell<Option<(EntriesKey, Vec<&'static FileEntry>)>>,
     pub(crate) sidebar_scroll: ScrollHandle,
     /// An item to bring into view (after a paste, a drop or arrow keys) and
     /// where it was painted last frame.
@@ -353,6 +369,8 @@ impl FileExplorer {
             ssh_dialog: None,
             tab_scroll: ScrollHandle::new(),
             list_scroll: ScrollHandle::new(),
+            entries_cache: Default::default(),
+            grid_bounds: Default::default(),
             sidebar_scroll: ScrollHandle::new(),
             reveal: None,
             reveal_bounds: Default::default(),
@@ -409,6 +427,29 @@ impl FileExplorer {
         if location.is_remote() && self.ssh_connection.is_none() {
             return Vec::new();
         }
+        // The same list is asked for several times a frame (rows, counts,
+        // the status bar): built once until something it depends on changes.
+        let key = EntriesKey {
+            location,
+            query: self.query.clone(),
+            sort: self.sort,
+            folders_only: self.folder_picker.is_some(),
+            listings: crate::model::listings_generation(),
+            sizes: if self.sort.key == crate::model::SortKey::Size { crate::model::folder_sizes_generation() } else { 0 },
+        };
+        if let Some((cached, entries)) = &*self.entries_cache.borrow()
+            && *cached == key
+        {
+            return entries.clone();
+        }
+        let entries = self.build_entries(location);
+        // A listing read just now bumps the generation: key it after.
+        let key = EntriesKey { listings: crate::model::listings_generation(), ..key };
+        *self.entries_cache.borrow_mut() = Some((key, entries.clone()));
+        entries
+    }
+
+    fn build_entries(&self, location: Location) -> Vec<&'static FileEntry> {
         let mut candidates = entries(location, "");
         // A folder picker only offers destinations, never files.
         if self.folder_picker.is_some() {
@@ -1568,6 +1609,10 @@ impl FileExplorer {
         self.open_about_dialog(window, cx);
     }
 
+    fn on_report_bug(&mut self, _: &crate::menus::ReportBug, window: &mut Window, cx: &mut Context<Self>) {
+        crate::bug_report::open(self.appearance.clone(), window, cx);
+    }
+
     fn on_check_for_updates(&mut self, _: &crate::menus::CheckForUpdates, window: &mut Window, cx: &mut Context<Self>) {
         self.open_update_dialog(window, cx);
     }
@@ -1693,6 +1738,7 @@ impl Render for FileExplorer {
             .on_action(cx.listener(Self::on_cut_files))
             .on_action(cx.listener(Self::on_paste_files))
             .on_action(cx.listener(Self::on_check_for_updates))
+            .on_action(cx.listener(Self::on_report_bug))
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -4265,11 +4311,18 @@ mod tests {
         crate::sound::test_speaker(crate::settings::SpeakerLayout::Surround51, 3, 50);
         assert!(crate::sound::PLAYED.load(Ordering::Relaxed) > before, "the subwoofer test played");
 
-        // A new notification chimes once (also with several windows).
+        // A new notification chimes once (also with several windows). Windows
+        // of tests running alongside may claim one first (their sound off):
+        // a few tries.
         let before = crate::sound::PLAYED.load(Ordering::Relaxed);
-        files_sdk::log::notify("files", files_sdk::log::Level::Success, "Chime probe", None);
-        cx.executor().advance_clock(std::time::Duration::from_millis(500));
-        cx.run_until_parked();
+        for _ in 0..5 {
+            files_sdk::log::notify("files", files_sdk::log::Level::Success, "Chime probe", None);
+            cx.executor().advance_clock(std::time::Duration::from_millis(500));
+            cx.run_until_parked();
+            if crate::sound::PLAYED.load(Ordering::Relaxed) > before {
+                break;
+            }
+        }
         assert!(crate::sound::PLAYED.load(Ordering::Relaxed) > before, "no chime for a new notification");
     }
 
@@ -4291,6 +4344,59 @@ mod tests {
         assert!(cx.debug_bounds("console-resources").is_some(), "no Resources panel");
         let parts = crate::resources::parts();
         assert!(parts.iter().any(|part| part.name == "Mail in memory") && parts.iter().any(|part| part.name == "Thumbnails on disk"));
+    }
+
+    /// Allocation audit: `cargo test --bin file-force allocation_audit -- --ignored --nocapture --test-threads=1`.
+    #[test]
+    #[ignore]
+    fn allocation_audit() {
+        use crate::alloc_stats::counts;
+        let dir = std::env::temp_dir().join(format!("file-force-alloc-audit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for index in 0..5000 {
+            std::fs::write(dir.join(format!("file-{index:05}.{}", ["txt", "png", "rs", "zip", "mp4"][index % 5])), b"x").unwrap();
+        }
+        let report = |name: &str, frames: u64, delta: crate::alloc_stats::Counts| {
+            println!("{name:<34} allocs {:>9}  reallocs {:>8}  bytes {:>11}  (per frame: {} allocs, {} reallocs)", delta.allocs, delta.reallocs, delta.bytes, delta.allocs / frames.max(1), delta.reallocs / frames.max(1));
+        };
+        let before = counts();
+        let (view, cx) = rooted_window(&dir);
+        cx.run_until_parked();
+        report("open window + list 5000 files", 1, counts() - before);
+        let before = counts();
+        for _ in 0..20 {
+            view.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+        }
+        report("idle redraw ×20", 20, counts() - before);
+        let before = counts();
+        for _ in 0..20 {
+            cx.dispatch_action(SelectNext);
+            cx.run_until_parked();
+        }
+        report("select next ×20 (preview open)", 20, counts() - before);
+        let before = counts();
+        for _ in 0..20 {
+            view.update_in(cx, |this, _, cx| {
+                this.list_scroll.set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-60_000.)));
+                cx.notify();
+            });
+            cx.run_until_parked();
+            view.update_in(cx, |this, _, cx| {
+                this.list_scroll.set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
+                cx.notify();
+            });
+            cx.run_until_parked();
+        }
+        report("scroll jump ×40", 40, counts() - before);
+        let before = counts();
+        view.update_in(cx, |this, window, cx| this.navigate(crate::model::Location::from_path(&dir), window, cx));
+        cx.run_until_parked();
+        report("re-open the folder", 1, counts() - before);
+        let before = counts();
+        let _ = crate::model::searchable_entries(&dir);
+        report("search index of the folder", 1, counts() - before);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

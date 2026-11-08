@@ -710,7 +710,12 @@ fn bundle_linux(root: &Path, config: &Config, version: &str, icons: &Path, dist:
     println!("AppDir → {}", appdir.display());
     if config.linux.appimage {
         let image = dist.join(format!("{}-{version}-x86_64.AppImage", config.app.name));
-        run(Command::new("appimagetool").arg(&appdir).arg(&image))
+        let mut tool = Command::new("appimagetool");
+        // A runtime downloaded beforehand (CI): no network during the build.
+        if let Some(runtime) = std::env::var_os("APPIMAGE_RUNTIME").filter(|runtime| Path::new(runtime).is_file()) {
+            tool.arg("--runtime-file").arg(runtime);
+        }
+        run(tool.arg(&appdir).arg(&image))
             .map_err(|error| format!("{error} · install appimagetool from https://github.com/AppImage/appimagetool"))?;
         println!("AppImage → {}", image.display());
         publish_update(config, version, &image, "linux")?;

@@ -62,23 +62,26 @@ impl FileExplorer {
         if !folders.is_empty() {
             content = content
                 .child(section_title("Folders", folders.len(), palette))
-                .child(
-                    h_flex()
-                        .flex_wrap()
-                        .gap_3()
-                        .children(folders.into_iter().map(|entry| {
-                            self.folder_card(entry, selection.contains(&entry.id), palette, cx)
-                        })),
-                );
+                .child({
+                    let reveal = self.reveal.and_then(|id| folders.iter().position(|entry| entry.id == id));
+                    let columns = self.grid_columns(Grid::Folders);
+                    self.virtual_grid(Grid::Folders, folders.len(), columns, FOLDER_CARD_HEIGHT, CARD_GAP, reveal, |index| {
+                        let entry = folders[index];
+                        self.folder_card(entry, selection.contains(&entry.id), palette, cx).into_any_element()
+                    })
+                });
         }
         if !documents.is_empty() {
             content = content
                 .child(section_title("Files", documents.len(), palette))
-                .child(h_flex().flex_wrap().gap_3().children(
-                    documents.into_iter().map(|entry| {
-                        self.file_card(entry, selection.contains(&entry.id), palette, cx)
-                    }),
-                ));
+                .child({
+                    let reveal = self.reveal.and_then(|id| documents.iter().position(|entry| entry.id == id));
+                    let columns = self.grid_columns(Grid::Files);
+                    self.virtual_grid(Grid::Files, documents.len(), columns, FILE_CARD_HEIGHT, CARD_GAP, reveal, |index| {
+                        let entry = documents[index];
+                        self.file_card(entry, selection.contains(&entry.id), palette, cx).into_any_element()
+                    })
+                });
         }
 
         div()
@@ -205,7 +208,9 @@ impl FileExplorer {
             .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
             .relative()
             .children(self.reveal_marker(entry.id))
-            .w(px(176.))
+            .w(px(CARD_WIDTH))
+            .h(px(FILE_CARD_HEIGHT))
+            .overflow_hidden()
             .p_1()
             .gap_2()
             .rounded_lg()
@@ -326,7 +331,9 @@ impl FileExplorer {
         let [name_header, kind_header, modified_header, size_header] =
             [SortKey::Name, SortKey::Kind, SortKey::Modified, SortKey::Size]
                 .map(|key| self.sort_header(key, "pro", palette, cx));
-        let rows = files.into_iter().map(|entry| {
+        let reveal = self.reveal.and_then(|id| files.iter().position(|entry| entry.id == id));
+        let count = files.len();
+        let mut make_row = |entry: &'static FileEntry| {
             let id = entry.id;
             let is_selected = selection.contains(&id);
             let row = h_flex();
@@ -341,7 +348,8 @@ impl FileExplorer {
             .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
             .relative()
             .children(self.reveal_marker(entry.id))
-                .h(px(35.))
+                .w_full()
+                .h(px(PRO_ROW_HEIGHT))
                 .px_4()
                 .items_center()
                 .gap_3()
@@ -406,7 +414,8 @@ impl FileExplorer {
                         )),
                 )
                 .into_any_element()
-        });
+        };
+        let rows = self.virtual_grid(Grid::ProRows, count, 1, PRO_ROW_HEIGHT, 0., reveal, |index| make_row(files[index]));
 
         v_flex()
             .flex_1()
@@ -442,7 +451,7 @@ impl FileExplorer {
                     .overflow_y_scroll()
                     .track_scroll(&list_scroll)
                     .child({
-                        let list = v_flex().children(parent).children(rows);
+                        let list = v_flex().children(parent).child(rows);
                         #[cfg(test)]
                         let list = list.debug_selector(|| "pro-scroll-probe".into());
                         list
@@ -556,6 +565,95 @@ fn section_title(title: &'static str, count: usize, palette: Palette) -> AnyElem
                 .child(count.to_string()),
         )
         .into_any_element()
+}
+
+/// The virtual grids of a folder view.
+#[derive(Clone, Copy)]
+pub(crate) enum Grid {
+    ProRows = 0,
+    Folders = 1,
+    Files = 2,
+}
+
+const CARD_WIDTH: f32 = 176.;
+const CARD_GAP: f32 = 12.;
+const FOLDER_CARD_HEIGHT: f32 = 58.;
+const FILE_CARD_HEIGHT: f32 = 168.;
+const PRO_ROW_HEIGHT: f32 = 35.;
+/// Rows built above and below the screen, so a fast scroll shows no gap.
+const OVERSCAN: usize = 6;
+
+impl FileExplorer {
+    /// Cards per row in an Expressive grid of last frame's width.
+    fn grid_columns(&self, grid: Grid) -> usize {
+        let width = self.grid_bounds[grid as usize].get().map(|bounds| bounds.size.width).unwrap_or_else(|| self.list_scroll.bounds().size.width - px(40.));
+        let width = if width > px(0.) { width.as_f32() } else { 960. };
+        (((width + CARD_GAP) / (CARD_WIDTH + CARD_GAP)).floor() as usize).max(1)
+    }
+
+    /// The rows of `grid` (of `rows`, each `row_height` tall) on screen, from
+    /// where it and the list were painted last frame. An item to reveal
+    /// that is off screen scrolls into view first.
+    fn visible_rows(&self, grid: Grid, rows: usize, row_height: f32, reveal_row: Option<usize>) -> std::ops::Range<usize> {
+        let view = self.list_scroll.bounds();
+        let Some(bounds) = self.grid_bounds[grid as usize].get().filter(|_| view.size.height > px(0.)) else {
+            // Not painted yet: enough rows for a tall screen.
+            let first = reveal_row.unwrap_or(0).saturating_sub(OVERSCAN);
+            return first..rows.min(first + (1600. / row_height).ceil() as usize + OVERSCAN);
+        };
+        let above = (view.top() - bounds.top()).as_f32();
+        let mut start = (above.max(0.) / row_height).floor() as usize;
+        let mut end = ((above + view.size.height.as_f32()) / row_height).ceil().max(0.) as usize;
+        if let Some(row) = reveal_row
+            && (row < start || row >= end)
+        {
+            // Jump there: centre the row, the reveal marker refines it.
+            let offset = self.list_scroll.offset();
+            let grid_in_content = (bounds.top() - view.top()).as_f32() - offset.y.as_f32();
+            let target = grid_in_content + row as f32 * row_height + row_height / 2. - view.size.height.as_f32() / 2.;
+            let max = self.list_scroll.max_offset().y.as_f32().max(grid_in_content + rows as f32 * row_height);
+            self.list_scroll.set_offset(gpui_kit::point(offset.x, px(-target.clamp(0., max))));
+            let visible = (view.size.height.as_f32() / row_height).ceil() as usize;
+            start = row.saturating_sub(visible / 2 + 1);
+            end = row + visible / 2 + 1;
+        }
+        start.saturating_sub(OVERSCAN).min(rows)..(end + OVERSCAN).min(rows)
+    }
+
+    /// A grid of `count` items `columns` wide, built only where it shows:
+    /// full height, with the rows on screen placed in it.
+    fn virtual_grid(
+        &self,
+        grid: Grid,
+        count: usize,
+        columns: usize,
+        row_height: f32,
+        gap: f32,
+        reveal: Option<usize>,
+        mut item: impl FnMut(usize) -> AnyElement,
+    ) -> AnyElement {
+        let rows = count.div_ceil(columns.max(1));
+        let range = self.visible_rows(grid, rows, row_height + gap, reveal.map(|index| index / columns.max(1)));
+        let cell = self.grid_bounds[grid as usize].clone();
+        let height = (rows as f32 * (row_height + gap) - gap).max(0.);
+        div()
+            .relative()
+            .w_full()
+            .h(px(height))
+            .child(gpui_kit::canvas(move |bounds, _, _| cell.set(Some(bounds)), |_, _, _, _| {}).absolute().inset_0())
+            .children(range.map(|row| {
+                let first = row * columns;
+                h_flex()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(row as f32 * (row_height + gap)))
+                    .h(px(row_height))
+                    .gap(px(gap))
+                    .children((first..(first + columns).min(count)).map(&mut item))
+            }))
+            .into_any_element()
+    }
 }
 
 pub(crate) fn file_icon(entry: &FileEntry, palette: Palette, size: f32) -> Icon {

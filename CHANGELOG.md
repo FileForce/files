@@ -5,6 +5,13 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.17
+
+- Big folders are much lighter: the Pro list and the Expressive grid build only the rows on screen (and a few around), not every file. A redraw of a 5,000-file folder went from ~595,000 allocations and ~390 MB allocated to ~7,000 and ~4 MB; scrolling and selecting got as light.
+- Sorting compares names without making lowercase copies, and the file list is built once per change instead of several times a frame.
+- Help → Report a Bug… (also the bug button beside the Settings gear, and About): describe the problem and it becomes an issue on GitHub — no GitHub account needed. Version and system are added; the last Console events only when you tick the box. If the website cannot take it, the issue opens filled in, in the browser.
+- Release builds: the AppImage tools are downloaded with retries before the build, so a flaky download no longer fails the Linux release.
+
 ## 0.1.16
 
 - Where Mail and Music open (a tab or their own window) moved from General to each extension's page in Settings → Extensions; Music can open in a window too. A choice made before for Mail is kept.

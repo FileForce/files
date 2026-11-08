@@ -257,6 +257,14 @@ impl FileExplorer {
                     )
                     .child(div().flex_1())
                     .child(
+                        Button::new("report-bug")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Bug)
+                            .tooltip("Report a bug")
+                            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::menus::ReportBug), cx)),
+                    )
+                    .child(
                         // Middle-click (like a folder): Settings in a tab.
                         div()
                             .on_mouse_up(gpui_kit::MouseButton::Middle, cx.listener(|this, _, window, cx| this.open_settings_tab(window, cx)))

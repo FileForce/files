@@ -394,6 +394,11 @@ impl FileExplorer {
                                 .children(repository.map(|repository| {
                                     let url = format!("https://github.com/{repository}");
                                     Button::new("about-repository").ghost().small().label("GitHub").on_click(move |_, _, _| open_url(&url))
+                                }))
+                                .child(Button::new("about-report-bug").ghost().small().icon(IconName::Bug).label("Report a bug").on_click(|_, window, cx| {
+                                    // About is a dialog itself: the form takes its place.
+                                    window.close_dialog(cx);
+                                    window.dispatch_action(Box::new(crate::menus::ReportBug), cx);
                                 })),
                         )
                         .when(!crate::updates::COPYRIGHT.is_empty(), |this| {

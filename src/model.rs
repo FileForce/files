@@ -731,6 +731,7 @@ pub mod remote {
         let mut state = lock();
         state.listings.clear();
         state.host = host.map(|host| &*Box::leak(host.into_boxed_str()));
+        super::listings_changed();
     }
 
     pub fn listing(id: u32) -> Option<Vec<&'static FileEntry>> {
@@ -778,6 +779,7 @@ pub mod remote {
             .collect();
         entries.sort_by_key(|entry| (!entry.is_folder(), entry.name.to_lowercase()));
         lock().listings.insert(id, entries);
+        super::listings_changed();
     }
 
     /// The remote path behind an entry.
@@ -843,6 +845,18 @@ mod tag_names {
 /// Drops cached listings after the filesystem was changed by the app.
 pub fn invalidate_listings() {
     fs_index::invalidate();
+}
+
+/// Bumped whenever a folder listing is read again or forgotten (local or
+/// remote): views reuse what they built from listings until it changes.
+static LISTINGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn listings_generation() -> u64 {
+    LISTINGS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn listings_changed() {
+    LISTINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Every indexed entry for global search: a bounded walk of the home folder.
@@ -918,9 +932,18 @@ fn entry_bytes(entry: &FileEntry) -> u64 {
 }
 
 /// Folders always stay before files; ties fall back to the name.
+/// Compares names ignoring case without making lowercase copies: sorting a
+/// big folder compares names tens of thousands of times.
+pub fn cmp_ignore_case(a: &str, b: &str) -> std::cmp::Ordering {
+    if a.is_ascii() && b.is_ascii() {
+        return a.bytes().map(|byte| byte.to_ascii_lowercase()).cmp(b.bytes().map(|byte| byte.to_ascii_lowercase()));
+    }
+    a.chars().flat_map(char::to_lowercase).cmp(b.chars().flat_map(char::to_lowercase))
+}
+
 pub fn sort_entries(entries: &mut [&'static FileEntry], order: SortOrder) {
     entries.sort_by(|a, b| {
-        let by_name = || a.name.to_lowercase().cmp(&b.name.to_lowercase());
+        let by_name = || cmp_ignore_case(a.name, b.name);
         let by_key = match order.key {
             SortKey::Name => by_name(),
             SortKey::Kind => a.kind.label().cmp(b.kind.label()),
@@ -1587,6 +1610,7 @@ mod fs_index {
         lock()
             .listings
             .insert(location, (Instant::now(), entries.clone()));
+        super::listings_changed();
         entries
     }
 
@@ -1632,6 +1656,7 @@ mod fs_index {
         let mut registry = lock();
         registry.listings.clear();
         registry.search = None;
+        super::listings_changed();
     }
 
     pub fn tagged(location: Location) -> Vec<&'static FileEntry> {

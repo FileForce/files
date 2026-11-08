@@ -6,7 +6,7 @@ use gpui_kit::{App, Menu, MenuItem, OsAction, SystemMenuType, actions};
 
 use crate::app::*;
 
-actions!(app_menu, [Quit, Hide, HideOthers, ShowAll, About, CheckForUpdates]);
+actions!(app_menu, [Quit, Hide, HideOthers, ShowAll, About, CheckForUpdates, ReportBug]);
 
 pub fn register(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
@@ -67,5 +67,6 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Toggle Theme", ToggleTheme),
         ]),
         Menu::new("Window").items([MenuItem::action("New Window", NewWindow)]),
+        Menu::new("Help").items([MenuItem::action("Report a Bug…", ReportBug), MenuItem::action("Check for Updates…", CheckForUpdates)]),
     ]
 }
