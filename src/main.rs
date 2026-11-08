@@ -55,7 +55,7 @@ fn main() {
     desktop::hand_shell_folders_to_explorer();
     desktop::set_app_id();
     host::install();
-    let launch = desktop::launch_path(std::env::args());
+    let launch = desktop::launch_target(std::env::args().collect());
     // Settings → General → One window: a running Files takes the folder.
     let single = settings::load().single_instance;
     if single && instance::hand_over(launch.as_deref()) {
@@ -90,6 +90,7 @@ fn main() {
         power::refresh();
         cx.set_reduce_motion(loaded.accessibility.reduce_motion() || power::power_saving());
         palette::apply_motion(cx, loaded.look.motion);
+        palette::set_look(loaded.theme, loaded.icon_theme);
         apply_theme(cx, loaded.scheme, loaded.accent);
         app::register_keys(cx);
         keymap::apply(cx, &Default::default(), &loaded.keymap);
@@ -98,6 +99,7 @@ fn main() {
         power::watch(appearance.clone(), cx);
         // Linux: the menu, notifications and "Open with" know Files.
         std::thread::spawn(desktop::install_desktop_entry);
+        std::thread::spawn(desktop::refresh_folder_verb);
 
         MAIN.with(|main| main.borrow_mut().appearance = Some(appearance));
         let window = open_main_window(cx).expect("Failed to open File Explorer");

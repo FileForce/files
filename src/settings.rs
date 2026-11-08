@@ -13,6 +13,13 @@ static LOAD_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 pub struct AppSettings {
     pub scheme: ColorScheme,
     pub accent: Accent,
+    /// Settings → Appearance → Theme: predefined colors (and Omarchy's look).
+    pub theme: ThemePreset,
+    /// Settings → Appearance → Icons.
+    pub icon_theme: IconTheme,
+    /// Settings → Extensions → <extension> → Opens in: a tab or its own
+    /// window, by extension id ("mail", "music"). Missing: a tab.
+    pub extension_windows: std::collections::BTreeMap<String, OpenIn>,
     pub language: Language,
     pub extensions: ExtensionSettings,
     pub human_sizes: HumanSizeSettings,
@@ -119,6 +126,51 @@ impl Default for StorageSettings {
     fn default() -> Self {
         Self { limit_mb: 1024 }
     }
+}
+
+/// A predefined theme: its own colors for light and dark (Settings →
+/// Appearance → Theme). The color scheme still picks light or dark.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreset {
+    /// Files' own colors, with the chosen accent.
+    #[default]
+    Default,
+    /// Omarchy's terminal look: Tokyo Night (Day in light), a monospace
+    /// font, square corners, no shadows.
+    Omarchy,
+    /// Catppuccin: Mocha in dark, Latte in light; the accent picks mauve,
+    /// blue or peach.
+    Catppuccin,
+}
+
+impl ThemePreset {
+    pub const ALL: [ThemePreset; 3] = [ThemePreset::Default, ThemePreset::Omarchy, ThemePreset::Catppuccin];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemePreset::Default => "Files",
+            ThemePreset::Omarchy => "Omarchy",
+            ThemePreset::Catppuccin => "Catppuccin",
+        }
+    }
+}
+
+/// How file and folder icons are colored.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IconTheme {
+    /// A color per kind: folders, images, code, archives…
+    #[default]
+    Colorful,
+    /// One quiet color, folders a little brighter.
+    Monochrome,
+    /// Everything in the accent color.
+    Accent,
+}
+
+impl IconTheme {
+    pub const ALL: [IconTheme; 3] = [IconTheme::Colorful, IconTheme::Monochrome, IconTheme::Accent];
 }
 
 /// `[sound]` in settings.toml.
@@ -254,6 +306,15 @@ pub struct DeveloperSettings {
 }
 
 impl AppSettings {
+    /// Where an extension's view opens (Settings → Extensions → its page).
+    pub fn opens_in(&self, extension: &str) -> OpenIn {
+        self.extension_windows.get(extension).copied().unwrap_or(match extension {
+            // Set in General before it moved to the extension's page.
+            "mail" => self.behavior.open_in,
+            _ => OpenIn::Tab,
+        })
+    }
+
     /// Settings written by older versions: TortoiseGit is now Git.
     pub fn migrate(&mut self) {
         for map in [&mut self.menu_colors] {
@@ -559,7 +620,8 @@ pub struct BehaviorSettings {
     pub drop_action: DropAction,
     /// Ask Copy / Move on every drop.
     pub ask_on_drop: bool,
-    /// Where Mail (and other extension windows) open.
+    /// Before 0.1.16: where Mail opened. Read once into
+    /// `extension_windows["mail"]`; not written by Settings any more.
     pub open_in: OpenIn,
 }
 
@@ -634,6 +696,9 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             scheme: ColorScheme::Dark,
+            theme: ThemePreset::Default,
+            icon_theme: IconTheme::Colorful,
+            extension_windows: std::collections::BTreeMap::new(),
             accent: Accent::Iris,
             language: Language::English,
             extensions: ExtensionSettings::default(),

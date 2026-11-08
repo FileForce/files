@@ -35,6 +35,7 @@ actions!(
         ToggleTheme,
         ToggleInspector,
         ShowSettings,
+        OpenSettingsTab,
         SelectPrevious,
         SelectNext,
         OpenSelected,
@@ -1265,7 +1266,32 @@ impl FileExplorer {
     }
 
     fn on_show_settings(&mut self, _: &ShowSettings, window: &mut Window, cx: &mut Context<Self>) {
+        // A Settings tab already open: go there instead of a second copy.
+        if let Some(index) = self.settings_tab() {
+            self.select_tab(index, window, cx);
+            return;
+        }
         crate::settings_window::open_settings_dialog(self.appearance.clone(), window, cx);
+    }
+
+    fn settings_tab(&self) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.panel.as_ref().is_some_and(|panel| panel.clone().downcast::<crate::settings_window::SettingsWindow>().is_ok()))
+    }
+
+    /// Settings in a tab of its own, beside the files (one at a time).
+    pub(crate) fn open_settings_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.settings_tab() {
+            self.select_tab(index, window, cx);
+            return;
+        }
+        let appearance = self.appearance.clone();
+        let view = cx.new(|cx| {
+            let mut settings = crate::settings_window::SettingsWindow::new(window, cx, appearance);
+            settings.in_tab = true;
+            settings.adopt_pending_draft();
+            settings
+        });
+        self.open_panel_tab("Settings", gpui_kit::assets::IconName::Settings, view.into(), window, cx);
     }
 
     fn on_select_previous(
@@ -1640,6 +1666,7 @@ impl Render for FileExplorer {
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_toggle_inspector))
             .on_action(cx.listener(Self::on_show_settings))
+            .on_action(cx.listener(|this, _: &OpenSettingsTab, window, cx| this.open_settings_tab(window, cx)))
             .on_action(cx.listener(Self::on_select_previous))
             .on_action(cx.listener(Self::on_select_next))
             .on_action(cx.listener(Self::on_open_selected))
@@ -4264,6 +4291,23 @@ mod tests {
         assert!(cx.debug_bounds("console-resources").is_some(), "no Resources panel");
         let parts = crate::resources::parts();
         assert!(parts.iter().any(|part| part.name == "Mail in memory") && parts.iter().any(|part| part.name == "Thumbnails on disk"));
+    }
+
+    #[test]
+    fn settings_open_in_a_tab_once() {
+        let (view, cx) = pro_window();
+        let tabs = |cx: &mut gpui_kit::VisualTestContext| cx.read(|app| view.read(app).tabs.len());
+        let before = tabs(cx);
+        view.update_in(cx, |this, window, cx| this.open_settings_tab(window, cx));
+        assert_eq!(tabs(cx), before + 1, "a Settings tab");
+        assert_eq!(cx.read(|app| view.read(app).tabs.last().map(|tab| tab.panel_title)), Some("Settings"));
+        view.update_in(cx, |this, window, cx| {
+            this.select_tab(0, window, cx);
+            this.open_settings_tab(window, cx);
+        });
+        assert_eq!(tabs(cx), before + 1, "the same tab again, not a second one");
+        assert_eq!(cx.read(|app| view.read(app).active_tab), before);
+        cx.run_until_parked();
     }
 
     #[test]

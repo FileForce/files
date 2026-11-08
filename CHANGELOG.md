@@ -5,6 +5,15 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.16
+
+- Where Mail and Music open (a tab or their own window) moved from General to each extension's page in Settings → Extensions; Music can open in a window too. A choice made before for Mail is kept.
+- Text in Settings — labels and explanations — can be selected and copied.
+- Settings open in a tab too: "Open in tab" in the Settings header (unsaved edits come along), or middle-click the gear. With a Settings tab open, ⌘, goes to it.
+- Settings → Appearance → Theme, apart from the color scheme (light, dark, system): Files' own colors, **Omarchy** (Tokyo Night, Tokyo Night Day in light, with Omarchy's terminal look: a monospace font, square corners, no shadows, visible box lines) and **Catppuccin** (Mocha in dark, Latte in light; the accent picks mauve, blue or peach).
+- Settings → Appearance → Icons: colorful (a color per kind), monochrome, or all in the accent color.
+- Windows: "Show in folder" from a browser (and other apps) selects the file that just arrived instead of only opening its folder; the folder verb is refreshed at each start so it follows the app after updates.
+
 ## 0.1.15
 
 - macOS: a click on the Dock icon brings Files back when its window was closed (a new window opens) or minimized; folders sent from the system or a second start open a window again too.

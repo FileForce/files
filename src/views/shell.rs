@@ -257,22 +257,21 @@ impl FileExplorer {
                     )
                     .child(div().flex_1())
                     .child(
-                        Button::new("settings")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Settings)
-                            .tooltip(if cfg!(target_os = "macos") {
-                                "Settings · ⌘,"
-                            } else {
-                                "Settings · Ctrl+,"
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                crate::settings_window::open_settings_dialog(
-                                    this.appearance.clone(),
-                                    window,
-                                    cx,
-                                );
-                            })),
+                        // Middle-click (like a folder): Settings in a tab.
+                        div()
+                            .on_mouse_up(gpui_kit::MouseButton::Middle, cx.listener(|this, _, window, cx| this.open_settings_tab(window, cx)))
+                            .child(
+                                Button::new("settings")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Settings)
+                                    .tooltip(if cfg!(target_os = "macos") {
+                                        "Settings · ⌘, · middle-click: in a tab"
+                                    } else {
+                                        "Settings · Ctrl+, · middle-click: in a tab"
+                                    })
+                                    .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::ShowSettings), cx))),
+                            )
                     ),
             )
             .child(

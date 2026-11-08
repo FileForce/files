@@ -575,6 +575,12 @@ pub(crate) fn kind_icon(kind: FileKind, palette: Palette, size: f32) -> Icon {
         FileKind::Audio => (IconName::FileMusic, palette.video),
         FileKind::Text => (IconName::FileText, palette.muted),
     };
+    let color = match palette.icon_theme {
+        crate::settings::IconTheme::Colorful => color,
+        crate::settings::IconTheme::Monochrome if kind == FileKind::Folder => palette.text,
+        crate::settings::IconTheme::Monochrome => palette.muted,
+        crate::settings::IconTheme::Accent => palette.accent,
+    };
     Icon::new(icon).with_size(px(size)).text_color(color)
 }
 

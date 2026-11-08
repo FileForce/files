@@ -1576,6 +1576,17 @@ impl FileExplorer {
         }
         let appearance = self.appearance.clone();
         let explorer = cx.entity().downgrade();
+        // Settings → Extensions → Music → Opens in.
+        if self.appearance.read(cx).opens_in("music") == crate::settings::OpenIn::Window {
+            let options = gpui_kit::WindowOptions {
+                window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds { origin: gpui_kit::point(px(180.), px(90.)), size: gpui_kit::size(px(1120.), px(720.)) })),
+                window_min_size: Some(gpui_kit::size(px(720.), px(440.))),
+                titlebar: Some(gpui_kit::TitlebarOptions { title: Some("Music".into()), ..Default::default() }),
+                ..Default::default()
+            };
+            let _ = gpui_kit::open_window(options, cx, move |window, cx| cx.new(|cx| MusicView::new(window, cx, appearance, explorer)));
+            return;
+        }
         let view = cx.new(|cx| MusicView::new(window, cx, appearance, explorer));
         self.open_panel_tab("Music", IconName::Music, view.into(), window, cx);
     }

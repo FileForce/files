@@ -200,10 +200,52 @@ const WINDOWS_VERB: &str = "openinfiles";
 #[cfg_attr(not(windows), allow(dead_code))]
 const WINDOWS_CLASSES: [&str; 2] = [r"HKCU\Software\Classes\Directory\shell", r"HKCU\Software\Classes\Drive\shell"];
 
-/// The command a folder verb runs: `"C:\…\file-force.exe" "%V"`.
+/// The command a folder verb runs: `"C:\…\file-force.exe" --from-shell "%V"`.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn windows_command(exe: &std::path::Path) -> String {
-    format!("\"{}\" \"%V\"", exe.display())
+    format!("\"{}\" {FROM_SHELL} \"%V\"", exe.display())
+}
+
+/// Marks a start from Explorer's folder verb. A browser's "Show in folder"
+/// goes through it with the folder alone (Windows never passes the file to
+/// another file manager), so the file that just arrived there is selected.
+pub const FROM_SHELL: &str = "--from-shell";
+
+/// The newest file in `dir` changed in the last two minutes: the download a
+/// "Show in folder" meant.
+pub fn just_arrived(dir: &std::path::Path) -> Option<PathBuf> {
+    let now = std::time::SystemTime::now();
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|item| {
+            let metadata = item.metadata().ok()?;
+            let changed = metadata.created().ok().max(metadata.modified().ok())?;
+            (metadata.is_file() && now.duration_since(changed).is_ok_and(|age| age.as_secs() < 120)).then(|| (changed, item.path()))
+        })
+        .max_by_key(|(changed, _)| *changed)
+        .map(|(_, path)| path)
+}
+
+/// What to open for the start's arguments: from Explorer's folder verb, the
+/// file that just arrived in the folder (selected), else the path itself.
+pub fn launch_target(args: Vec<String>) -> Option<PathBuf> {
+    let from_shell = args.iter().any(|arg| arg == FROM_SHELL);
+    let path = launch_path(args)?;
+    if from_shell && path.is_dir() {
+        return Some(just_arrived(&path).unwrap_or(path));
+    }
+    Some(path)
+}
+
+/// Windows: once Files is the folder manager, the verb is written again at
+/// each start (the exe may have moved with an update; older versions wrote
+/// it without `--from-shell`).
+pub fn refresh_folder_verb() {
+    #[cfg(windows)]
+    if is_default_file_manager() {
+        let _ = make_default_file_manager();
+    }
 }
 
 /// Folders without a path ("This PC", Control Panel: `::{GUID}`,
@@ -400,8 +442,21 @@ mod tests {
     }
 
     #[test]
+    fn show_in_folder_selects_the_file_that_just_arrived() {
+        let dir = std::env::temp_dir().join(format!("file-force-arrived-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.pdf"), b"pdf").unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let folder = dir.display().to_string();
+        let args = |extra: &[&str]| std::iter::once("files").chain(extra.iter().copied()).map(String::from).collect::<Vec<_>>();
+        assert_eq!(launch_target(args(&[FROM_SHELL, &folder])).and_then(|path| path.file_name().map(|name| name.to_owned())), Some("report.pdf".into()), "the download is selected");
+        assert_eq!(launch_target(args(&[&folder])), Some(dir.clone()), "a plain start opens the folder");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn windows_folders_open_by_path_shell_folders_stay_explorer_s() {
-        assert_eq!(windows_command(std::path::Path::new(r"C:\Program Files\Files\file-force.exe")), r#""C:\Program Files\Files\file-force.exe" "%V""#);
+        assert_eq!(windows_command(std::path::Path::new(r"C:\Program Files\Files\file-force.exe")), r#""C:\Program Files\Files\file-force.exe" --from-shell "%V""#);
         assert!(is_shell_folder("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}") && is_shell_folder("shell:Downloads"));
         assert!(!is_shell_folder(r"C:\Users\me"));
     }

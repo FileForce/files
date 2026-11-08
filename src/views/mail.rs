@@ -283,10 +283,10 @@ impl FileExplorer {
     }
 
     /// Mail on `email` (or the first account), in a tab or a window as set
-    /// in Settings → General → Extension windows.
+    /// in Settings → Extensions → Mail.
     pub(crate) fn open_mail(&mut self, email: Option<String>, adding: bool, window: &mut Window, cx: &mut Context<Self>) {
         let appearance = self.appearance.clone();
-        if self.appearance.read(cx).behavior.open_in == crate::settings::OpenIn::Window {
+        if self.appearance.read(cx).opens_in("mail") == crate::settings::OpenIn::Window {
             open_mail_window(email, adding, appearance, cx);
             return;
         }
@@ -309,7 +309,7 @@ impl FileExplorer {
     pub(crate) fn open_mail_result(&mut self, result: files_ext_mail::MailResult, window: &mut Window, cx: &mut Context<Self>) {
         let appearance = self.appearance.clone();
         let email = result.account.email.clone();
-        if self.appearance.read(cx).behavior.open_in == crate::settings::OpenIn::Window {
+        if self.appearance.read(cx).opens_in("mail") == crate::settings::OpenIn::Window {
             if let Some(view) = open_mail_window(Some(email), false, appearance, cx) {
                 view.update(cx, |mail, cx| mail.show_result(result, cx));
             }

@@ -37,6 +37,8 @@ actions!(
 );
 
 pub struct SettingsWindow {
+    /// Shown in a tab, not the modal: Close and Cancel keep the tab.
+    pub(crate) in_tab: bool,
     /// Settings → Extensions → License: where the key is pasted.
     license_input: Entity<InputState>,
     /// Settings → General → Check now: `None` until asked, then the answer.
@@ -221,6 +223,7 @@ impl SettingsWindow {
             expanded_extension: None,
             return_focus: None,
             just_saved: false,
+            in_tab: false,
             storage_usage: None,
             storage_extensions: Vec::new(),
             storage_slider,
@@ -276,6 +279,7 @@ impl SettingsWindow {
                     *appearance = draft;
                     cx.notify();
                 });
+                crate::palette::set_look(self.draft.theme, self.draft.icon_theme);
                 apply_theme(cx, self.draft.scheme, self.draft.accent);
                 cx.notify();
             }
@@ -316,6 +320,10 @@ impl SettingsWindow {
 
     /// Closes the modal and gives focus back, so shortcuts work without a click.
     fn dismiss(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // In a tab there is no modal to close: the tab stays until closed.
+        if self.in_tab {
+            return;
+        }
         window.close_dialog(cx);
         if let Some(focus) = &self.return_focus {
             focus.focus(window, cx);
@@ -858,26 +866,6 @@ impl SettingsWindow {
                 palette,
             ))
             .child(setting_row(
-                tr(language, "Extension windows (Mail)", "Окна расширений (Почта)"),
-                h_flex().gap_2().children(
-                    [(crate::settings::OpenIn::Tab, "New tab", IconName::PanelTop), (crate::settings::OpenIn::Window, "New window", IconName::AppWindow)].map(
-                        |(open_in, label, icon)| {
-                            option_button(
-                                gpui_kit::ElementId::Name(format!("open-in-{label}").into()),
-                                label,
-                                self.draft.behavior.open_in == open_in,
-                            )
-                            .icon(icon)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.draft.behavior.open_in = open_in;
-                                cx.notify();
-                            }))
-                        },
-                    ),
-                ),
-                palette,
-            ))
-            .child(setting_row(
                 tr(language, "Dropping from another window", "Перетаскивание из другого окна"),
                 h_flex().gap_2().children(crate::settings::DropAction::ALL.map(|action| {
                     option_button(
@@ -1031,6 +1019,48 @@ impl SettingsWindow {
                             cx.notify();
                         })),
                     ),
+                palette,
+            ))
+            .child(setting_row(
+                tr(language, "Theme", "Тема"),
+                h_flex().gap_2().flex_wrap().children(crate::settings::ThemePreset::ALL.map(|theme| {
+                    // Three dots of the theme's colors, in the scheme shown.
+                    let colors = Palette::themed(theme, self.draft.scheme.is_dark(), self.draft.accent);
+                    let swatch = h_flex().gap_0p5().children([colors.window, colors.accent, colors.folder].map(|color| {
+                        div().size(px(9.)).rounded_full().border_1().border_color(palette.border).bg(color)
+                    }));
+                    h_flex().gap_1p5().items_center().child(
+                        option_button(gpui_kit::ElementId::Name(format!("theme-{}", theme.label()).into()), theme.label(), self.draft.theme == theme)
+                            .tooltip(match theme {
+                                crate::settings::ThemePreset::Default => tr(language, "Files' own colors with your accent", "Собственные цвета Files с вашим акцентом"),
+                                crate::settings::ThemePreset::Omarchy => tr(language, "Omarchy's terminal look: Tokyo Night, monospace, square corners", "Терминальный стиль Omarchy: Tokyo Night, моноширинный шрифт, прямые углы"),
+                                crate::settings::ThemePreset::Catppuccin => tr(language, "Catppuccin Mocha in dark, Latte in light", "Catppuccin: Mocha в тёмной схеме, Latte в светлой"),
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.draft.theme = theme;
+                                cx.notify();
+                            })),
+                    ).child(swatch)
+                })),
+                palette,
+            ))
+            .child(setting_row(
+                tr(language, "Icons", "Иконки"),
+                h_flex().gap_2().flex_wrap().children(crate::settings::IconTheme::ALL.map(|icons| {
+                    let label = match icons {
+                        crate::settings::IconTheme::Colorful => tr(language, "Colorful", "Цветные"),
+                        crate::settings::IconTheme::Monochrome => tr(language, "Monochrome", "Монохромные"),
+                        crate::settings::IconTheme::Accent => tr(language, "Accent", "Акцентные"),
+                    };
+                    let mut sample = palette;
+                    sample.icon_theme = icons;
+                    option_button(gpui_kit::ElementId::Name(format!("icons-{icons:?}").into()), label, self.draft.icon_theme == icons)
+                        .child(h_flex().gap_0p5().children([crate::model::FileKind::Folder, crate::model::FileKind::Image, crate::model::FileKind::Code].map(|kind| crate::views::files::kind_icon(kind, sample, 12.))))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.draft.icon_theme = icons;
+                            cx.notify();
+                        }))
+                })),
                 palette,
             ))
             .child(setting_row(
@@ -2192,6 +2222,26 @@ impl SettingsWindow {
                 .child(div().size(px(4.)).rounded_full().bg(palette.faint))
                 .child(text.to_string())
         };
+        // Extensions with a view of their own: a tab here, or a window.
+        let opens_in = matches!(extension.id, "mail" | "music").then(|| {
+            let id = extension.id;
+            setting_row(
+                tr(language, "Opens in", "Открывается"),
+                h_flex().gap_2().children(
+                    [(crate::settings::OpenIn::Tab, tr(language, "New tab", "Новая вкладка"), IconName::PanelTop), (crate::settings::OpenIn::Window, tr(language, "New window", "Новое окно"), IconName::AppWindow)].map(
+                        |(open_in, label, icon)| {
+                            option_button(gpui_kit::ElementId::Name(format!("open-in-{id}-{open_in:?}").into()), label, self.draft.opens_in(id) == open_in)
+                                .icon(icon)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.draft.extension_windows.insert(id.to_string(), open_in);
+                                    cx.notify();
+                                }))
+                        },
+                    ),
+                ),
+                palette,
+            )
+        });
         let settings: AnyElement = match extension.id {
             "archives" => v_flex()
                 .gap_2()
@@ -2297,6 +2347,7 @@ impl SettingsWindow {
             .child(
                 card(palette)
                     .child(section(IconName::SlidersHorizontal, tr(language, "Settings", "Настройки"), palette))
+                    .children(opens_in)
                     .child(settings),
             )
             .children(self.render_search_filters(extension, enabled, palette, cx))
@@ -3720,13 +3771,30 @@ impl Render for SettingsWindow {
                             }),
                     )
                     .child(div().flex_1())
-                    .child(
-                        Button::new("close-settings")
-                            .ghost()
-                            .small()
-                            .label(tr(language, "Close", "Закрыть"))
-                            .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx))),
-                    ),
+                    .when(!self.in_tab, |this| {
+                        this.child(
+                            Button::new("settings-in-tab")
+                                .ghost()
+                                .small()
+                                .icon(IconName::PanelTop)
+                                .label(tr(language, "Open in tab", "Открыть во вкладке"))
+                                .tooltip(tr(language, "Keep Settings open beside your files", "Держать настройки открытыми рядом с файлами"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    // Unsaved edits are not lost: the tab starts from this draft.
+                                    let draft = this.draft.clone();
+                                    this.dismiss(window, cx);
+                                    PENDING_DRAFT.with(|pending| *pending.borrow_mut() = Some(draft));
+                                    window.dispatch_action(Box::new(crate::app::OpenSettingsTab), cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("close-settings")
+                                .ghost()
+                                .small()
+                                .label(tr(language, "Close", "Закрыть"))
+                                .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx))),
+                        )
+                    }),
             )
             .child(
                 h_flex()
@@ -3856,6 +3924,20 @@ impl Render for SettingsWindow {
                             })),
                     )),
             )
+    }
+}
+
+thread_local! {
+    /// The modal's unsaved edits, carried into the tab it moves to.
+    static PENDING_DRAFT: std::cell::RefCell<Option<AppSettings>> = const { std::cell::RefCell::new(None) };
+}
+
+impl SettingsWindow {
+    /// Takes over the edits of the modal it replaces, if any.
+    pub(crate) fn adopt_pending_draft(&mut self) {
+        if let Some(draft) = PENDING_DRAFT.with(|pending| pending.borrow_mut().take()) {
+            self.draft = draft;
+        }
     }
 }
 
@@ -4046,7 +4128,7 @@ fn setting_row(label: &'static str, control: impl IntoElement, palette: Palette)
                 .flex_shrink_0()
                 .text_sm()
                 .text_color(palette.muted)
-                .child(label),
+                .child(selectable(label)),
         )
         .child(control)
         .into_any_element()
@@ -4074,12 +4156,17 @@ fn card(palette: Palette) -> gpui_kit::Div {
         .bg(palette.sidebar)
 }
 
+/// Text in Settings can be selected and copied (⌘C), like a document.
+fn selectable(text: &'static str) -> gpui_kit::base::SelectableText {
+    gpui_kit::base::SelectableText::new(gpui_kit::ElementId::Name(format!("settings-text-{text}").into()), text)
+}
+
 fn note(label: &'static str, palette: Palette) -> AnyElement {
     div()
         .max_w(px(560.))
         .text_xs()
         .text_color(palette.faint)
-        .child(label)
+        .child(selectable(label))
         .into_any_element()
 }
 

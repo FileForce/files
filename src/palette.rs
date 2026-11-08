@@ -28,6 +28,30 @@ pub struct Palette {
     pub text_outline: Option<Hsla>,
     /// Accessibility → Shimmer: loading text pulses.
     pub shimmer: bool,
+    /// Appearance → Icons.
+    pub icon_theme: crate::settings::IconTheme,
+}
+
+use crate::settings::{IconTheme, ThemePreset};
+
+/// The theme and icon style in use, set from Settings (every window reads
+/// them, so they need no plumbing through each view).
+static LOOK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_look(theme: ThemePreset, icons: IconTheme) {
+    let theme = ThemePreset::ALL.iter().position(|preset| *preset == theme).unwrap_or(0) as u8;
+    let icons = IconTheme::ALL.iter().position(|style| *style == icons).unwrap_or(0) as u8;
+    LOOK.store(theme | icons << 4, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn look() -> (ThemePreset, IconTheme) {
+    let value = LOOK.load(std::sync::atomic::Ordering::Relaxed);
+    (ThemePreset::ALL[(value & 0xf) as usize % 3], IconTheme::ALL[(value >> 4) as usize % 3])
+}
+
+/// Omarchy's terminal look is on: monospace, square, flat.
+pub fn terminal_look() -> bool {
+    look().0 == ThemePreset::Omarchy
 }
 
 impl Palette {
@@ -78,7 +102,22 @@ impl Palette {
     }
 
     pub fn new(scheme: ColorScheme, accent: Accent) -> Self {
-        let dark = scheme.is_dark();
+        let (theme, icons) = look();
+        let mut palette = Self::themed(theme, scheme.is_dark(), accent);
+        palette.icon_theme = icons;
+        palette
+    }
+
+    /// The colors of `theme` in light or dark.
+    pub fn themed(theme: ThemePreset, dark: bool, accent: Accent) -> Self {
+        match theme {
+            ThemePreset::Default => Self::files(dark, accent),
+            ThemePreset::Omarchy => Self::tokyo_night(dark),
+            ThemePreset::Catppuccin => Self::catppuccin(dark, accent),
+        }
+    }
+
+    fn files(dark: bool, accent: Accent) -> Self {
         let accent = match (dark, accent) {
             (true, Accent::Iris) => color(0x938ffb),
             (true, Accent::Azure) => color(0x64b5f6),
@@ -109,6 +148,7 @@ impl Palette {
                 accent_contrast,
                 text_outline: None,
                 shimmer: true,
+                icon_theme: IconTheme::Colorful,
                 selection: alpha(accent, 0.19),
                 folder: color(0xe3b45f),
                 media: color(0x8eb8ef),
@@ -133,6 +173,7 @@ impl Palette {
                 accent_contrast,
                 text_outline: None,
                 shimmer: true,
+                icon_theme: IconTheme::Colorful,
                 selection: alpha(accent, 0.13),
                 folder: color(0xbd7f25),
                 media: color(0x397fbd),
@@ -201,10 +242,17 @@ pub fn apply_theme(cx: &mut App, scheme: ColorScheme, accent: Accent) {
             ThemeMode::Light
         };
     });
+    // The UI font before any theme changed it, for switching back.
+    static UI_FONT: std::sync::OnceLock<gpui_kit::SharedString> = std::sync::OnceLock::new();
+    let ui_font = UI_FONT.get_or_init(|| cx.global::<Theme>().font_family.clone()).clone();
+    let tui = terminal_look();
     Theme::update(cx, |theme| {
-        theme.font_size = px(14.);
-        theme.radius = px(7.);
-        theme.radius_lg = px(11.);
+        theme.font_size = px(if tui { 13. } else { 14. });
+        // A terminal UI: square corners, no shadows, a monospace font.
+        theme.radius = px(if tui { 0. } else { 7. });
+        theme.radius_lg = px(if tui { 0. } else { 11. });
+        theme.shadow = !tui;
+        theme.font_family = if tui { terminal_font().into() } else { ui_font.clone() };
 
         theme.colors.background = palette.window;
         theme.colors.foreground = palette.text;
@@ -255,6 +303,108 @@ pub fn apply_theme(cx: &mut App, scheme: ColorScheme, accent: Accent) {
     });
 }
 
+/// A palette from its colors in order.
+#[allow(clippy::too_many_arguments)]
+fn palette(
+    [window, sidebar, surface, elevated, hover, border, text, muted, faint]: [u32; 9],
+    accent: Hsla,
+    selection: Hsla,
+    contrast: u32,
+    [folder, media, document, code, video, archive]: [u32; 6],
+) -> Palette {
+    Palette {
+        window: color(window),
+        sidebar: color(sidebar),
+        surface: color(surface),
+        elevated: color(elevated),
+        hover: color(hover),
+        border: color(border),
+        text: color(text),
+        muted: color(muted),
+        faint: color(faint),
+        accent,
+        accent_soft: alpha(accent, 0.16),
+        accent_contrast: color(contrast),
+        selection,
+        text_outline: None,
+        shimmer: true,
+        icon_theme: IconTheme::Colorful,
+        folder: color(folder),
+        media: color(media),
+        document: color(document),
+        code: color(code),
+        video: color(video),
+        archive: color(archive),
+    }
+}
+
+impl Palette {
+    /// Omarchy's default, Tokyo Night (Day in light): its own blue, and
+    /// borders visible like a terminal UI's boxes.
+    fn tokyo_night(dark: bool) -> Self {
+        if dark {
+            palette(
+                [0x1a1b26, 0x16161e, 0x1f2335, 0x24283b, 0x292e42, 0x414868, 0xc0caf5, 0xa9b1d6, 0x565f89],
+                color(0x7aa2f7),
+                color(0x283457),
+                0x1a1b26,
+                [0xe0af68, 0x7dcfff, 0xbb9af7, 0x9ece6a, 0xf7768e, 0xff9e64],
+            )
+        } else {
+            palette(
+                [0xe1e2e7, 0xd0d5e3, 0xe9e9ed, 0xf2f2f5, 0xc4c8da, 0xa8aecb, 0x3760bf, 0x6172b0, 0x8990b3],
+                color(0x2e7de9),
+                color(0xb7c1e3),
+                0xffffff,
+                [0x8c6c3e, 0x007197, 0x9854f1, 0x587539, 0xf52a65, 0xb15c00],
+            )
+        }
+    }
+
+    /// Catppuccin Mocha (dark) and Latte (light); the accent picks mauve,
+    /// blue or peach.
+    fn catppuccin(dark: bool, accent: Accent) -> Self {
+        if dark {
+            let accent = color(match accent {
+                Accent::Iris => 0xcba6f7,
+                Accent::Azure => 0x89b4fa,
+                Accent::Amber => 0xfab387,
+            });
+            palette(
+                [0x1e1e2e, 0x181825, 0x313244, 0x313244, 0x45475a, 0x45475a, 0xcdd6f4, 0xa6adc8, 0x7f849c],
+                accent,
+                alpha(accent, 0.22),
+                0x11111b,
+                [0xf9e2af, 0x74c7ec, 0xb4befe, 0xa6e3a1, 0xf38ba8, 0xfab387],
+            )
+        } else {
+            let accent = color(match accent {
+                Accent::Iris => 0x8839ef,
+                Accent::Azure => 0x1e66f5,
+                Accent::Amber => 0xfe640b,
+            });
+            palette(
+                [0xeff1f5, 0xe6e9ef, 0xffffff, 0xffffff, 0xdce0e8, 0xccd0da, 0x4c4f69, 0x6c6f85, 0x8c8fa1],
+                accent,
+                alpha(accent, 0.16),
+                0xffffff,
+                [0xdf8e1d, 0x209fb5, 0x7287fd, 0x40a02b, 0xd20f39, 0xfe640b],
+            )
+        }
+    }
+}
+
+/// The font a terminal would use on this system.
+pub fn terminal_font() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Menlo"
+    } else if cfg!(windows) {
+        "Consolas"
+    } else {
+        "DejaVu Sans Mono"
+    }
+}
+
 fn color(value: u32) -> Hsla {
     rgb(value).into()
 }
@@ -278,6 +428,16 @@ mod tests {
         // The exit curve must decelerate into the end, not accelerate.
         let exit = |tokens: &gpui_kit::component::theme::MotionTokens, t: f32| tokens.easing_exit.sample(t);
         assert!(exit(&smooth, 0.9) > exit(&snappy, 0.9), "smooth exit should be nearly done near the end");
+    }
+
+    #[test]
+    fn themes_have_light_and_dark_colors() {
+        let omarchy = Palette::themed(ThemePreset::Omarchy, true, Accent::Amber);
+        assert_eq!((omarchy.window, omarchy.accent), (color(0x1a1b26), color(0x7aa2f7)), "Tokyo Night, its own blue");
+        assert_eq!(Palette::themed(ThemePreset::Omarchy, false, Accent::Iris).window, color(0xe1e2e7), "Tokyo Night Day");
+        let mocha = Palette::themed(ThemePreset::Catppuccin, true, Accent::Azure);
+        assert_eq!((mocha.window, mocha.accent), (color(0x1e1e2e), color(0x89b4fa)));
+        assert_eq!(Palette::themed(ThemePreset::Catppuccin, false, Accent::Iris).accent, color(0x8839ef), "Latte mauve");
     }
 
     #[test]
