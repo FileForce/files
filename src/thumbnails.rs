@@ -133,7 +133,8 @@ fn enqueue(path: &Path, cached: PathBuf) {
         // Quick Look (the big preview the user is looking at) has its own
         // worker, so it never waits behind a folder full of thumbnails.
         let queue = if cached.to_string_lossy().ends_with(".ql.png") { &state.quick_look } else { &state.queue };
-        let _ = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).send((path.to_path_buf(), cached));
+        let job = crate::tasks::queue(job_kind(&cached), path.display().to_string());
+        let _ = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).send((path.to_path_buf(), cached, job));
     }
 }
 
@@ -155,27 +156,77 @@ pub fn app_icon(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// What a conversion is, for DevTools → Tasks.
+fn job_kind(target: &Path) -> &'static str {
+    let name = target.to_string_lossy();
+    if name.ends_with(".ql.png") {
+        "quick look"
+    } else if name.ends_with(".icon.png") {
+        "program icon"
+    } else if name.ends_with(".thumb.jpg") {
+        "thumbnail"
+    } else {
+        "image conversion"
+    }
+}
+
+/// DevTools → Retry: forgets that `source` failed (or is queued), so the
+/// next time it shows, it is made again.
+pub fn retry(source: &str) {
+    let Some(base) = cache_path(Path::new(source)) else { return };
+    let targets = [base.clone(), base.with_extension("thumb.jpg"), base.with_extension("ql.png"), base.with_extension("icon.png")];
+    let state = state();
+    let mut failed = state.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut queued = state.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    for target in &targets {
+        failed.remove(target);
+        queued.remove(target);
+    }
+    state.generation.fetch_add(1, Ordering::Relaxed);
+}
+
+/// DevTools → Indexes: failed conversions forgotten, so all are tried again.
+pub fn forget_failures() {
+    let state = state();
+    state.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+    state.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+    state.generation.fetch_add(1, Ordering::Relaxed);
+}
+
+/// (waiting, failed) conversions.
+pub fn stats() -> (usize, usize) {
+    let state = state();
+    (state.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len(), state.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len())
+}
+
 /// Bumped whenever a conversion finishes, so views know to repaint.
 pub fn generation() -> u64 {
     state().generation.load(Ordering::Relaxed)
 }
 
 struct State {
-    queue: Mutex<Sender<(PathBuf, PathBuf)>>,
-    quick_look: Mutex<Sender<(PathBuf, PathBuf)>>,
+    queue: Mutex<Sender<(PathBuf, PathBuf, u64)>>,
+    quick_look: Mutex<Sender<(PathBuf, PathBuf, u64)>>,
     queued: Mutex<HashSet<PathBuf>>,
     /// Targets whose conversion failed, and why, so callers stop waiting.
     failed: Mutex<HashMap<PathBuf, String>>,
     generation: AtomicU64,
 }
 
-fn worker(name: &str) -> Sender<(PathBuf, PathBuf)> {
-    let (sender, receiver) = channel::<(PathBuf, PathBuf)>();
+fn worker(name: &str) -> Sender<(PathBuf, PathBuf, u64)> {
+    let (sender, receiver) = channel::<(PathBuf, PathBuf, u64)>();
     std::thread::Builder::new()
         .name(name.into())
         .spawn(move || {
-            while let Ok((source, target)) = receiver.recv() {
-                if let Err(error) = convert(&source, &target) {
+            while let Ok((source, target, job)) = receiver.recv() {
+                // Cancelled in DevTools → Tasks while it waited.
+                if !crate::tasks::start(job) {
+                    state().queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&target);
+                    continue;
+                }
+                let result = convert(&source, &target);
+                crate::tasks::finish(job, result.as_ref().map(|_| ()).map_err(ToString::to_string));
+                if let Err(error) = result {
                     state()
                         .failed
                         .lock()

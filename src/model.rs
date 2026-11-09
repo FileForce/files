@@ -652,6 +652,15 @@ pub fn folder_sizes_generation() -> u64 {
     folder_sizes::generation()
 }
 
+/// DevTools → Indexes: forget measured folder sizes / how many are known.
+pub fn clear_folder_sizes() {
+    folder_sizes::clear();
+}
+
+pub fn folder_sizes_count() -> usize {
+    folder_sizes::count()
+}
+
 /// The folder backing the trash on macOS and Linux (None on Windows).
 pub fn trash_dir() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
@@ -1726,6 +1735,8 @@ mod fs_index {
         {
             return entries.clone();
         }
+        let job = crate::tasks::queue("search index", root.display().to_string());
+        crate::tasks::start(job);
         let mut entries = Vec::new();
         let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::from([(root.to_path_buf(), 0)]);
         while let Some((dir, depth)) = queue.pop_front() {
@@ -1743,6 +1754,7 @@ mod fs_index {
             }
         }
         lock().search = Some((Instant::now(), root.to_path_buf(), entries.clone()));
+        crate::tasks::finish(job, Ok(()));
         entries
     }
 }
@@ -1768,14 +1780,14 @@ mod folder_sizes {
 
     struct State {
         slots: Mutex<HashMap<PathBuf, Slot>>,
-        queue: Mutex<Sender<PathBuf>>,
+        queue: Mutex<Sender<(PathBuf, u64)>>,
         generation: AtomicU64,
     }
 
     fn state() -> &'static State {
         static STATE: OnceLock<State> = OnceLock::new();
         STATE.get_or_init(|| {
-            let (sender, receiver) = channel::<PathBuf>();
+            let (sender, receiver) = channel::<(PathBuf, u64)>();
             let receiver = Arc::new(Mutex::new(receiver));
             for index in 0..WORKERS {
                 let receiver = receiver.clone();
@@ -1792,14 +1804,21 @@ mod folder_sizes {
         })
     }
 
-    fn worker(receiver: &Mutex<Receiver<PathBuf>>) {
+    fn worker(receiver: &Mutex<Receiver<(PathBuf, u64)>>) {
         loop {
             let next = receiver
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .recv();
-            let Ok(path) = next else { return };
+            let Ok((path, job)) = next else { return };
+            if !crate::tasks::start(job) {
+                if let Some(slot) = state().slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get_mut(&path) {
+                    slot.queued = false;
+                }
+                continue;
+            }
             let bytes = dir_size(&path);
+            crate::tasks::finish(job, Ok(()));
             let state = state();
             state
                 .slots
@@ -1859,10 +1878,20 @@ mod folder_sizes {
                 .queue
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .send(path.to_path_buf());
+                .send((path.to_path_buf(), crate::tasks::queue("folder size", path.display().to_string())));
         }
         // Keep showing the previous value while a refresh runs.
         slot.bytes
+    }
+
+    /// DevTools → Indexes: sizes measured again as folders show.
+    pub fn clear() {
+        state().slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+        state().generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn count() -> usize {
+        state().slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).values().filter(|slot| slot.bytes.is_some()).count()
     }
 
     pub fn generation() -> u64 {

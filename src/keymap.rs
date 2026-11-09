@@ -70,6 +70,7 @@ pub fn commands() -> Vec<Command> {
         command!("explorer.view_dual", "Dual view", "View", "FileExplorer", &["cmd-3"], &["ctrl-3"], ShowDual),
         command!("explorer.toggle_theme", "Toggle theme", "View", "FileExplorer", &["cmd-shift-t"], &["ctrl-shift-t"], ToggleTheme),
         command!("explorer.toggle_inspector", "Toggle preview panel", "View", "FileExplorer", &["cmd-alt-p"], &["ctrl-alt-p"], ToggleInspector),
+        command!("explorer.dev_tools", "DevTools (Developer mode)", "View", "FileExplorer", &["cmd-shift-d"], &["ctrl-shift-d"], ToggleDevTools),
         command!("explorer.quick_look", "Quick Look", "Files", "FileExplorer", &["space"], &["space"], QuickLook),
         command!("explorer.open", "Open selected", "Files", "FileExplorer", &["enter"], &["enter"], OpenSelected),
         command!("explorer.new_file", "New file", "Files", "FileExplorer", &["cmd-n"], &["ctrl-n"], NewFile),

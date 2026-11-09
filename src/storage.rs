@@ -233,6 +233,10 @@ fn trim(mut all: Vec<Entry>, limit: u64) -> u64 {
 
 /// Keeps the caches under the limit (off the UI thread).
 pub fn enforce() -> u64 {
+    crate::tasks::run("cache limit", "all caches", || Ok::<_, String>(enforce_now())).unwrap_or(0)
+}
+
+fn enforce_now() -> u64 {
     let all: Vec<Entry> = Kind::ALL.into_iter().filter(|kind| kind.limited()).flat_map(entries).collect();
     let freed = trim(all, LIMIT.load(Ordering::Relaxed));
     if freed > 0 {

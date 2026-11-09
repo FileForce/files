@@ -46,7 +46,18 @@ pub fn set_look(theme: ThemePreset, icons: IconTheme) {
 
 fn look() -> (ThemePreset, IconTheme) {
     let value = LOOK.load(std::sync::atomic::Ordering::Relaxed);
-    (ThemePreset::ALL[(value & 0xf) as usize % 3], IconTheme::ALL[(value >> 4) as usize % 3])
+    (ThemePreset::ALL[(value & 0xf) as usize % ThemePreset::ALL.len()], IconTheme::ALL[(value >> 4) as usize % IconTheme::ALL.len()])
+}
+
+/// Settings → Appearance → Font: the interface font chosen over the theme's.
+static FONT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_font(font: Option<String>) {
+    *FONT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = font.filter(|font| !font.trim().is_empty());
+}
+
+fn chosen_font() -> Option<String> {
+    FONT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
 }
 
 /// Omarchy's terminal look is on: monospace, square, flat.
@@ -114,6 +125,8 @@ impl Palette {
             ThemePreset::Default => Self::files(dark, accent),
             ThemePreset::Omarchy => Self::tokyo_night(dark),
             ThemePreset::Catppuccin => Self::catppuccin(dark, accent),
+            ThemePreset::Windows => Self::windows(dark, accent),
+            ThemePreset::MacOs => Self::macos(dark, accent),
         }
     }
 
@@ -246,13 +259,28 @@ pub fn apply_theme(cx: &mut App, scheme: ColorScheme, accent: Accent) {
     static UI_FONT: std::sync::OnceLock<gpui_kit::SharedString> = std::sync::OnceLock::new();
     let ui_font = UI_FONT.get_or_init(|| cx.global::<Theme>().font_family.clone()).clone();
     let tui = terminal_look();
+    let preset = look().0;
+    // Corners: a terminal's none, Windows 11's 4/8, Finder's 6/10.
+    let (radius, radius_lg) = match preset {
+        ThemePreset::Omarchy => (0., 0.),
+        ThemePreset::Windows => (4., 8.),
+        ThemePreset::MacOs => (6., 10.),
+        _ => (7., 11.),
+    };
+    // Segoe UI where it exists; elsewhere the system font stands in.
+    let font: gpui_kit::SharedString = match preset {
+        // The user's own choice wins over every theme's.
+        _ if chosen_font().is_some() => chosen_font().unwrap_or_default().into(),
+        ThemePreset::Omarchy => terminal_font().into(),
+        ThemePreset::Windows if cfg!(windows) => "Segoe UI".into(),
+        _ => ui_font.clone(),
+    };
     Theme::update(cx, |theme| {
         theme.font_size = px(if tui { 13. } else { 14. });
-        // A terminal UI: square corners, no shadows, a monospace font.
-        theme.radius = px(if tui { 0. } else { 7. });
-        theme.radius_lg = px(if tui { 0. } else { 11. });
+        theme.radius = px(radius);
+        theme.radius_lg = px(radius_lg);
         theme.shadow = !tui;
-        theme.font_family = if tui { terminal_font().into() } else { ui_font.clone() };
+        theme.font_family = font;
 
         theme.colors.background = palette.window;
         theme.colors.foreground = palette.text;
@@ -361,6 +389,70 @@ impl Palette {
         }
     }
 
+    /// Windows 11's Fluent colors: Mica greys, its blue (the accent picks
+    /// blue, purple or orange from the same palette).
+    fn windows(dark: bool, accent: Accent) -> Self {
+        if dark {
+            let accent = color(match accent {
+                Accent::Azure => 0x4cc2ff,
+                Accent::Iris => 0xb4a0ff,
+                Accent::Amber => 0xffb557,
+            });
+            palette(
+                [0x202020, 0x1c1c1c, 0x2b2b2b, 0x2d2d2d, 0x353535, 0x3b3b3b, 0xffffff, 0xc5c5c5, 0x8a8a8a],
+                accent,
+                alpha(accent, 0.22),
+                0x000000,
+                [0xffc83d, 0x60cdff, 0xb4a0ff, 0x6ccb5f, 0xff99a4, 0xf7b870],
+            )
+        } else {
+            let accent = color(match accent {
+                Accent::Azure => 0x005fb8,
+                Accent::Iris => 0x744da9,
+                Accent::Amber => 0xc04d00,
+            });
+            palette(
+                [0xf3f3f3, 0xebebeb, 0xfbfbfb, 0xffffff, 0xe5e5e5, 0xe0e0e0, 0x1a1a1a, 0x5d5d5d, 0x8a8a8a],
+                accent,
+                alpha(accent, 0.14),
+                0xffffff,
+                [0xe3a21a, 0x0078d4, 0x8764b8, 0x107c10, 0xc42b1c, 0xca5010],
+            )
+        }
+    }
+
+    /// macOS: window and sidebar greys, the system blue (or purple and
+    /// orange for the other accents), separators as thin as Finder's.
+    fn macos(dark: bool, accent: Accent) -> Self {
+        if dark {
+            let accent = color(match accent {
+                Accent::Azure => 0x0a84ff,
+                Accent::Iris => 0xbf5af2,
+                Accent::Amber => 0xff9f0a,
+            });
+            palette(
+                [0x1e1e1e, 0x282828, 0x232323, 0x2c2c2e, 0x323234, 0x3a3a3c, 0xf5f5f7, 0xa1a1a6, 0x6e6e73],
+                accent,
+                alpha(accent, 0.32),
+                0xffffff,
+                [0x64d2ff, 0x64d2ff, 0xbf5af2, 0x30d158, 0xff453a, 0xff9f0a],
+            )
+        } else {
+            let accent = color(match accent {
+                Accent::Azure => 0x007aff,
+                Accent::Iris => 0xaf52de,
+                Accent::Amber => 0xff9500,
+            });
+            palette(
+                [0xffffff, 0xf0f0f2, 0xfafafa, 0xffffff, 0xe8e8ed, 0xd8d8dc, 0x1d1d1f, 0x6e6e73, 0x98989d],
+                accent,
+                alpha(accent, 0.2),
+                0xffffff,
+                [0x1e9bf0, 0x007aff, 0xaf52de, 0x28cd41, 0xff3b30, 0xff9500],
+            )
+        }
+    }
+
     /// Catppuccin Mocha (dark) and Latte (light); the accent picks mauve,
     /// blue or peach.
     fn catppuccin(dark: bool, accent: Accent) -> Self {
@@ -438,6 +530,11 @@ mod tests {
         let mocha = Palette::themed(ThemePreset::Catppuccin, true, Accent::Azure);
         assert_eq!((mocha.window, mocha.accent), (color(0x1e1e2e), color(0x89b4fa)));
         assert_eq!(Palette::themed(ThemePreset::Catppuccin, false, Accent::Iris).accent, color(0x8839ef), "Latte mauve");
+        assert_eq!(Palette::themed(ThemePreset::MacOs, false, Accent::Azure).accent, color(0x007aff), "system blue");
+        assert_eq!(Palette::themed(ThemePreset::Windows, true, Accent::Azure).window, color(0x202020), "Windows 11 dark");
+        set_look(ThemePreset::Windows, IconTheme::Accent);
+        assert_eq!(look(), (ThemePreset::Windows, IconTheme::Accent), "five themes fit the packed setting");
+        set_look(ThemePreset::Default, IconTheme::Colorful);
     }
 
     #[test]

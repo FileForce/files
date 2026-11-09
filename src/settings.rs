@@ -17,6 +17,9 @@ pub struct AppSettings {
     pub theme: ThemePreset,
     /// Settings → Appearance → Icons.
     pub icon_theme: IconTheme,
+    /// Settings → Appearance → Font: a system font for the whole interface;
+    /// `None` uses the theme's.
+    pub font: Option<String>,
     /// Settings → Extensions → <extension> → Opens in: a tab or its own
     /// window, by extension id ("mail", "music"). Missing: a tab.
     pub extension_windows: std::collections::BTreeMap<String, OpenIn>,
@@ -142,16 +145,24 @@ pub enum ThemePreset {
     /// Catppuccin: Mocha in dark, Latte in light; the accent picks mauve,
     /// blue or peach.
     Catppuccin,
+    /// Looks like Windows 11 (Fluent): its greys, blue, Segoe UI on
+    /// Windows, small corners.
+    Windows,
+    /// Looks like macOS: its greys, system blue, the system font, Finder's
+    /// corners.
+    MacOs,
 }
 
 impl ThemePreset {
-    pub const ALL: [ThemePreset; 3] = [ThemePreset::Default, ThemePreset::Omarchy, ThemePreset::Catppuccin];
+    pub const ALL: [ThemePreset; 5] = [ThemePreset::Default, ThemePreset::MacOs, ThemePreset::Windows, ThemePreset::Omarchy, ThemePreset::Catppuccin];
 
     pub fn label(self) -> &'static str {
         match self {
             ThemePreset::Default => "Files",
             ThemePreset::Omarchy => "Omarchy",
             ThemePreset::Catppuccin => "Catppuccin",
+            ThemePreset::Windows => "Windows",
+            ThemePreset::MacOs => "macOS",
         }
     }
 }
@@ -698,6 +709,7 @@ impl Default for AppSettings {
             scheme: ColorScheme::Dark,
             theme: ThemePreset::Default,
             icon_theme: IconTheme::Colorful,
+            font: None,
             extension_windows: std::collections::BTreeMap::new(),
             accent: Accent::Iris,
             language: Language::English,

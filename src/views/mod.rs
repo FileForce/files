@@ -1,5 +1,5 @@
 pub(crate) mod agents;
-mod console;
+pub(crate) mod console;
 pub(crate) mod context_menu;
 mod create_dialog;
 mod delete_dialog;

@@ -42,13 +42,19 @@ fn key(path: &Path) -> Option<Key> {
 }
 
 /// One worker reads in turn, so browsing a folder never floods the disk.
-fn worker() -> &'static std::sync::mpsc::Sender<Key> {
-    static WORKER: OnceLock<std::sync::mpsc::Sender<Key>> = OnceLock::new();
+fn worker() -> &'static std::sync::mpsc::Sender<(Key, u64)> {
+    static WORKER: OnceLock<std::sync::mpsc::Sender<(Key, u64)>> = OnceLock::new();
     WORKER.get_or_init(|| {
-        let (sender, receiver) = std::sync::mpsc::channel::<Key>();
+        let (sender, receiver) = std::sync::mpsc::channel::<(Key, u64)>();
         std::thread::spawn(move || {
-            for key in receiver {
+            for (key, job) in receiver {
+                if !crate::tasks::start(job) {
+                    state().asked.remove(&key);
+                    continue;
+                }
                 let sections = read(&key.0);
+                let failed = sections.iter().flat_map(|section| &section.rows).find(|(label, _)| label == "Error" || label == "Details").map(|(_, value)| value.clone());
+                crate::tasks::finish(job, failed.map_or(Ok(()), Err));
                 let mut state = state();
                 // Small cache: the last couple hundred files looked at.
                 if state.done.len() > 256 {
@@ -72,9 +78,33 @@ pub fn sections(path: &Path) -> Option<Vec<Section>> {
         return Some(done.clone());
     }
     if state.asked.insert(key.clone()) {
-        let _ = worker().send(key);
+        let job = crate::tasks::queue("file details", path.display().to_string());
+        let _ = worker().send((key, job));
     }
     None
+}
+
+/// DevTools → Retry: reads `path` again next time it is shown.
+pub fn retry(path: &str) {
+    let mut state = state();
+    state.done.retain(|key, _| key.0 != Path::new(path));
+    state.asked.retain(|key| key.0 != Path::new(path));
+    drop(state);
+    READY.fetch_add(1, Ordering::Relaxed);
+}
+
+/// DevTools → Indexes: every file's details read again.
+pub fn clear() {
+    let mut state = state();
+    state.done.clear();
+    state.asked.clear();
+    drop(state);
+    READY.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Files whose details are kept.
+pub fn cached() -> usize {
+    state().done.len()
 }
 
 /// Whether the preview has details to look for in this kind of file.

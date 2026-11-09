@@ -32,6 +32,7 @@ mod desktop;
 mod instance;
 mod media_info;
 mod pe_info;
+mod tasks;
 mod system_notify;
 mod media_keys;
 mod menu_colors;
@@ -61,6 +62,11 @@ use crate::palette::apply_theme;
 fn main() {
     desktop::hand_shell_folders_to_explorer();
     desktop::set_app_id();
+    // DevTools → Tasks: how each kind of job runs again.
+    for kind in ["thumbnail", "quick look", "program icon", "image conversion"] {
+        tasks::on_retry(kind, thumbnails::retry);
+    }
+    tasks::on_retry("file details", media_info::retry);
     host::install();
     let launch = desktop::launch_target(std::env::args().collect());
     // Settings → General → One window: a running Files takes the folder.
@@ -98,6 +104,7 @@ fn main() {
         cx.set_reduce_motion(loaded.accessibility.reduce_motion() || power::power_saving());
         palette::apply_motion(cx, loaded.look.motion);
         palette::set_look(loaded.theme, loaded.icon_theme);
+        palette::set_font(loaded.font.clone());
         apply_theme(cx, loaded.scheme, loaded.accent);
         app::register_keys(cx);
         keymap::apply(cx, &Default::default(), &loaded.keymap);

@@ -5,6 +5,12 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.19
+
+- Settings → Appearance → Font: any system font for the whole interface, from a list you can search, with a sample written in it. "Theme default" keeps the theme's (Segoe UI for Windows, the monospace of Omarchy).
+- Themes **Windows** and **macOS** (Settings → Appearance → Theme) for a look that feels at home: Windows 11's Fluent greys and blue, Segoe UI on Windows and small 4/8 px corners; macOS's window and sidebar greys, the system blue and font, Finder's 6/10 px corners. Both have light and dark, and the accent picks blue, purple or orange from the system's palette.
+- DevTools (#5), in Developer mode, ⌘⇧D (Ctrl+Shift+D): the Console gets **Tasks** — every background job (thumbnails, Quick Look renders, program icons, file details, folder sizes, the search index, the cache limit) with its state, wait and run time and error, Cancel for queued ones, Retry for failed ones, Clear finished; **Indexes** — file entries, folder listings, the global search index, file details, folder sizes, thumbnails and the music library, each with its rebuild action; and **Search** — the last searches in a folder or with ⌘K, split into listing, matching and sorting time.
+
 ## 0.1.18
 
 - Windows programs (.exe, .dll…) show their own icon, as in Explorer — in the grid, the Pro list and the preview, on every system — and the preview tells what they are: product, description, company, versions, copyright, original name; built for x64, x86 or ARM64, a windowed or console app or a library, .NET, signed (Authenticode), build date. Programs (.exe, .msi, .app, .AppImage) are their own kind, Application.

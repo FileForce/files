@@ -477,15 +477,26 @@ fn ranked_results(root: &std::path::Path, query: &str, include_remote: bool) -> 
             .take(MAX_RESULTS)
             .collect();
     }
-    let candidates = searchable_entries(root)
+    let started = std::time::Instant::now();
+    let candidates: Vec<_> = searchable_entries(root)
         .into_iter()
         // Remote folders are searched as far as they have been browsed.
-        .chain(crate::model::remote::loaded_entries().into_iter().filter(move |_| include_remote));
-    crate::model::rank_entries_in(candidates, query, crate::model::SearchScope::Global)
-        .into_iter()
-        .map(SearchResult::File)
-        .take(MAX_RESULTS)
-        .collect()
+        .chain(crate::model::remote::loaded_entries().into_iter().filter(move |_| include_remote))
+        .collect();
+    let listed = std::time::Instant::now();
+    let count = candidates.len();
+    let ranked = crate::model::rank_entries_in(candidates, query, crate::model::SearchScope::Global);
+    // DevTools → Search: the index walk, then matching and ranking.
+    crate::tasks::record_search(crate::tasks::SearchProfile {
+        scope: "Global",
+        query: query.to_string(),
+        candidates: count,
+        results: ranked.len(),
+        list: listed - started,
+        matching: listed.elapsed(),
+        sort: std::time::Duration::ZERO,
+    });
+    ranked.into_iter().map(SearchResult::File).take(MAX_RESULTS).collect()
 }
 
 pub(crate) fn close_global_search(

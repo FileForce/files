@@ -74,6 +74,9 @@ pub struct SettingsWindow {
     /// Each extension's own cache (`files_sdk::storage`).
     storage_extensions: Vec<crate::storage::ExtensionUsage>,
     storage_slider: Entity<gpui_kit::component::slider::SliderState>,
+    /// Appearance → Font: every system font, searchable.
+    font_select: Entity<gpui_kit::component::select::SelectState<gpui_kit::component::select::SearchableVec<String>>>,
+    _font_subscription: Subscription,
     /// Linux: whether folders open in Files system-wide, and why making it
     /// so failed.
     default_file_manager: bool,
@@ -172,6 +175,23 @@ impl SettingsWindow {
                 cx.notify();
             }
         });
+        // Font: the theme's, or any system font (searchable).
+        let fonts = font_choices(cx);
+        let selected = current.font.as_ref().and_then(|font| fonts.iter().position(|choice| choice == font)).unwrap_or(0);
+        let font_select = cx.new(|cx| {
+            gpui_kit::component::select::SelectState::new(
+                gpui_kit::component::select::SearchableVec::new(fonts),
+                Some(gpui_kit::component::IndexPath::new(selected)),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let font_subscription = cx.subscribe(&font_select, |this: &mut Self, _, event, cx| {
+            let gpui_kit::component::select::SelectEvent::Confirm(choice) = event;
+            this.draft.font = choice.clone().filter(|font| font != THEME_FONT);
+            cx.notify();
+        });
         // Cache limit: a slider whose steps are the limits.
         let storage_slider = cx.new(|_| {
             gpui_kit::component::slider::SliderState::new()
@@ -227,6 +247,8 @@ impl SettingsWindow {
             storage_usage: None,
             storage_extensions: Vec::new(),
             storage_slider,
+            font_select,
+            _font_subscription: font_subscription,
             default_file_manager: crate::desktop::is_default_file_manager(),
             default_file_manager_error: None,
             _storage_subscription: storage_subscription,
@@ -280,6 +302,7 @@ impl SettingsWindow {
                     cx.notify();
                 });
                 crate::palette::set_look(self.draft.theme, self.draft.icon_theme);
+                crate::palette::set_font(self.draft.font.clone());
                 apply_theme(cx, self.draft.scheme, self.draft.accent);
                 cx.notify();
             }
@@ -1035,6 +1058,8 @@ impl SettingsWindow {
                                 crate::settings::ThemePreset::Default => tr(language, "Files' own colors with your accent", "Собственные цвета Files с вашим акцентом"),
                                 crate::settings::ThemePreset::Omarchy => tr(language, "Omarchy's terminal look: Tokyo Night, monospace, square corners", "Терминальный стиль Omarchy: Tokyo Night, моноширинный шрифт, прямые углы"),
                                 crate::settings::ThemePreset::Catppuccin => tr(language, "Catppuccin Mocha in dark, Latte in light", "Catppuccin: Mocha в тёмной схеме, Latte в светлой"),
+                                crate::settings::ThemePreset::Windows => tr(language, "Looks like Windows 11: its greys and blue, Segoe UI, small corners", "Как Windows 11: её цвета и синий, Segoe UI, небольшие скругления"),
+                                crate::settings::ThemePreset::MacOs => tr(language, "Looks like macOS: its greys, system blue and font", "Как macOS: её цвета, системный синий и шрифт"),
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.draft.theme = theme;
@@ -1042,6 +1067,28 @@ impl SettingsWindow {
                             })),
                     ).child(swatch)
                 })),
+                palette,
+            ))
+            .child(setting_row(
+                tr(language, "Font", "Шрифт"),
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        div().w(px(240.)).child(
+                            gpui_kit::component::select::Select::new(&self.font_select)
+                                .small()
+                                .search_placeholder(tr(language, "Search fonts…", "Поиск шрифта…")),
+                        ),
+                    )
+                    // The choice, written in itself.
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(palette.muted)
+                            .when_some(self.draft.font.clone(), |this, font| this.font_family(font))
+                            .child(tr(language, "The quick brown fox · 0123", "Съешь же ещё этих булок · 0123")),
+                    ),
                 palette,
             ))
             .child(setting_row(
@@ -4066,6 +4113,17 @@ fn menu_preview(manifest: &'static files_sdk::Manifest) -> Vec<PreviewItem> {
 #[cfg(test)]
 pub(crate) fn menu_preview_titles(manifest: &'static files_sdk::Manifest) -> Vec<(&'static str, Vec<&'static str>)> {
     menu_preview(manifest).into_iter().map(|item| (item.label, item.children.iter().map(|(label, _)| *label).collect())).collect()
+}
+
+/// The first font choice: whatever the theme uses.
+const THEME_FONT: &str = "Theme default";
+
+/// "Theme default", then every system font family, sorted.
+fn font_choices(cx: &App) -> Vec<String> {
+    let mut fonts: Vec<String> = cx.text_system().all_font_names().into_iter().filter(|name| !name.starts_with('.') && !name.trim().is_empty()).collect();
+    fonts.sort_by_key(|name| name.to_lowercase());
+    fonts.dedup();
+    std::iter::once(THEME_FONT.to_string()).chain(fonts).collect()
 }
 
 /// Settings → Storage is the last section.

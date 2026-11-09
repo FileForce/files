@@ -155,7 +155,7 @@ impl FileExplorer {
                     if sample_due && this.appearance.read(cx).developer.enabled {
                         last_sample = now;
                         crate::resources::sample();
-                        if this.console_open && this.console_resources {
+                        if this.console_open && this.console_tab != ConsoleTab::Events {
                             cx.notify();
                         }
                     }
@@ -401,15 +401,14 @@ impl FileExplorer {
                         .border_color(palette.border)
                         .child(div().text_xs().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Console"))
                         .when(developer, |this| {
-                            let tab = |id: &'static str, label: &'static str, resources: bool, cx: &mut Context<Self>| {
-                                let button = Button::new(id).xsmall().label(label);
-                                let button = if self.console_resources == resources { button.primary() } else { button.ghost() };
+                            this.children(ConsoleTab::ALL.map(|tab| {
+                                let button = Button::new(gpui_kit::ElementId::Name(format!("console-tab-{}", tab.label().to_lowercase()).into())).xsmall().label(tab.label());
+                                let button = if self.console_tab == tab { button.primary() } else { button.ghost() };
                                 button.on_click(cx.listener(move |this, _, _, cx| {
-                                    this.console_resources = resources;
+                                    this.console_tab = tab;
                                     cx.notify();
                                 }))
-                            };
-                            this.child(tab("console-tab-events", "Events", false, cx)).child(tab("console-tab-resources", "Resources", true, cx))
+                            }))
                         })
                         .child(div().text_xs().text_color(palette.faint).child(if developer {
                             format!("{total} events · developer mode")
@@ -428,8 +427,14 @@ impl FileExplorer {
                             cx.notify();
                         }))),
                 )
-                .child(if developer && self.console_resources {
+                .child(if developer && self.console_tab == ConsoleTab::Resources {
                     render_resources(palette)
+                } else if developer && self.console_tab == ConsoleTab::Tasks {
+                    render_tasks(palette, cx)
+                } else if developer && self.console_tab == ConsoleTab::Indexes {
+                    render_indexes(palette, cx)
+                } else if developer && self.console_tab == ConsoleTab::Search {
+                    render_search(palette)
                 } else {
                     div()
                         .id("console-rows")
@@ -652,6 +657,195 @@ fn sparkline(values: &[f32], color: gpui_kit::Hsla, palette: Palette) -> gpui_ki
 }
 
 /// Console → Resources: memory and CPU over two minutes, and what the app keeps.
+/// DevTools: the Console's tabs (all but Events need Developer mode).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ConsoleTab {
+    #[default]
+    Events,
+    Tasks,
+    Indexes,
+    Search,
+    Resources,
+}
+
+impl ConsoleTab {
+    pub const ALL: [ConsoleTab; 5] = [ConsoleTab::Events, ConsoleTab::Tasks, ConsoleTab::Indexes, ConsoleTab::Search, ConsoleTab::Resources];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ConsoleTab::Events => "Events",
+            ConsoleTab::Tasks => "Tasks",
+            ConsoleTab::Indexes => "Indexes",
+            ConsoleTab::Search => "Search",
+            ConsoleTab::Resources => "Resources",
+        }
+    }
+}
+
+fn millis(duration: std::time::Duration) -> String {
+    let ms = duration.as_secs_f64() * 1000.;
+    if ms >= 1000. { format!("{:.1} s", ms / 1000.) } else if ms >= 10. { format!("{ms:.0} ms") } else { format!("{ms:.1} ms") }
+}
+
+/// DevTools → Tasks: background jobs, newest first, with Retry and Cancel.
+fn render_tasks(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElement {
+    use crate::tasks::State;
+    let jobs = crate::tasks::jobs();
+    let count = |wanted: fn(&State) -> bool| jobs.iter().filter(|job| wanted(&job.state)).count();
+    let (queued, running, failed) = (count(|state| *state == State::Queued), count(|state| *state == State::Running), count(|state| matches!(state, State::Failed(_))));
+    let rows = jobs.iter().rev().take(200).map(|job| {
+        let id = job.id;
+        let color = match job.state {
+            State::Queued => palette.muted,
+            State::Running => palette.accent,
+            State::Done => palette.code,
+            State::Failed(_) => palette.video,
+            State::Cancelled => palette.faint,
+        };
+        let error = if let State::Failed(error) = &job.state { Some(error.clone()) } else { None };
+        h_flex()
+            .gap_3()
+            .px_2()
+            .py_0p5()
+            .text_xs()
+            .border_b_1()
+            .border_color(palette.border)
+            .child(div().w(px(72.)).flex_shrink_0().text_color(color).child(job.state.label()))
+            .child(div().w(px(110.)).flex_shrink_0().text_color(palette.muted).child(job.kind))
+            .child(div().flex_1().min_w_0().truncate().text_color(palette.text).child(job.label.clone()))
+            .children(error.map(|error| div().max_w(px(260.)).truncate().text_color(palette.video).child(error)))
+            .child(div().w(px(70.)).flex_shrink_0().text_right().font_family("Menlo").text_color(palette.faint).child(format!("wait {}", millis(job.wait()))))
+            .child(div().w(px(64.)).flex_shrink_0().text_right().font_family("Menlo").text_color(palette.text).child(job.duration().map(millis).unwrap_or_else(|| "—".into())))
+            .child(
+                h_flex()
+                    .w(px(56.))
+                    .justify_end()
+                    .when(job.state == State::Queued, |this| {
+                        this.child(Button::new(("task-cancel", id as usize)).ghost().xsmall().label("Cancel").on_click(cx.listener(move |_, _, _, cx| {
+                            crate::tasks::cancel(id);
+                            cx.notify();
+                        })))
+                    })
+                    .when(matches!(job.state, State::Failed(_) | State::Cancelled) && crate::tasks::can_retry(job.kind), |this| {
+                        this.child(Button::new(("task-retry", id as usize)).ghost().xsmall().label("Retry").on_click(cx.listener(move |_, _, _, cx| {
+                            crate::tasks::retry(id);
+                            cx.notify();
+                        })))
+                    }),
+            )
+    });
+    v_flex()
+        .id("console-tasks")
+        .debug_selector(|| "console-tasks".into())
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scrollbar()
+        .child(
+            h_flex()
+                .gap_3()
+                .px_2()
+                .py_1()
+                .text_xs()
+                .text_color(palette.muted)
+                .child(format!("{queued} queued · {running} running · {failed} failed · {} kept", jobs.len()))
+                .child(div().flex_1())
+                .child(Button::new("tasks-clear").ghost().xsmall().icon(IconName::Trash).label("Clear finished").on_click(cx.listener(|_, _, _, cx| {
+                    crate::tasks::clear_finished();
+                    cx.notify();
+                }))),
+        )
+        .children(rows)
+        .when(jobs.is_empty(), |this| this.child(div().p_3().text_xs().text_color(palette.faint).child("No background work yet")))
+        .into_any_element()
+}
+
+/// DevTools → Indexes: what Files keeps to be fast, and how to rebuild it.
+fn render_indexes(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElement {
+    let (known, made, listings, search) = crate::model::index_stats();
+    let (waiting, failed) = crate::thumbnails::stats();
+    let rows: Vec<(&'static str, String, &'static str, Option<(&'static str, fn())>)> = vec![
+        ("File entries", format!("{known} known · {made} made since launch"), "Every file and folder seen; kept until quit", None),
+        ("Folder listings", format!("{listings} folders"), "Read again after a short while, or now", Some(("Read again", crate::model::invalidate_listings as fn()))),
+        ("Global search", format!("{search} items"), "The ⌘K index: a few levels of the search folder", Some(("Rebuild", crate::model::clear_search_index as fn()))),
+        ("File details", format!("{} files", crate::media_info::cached()), "EXIF, streams, archive and program details", Some(("Read again", crate::media_info::clear as fn()))),
+        ("Folder sizes", format!("{} folders", crate::model::folder_sizes_count()), "Measured in the background as folders show", Some(("Measure again", crate::model::clear_folder_sizes as fn()))),
+        ("Thumbnails", format!("{waiting} waiting · {failed} failed"), "Previews, Quick Look renders, program icons", Some(("Retry failed", crate::thumbnails::forget_failures as fn()))),
+        ("Music library", format!("{} tracks", files_ext_music::local::library_len()), "Read when the Music tab opens", None),
+    ];
+    let rows = rows.into_iter().enumerate().map(|(index, (name, count, note, action))| {
+        h_flex()
+            .gap_3()
+            .px_2()
+            .py_1()
+            .text_xs()
+            .border_b_1()
+            .border_color(palette.border)
+            .child(div().w(px(130.)).flex_shrink_0().text_color(palette.text).child(name))
+            .child(div().w(px(230.)).flex_shrink_0().text_color(palette.muted).child(count))
+            .child(div().flex_1().min_w_0().truncate().text_color(palette.faint).child(note))
+            .children(action.map(|(label, run)| {
+                Button::new(("index-action", index)).ghost().xsmall().icon(IconName::RefreshCw).label(label).on_click(cx.listener(move |_, _, _, cx| {
+                    run();
+                    files_sdk::log::record("devtools", Kind::Setting, format!("{name}: {label}"), None);
+                    cx.notify();
+                }))
+            }))
+    });
+    v_flex()
+        .id("console-indexes")
+        .debug_selector(|| "console-indexes".into())
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scrollbar()
+        .children(rows)
+        .child(div().p_2().text_xs().text_color(palette.faint).child(
+            "Vector and graph indexes (semantic image, speech and entity search) come with issues #1–#4; their health and rebuild controls will appear here.",
+        ))
+        .into_any_element()
+}
+
+/// DevTools → Search: the last searches, split into where the time went.
+fn render_search(palette: Palette) -> AnyElement {
+    let searches = crate::tasks::searches();
+    let widest = searches.iter().map(|search| search.total().as_secs_f32()).fold(0.0001f32, f32::max);
+    let rows = searches.iter().rev().map(|search| {
+        let bar = |duration: std::time::Duration, color| div().h(px(8.)).w(px((duration.as_secs_f32() / widest * 220.).max(1.))).bg(color);
+        h_flex()
+            .gap_3()
+            .px_2()
+            .py_1()
+            .text_xs()
+            .border_b_1()
+            .border_color(palette.border)
+            .child(div().w(px(52.)).flex_shrink_0().text_color(palette.muted).child(search.scope))
+            .child(div().w(px(160.)).flex_shrink_0().truncate().text_color(palette.text).child(search.query.clone()))
+            .child(div().w(px(120.)).flex_shrink_0().text_color(palette.faint).child(format!("{} of {}", search.results, search.candidates)))
+            .child(h_flex().w(px(230.)).flex_shrink_0().child(bar(search.list, palette.folder)).child(bar(search.matching, palette.accent)).child(bar(search.sort, palette.code)))
+            .child(div().flex_1().min_w_0().font_family("Menlo").text_color(palette.muted).child(format!(
+                "list {} · match {} · sort {} = {}",
+                millis(search.list),
+                millis(search.matching),
+                millis(search.sort),
+                millis(search.total())
+            )))
+    });
+    v_flex()
+        .id("console-search")
+        .debug_selector(|| "console-search".into())
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scrollbar()
+        .child(
+            h_flex().gap_3().px_2().py_1().text_xs().text_color(palette.faint)
+                .child(h_flex().gap_1().items_center().child(div().size(px(8.)).bg(palette.folder)).child("listing / index"))
+                .child(h_flex().gap_1().items_center().child(div().size(px(8.)).bg(palette.accent)).child("filters and fuzzy matching"))
+                .child(h_flex().gap_1().items_center().child(div().size(px(8.)).bg(palette.code)).child("sorting")),
+        )
+        .children(rows)
+        .when(searches.is_empty(), |this| this.child(div().p_3().text_xs().text_color(palette.faint).child("Type in a search box: each search shows up here")))
+        .into_any_element()
+}
+
 fn render_resources(palette: Palette) -> AnyElement {
     let history = crate::resources::history();
     let now = history.last().copied().unwrap_or_default();

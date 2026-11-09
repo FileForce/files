@@ -36,6 +36,7 @@ actions!(
         ToggleInspector,
         ShowSettings,
         OpenSettingsTab,
+        ToggleDevTools,
         SelectPrevious,
         SelectNext,
         OpenSelected,
@@ -211,7 +212,8 @@ pub struct FileExplorer {
     /// Footer: the event console and the notifications card.
     pub(crate) console_open: bool,
     /// Console → Resources instead of the event list.
-    pub(crate) console_resources: bool,
+    /// DevTools: which Console tab shows.
+    pub(crate) console_tab: crate::views::console::ConsoleTab,
     pub(crate) notifications_open: bool,
     pub(crate) console_query: Entity<InputState>,
     /// Kinds shown (empty: all).
@@ -380,7 +382,7 @@ impl FileExplorer {
             _extension_events: Some(Self::watch_extension_events(window, cx)),
             agent_sessions: Vec::new(),
             console_open: false,
-            console_resources: false,
+            console_tab: Default::default(),
             notifications_open: false,
             console_query: cx.new(|cx| InputState::new(window, cx).placeholder("Filter: text, source, output")),
             console_kinds: Default::default(),
@@ -450,16 +452,32 @@ impl FileExplorer {
     }
 
     fn build_entries(&self, location: Location) -> Vec<&'static FileEntry> {
+        let started = std::time::Instant::now();
         let mut candidates = entries(location, "");
         // A folder picker only offers destinations, never files.
         if self.folder_picker.is_some() {
             candidates.retain(|candidate| candidate.is_folder());
         }
+        let listed = std::time::Instant::now();
+        let count = candidates.len();
         let mut ranked = crate::model::rank_entries(candidates, &self.query);
+        let matched = std::time::Instant::now();
         // Fuzzy relevance wins while typing, unless the user picked a column.
         let fuzzy = !crate::model::SearchQuery::parse(&self.query).text.is_empty();
         if !fuzzy || self.sort != crate::model::SortOrder::default() {
             crate::model::sort_entries(&mut ranked, self.sort);
+        }
+        // DevTools → Search: where a search's time went.
+        if !self.query.trim().is_empty() {
+            crate::tasks::record_search(crate::tasks::SearchProfile {
+                scope: "Folder",
+                query: self.query.clone(),
+                candidates: count,
+                results: ranked.len(),
+                list: listed - started,
+                matching: matched - listed,
+                sort: matched.elapsed(),
+            });
         }
         ranked
     }
@@ -1609,6 +1627,27 @@ impl FileExplorer {
         self.open_about_dialog(window, cx);
     }
 
+    /// ⌘⇧D: DevTools (the Console at Tasks). Only in Developer mode: they
+    /// show internal state.
+    fn on_toggle_dev_tools(&mut self, _: &ToggleDevTools, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.appearance.read(cx).developer.enabled {
+            self.notice = Some("DevTools need Developer mode: Settings → Developer".to_string());
+            cx.notify();
+            return;
+        }
+        if self.console_open && self.console_tab != crate::views::console::ConsoleTab::Events {
+            self.console_open = false;
+        } else {
+            self.appearance.update(cx, |appearance, cx| {
+                appearance.developer.show_console = true;
+                cx.notify();
+            });
+            self.console_open = true;
+            self.console_tab = crate::views::console::ConsoleTab::Tasks;
+        }
+        cx.notify();
+    }
+
     fn on_report_bug(&mut self, _: &crate::menus::ReportBug, window: &mut Window, cx: &mut Context<Self>) {
         crate::bug_report::open(self.appearance.clone(), window, cx);
     }
@@ -1739,6 +1778,7 @@ impl Render for FileExplorer {
             .on_action(cx.listener(Self::on_paste_files))
             .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_report_bug))
+            .on_action(cx.listener(Self::on_toggle_dev_tools))
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -4335,7 +4375,7 @@ mod tests {
                 settings.developer.show_console = true;
             });
             this.console_open = true;
-            this.console_resources = true;
+            this.console_tab = crate::views::console::ConsoleTab::Resources;
             cx.notify();
         });
         crate::resources::sample();
@@ -4344,6 +4384,45 @@ mod tests {
         assert!(cx.debug_bounds("console-resources").is_some(), "no Resources panel");
         let parts = crate::resources::parts();
         assert!(parts.iter().any(|part| part.name == "Mail in memory") && parts.iter().any(|part| part.name == "Thumbnails on disk"));
+    }
+
+    #[test]
+    fn a_chosen_font_wins_over_the_theme_s() {
+        let (_view, cx) = pro_window();
+        let font = |cx: &mut gpui_kit::VisualTestContext| cx.update(|_, app| app.global::<gpui_kit::component::Theme>().font_family.to_string());
+        crate::palette::set_look(crate::settings::ThemePreset::Omarchy, crate::settings::IconTheme::Colorful);
+        crate::palette::set_font(Some("Georgia".into()));
+        cx.update(|_, app| crate::palette::apply_theme(app, crate::model::ColorScheme::Dark, crate::model::Accent::Iris));
+        assert_eq!(font(cx), "Georgia", "the user's font over Omarchy's monospace");
+        crate::palette::set_font(None);
+        cx.update(|_, app| crate::palette::apply_theme(app, crate::model::ColorScheme::Dark, crate::model::Accent::Iris));
+        assert_eq!(font(cx), crate::palette::terminal_font(), "Theme default: the theme's own");
+        crate::palette::set_look(crate::settings::ThemePreset::Default, crate::settings::IconTheme::Colorful);
+    }
+
+    #[test]
+    fn dev_tools_open_with_their_shortcut_only_in_developer_mode() {
+        use crate::views::console::ConsoleTab;
+        let (view, cx) = pro_window();
+        view.update_in(cx, |this, window, cx| this.on_toggle_dev_tools(&ToggleDevTools, window, cx));
+        assert!(!cx.read(|app| view.read(app).console_open), "closed without Developer mode");
+        view.update_in(cx, |this, window, cx| {
+            this.appearance.update(cx, |settings, _| settings.developer.enabled = true);
+            this.on_toggle_dev_tools(&ToggleDevTools, window, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(cx.read(|app| view.read(app).console_tab), ConsoleTab::Tasks);
+        assert!(cx.debug_bounds("console-tasks").is_some(), "no Tasks panel");
+        for (tab, selector) in [(ConsoleTab::Indexes, "console-indexes"), (ConsoleTab::Search, "console-search")] {
+            view.update(cx, |this, cx| {
+                this.console_tab = tab;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx.debug_bounds(selector).is_some(), "no {selector}");
+        }
     }
 
     /// Allocation audit: `cargo test --bin file-force allocation_audit -- --ignored --nocapture --test-threads=1`.
