@@ -88,7 +88,8 @@ pub(crate) fn file_context_menu(
                     &view,
                 ))
             })
-            .when(entry.is_folder() && entry.path.is_some(), |menu| {
+            // Files too: a document used every day sits in the sidebar.
+            .when(entry.path.is_some(), |menu| {
                 let path = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
                 let favorite = view.read(cx).is_favorite(&path, cx);
                 let favorite_view = view.clone();

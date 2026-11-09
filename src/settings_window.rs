@@ -930,8 +930,8 @@ impl SettingsWindow {
             .child(note(
                 tr(
                     language,
-                    "Your own folders under Favorites in the sidebar. Right-click any folder → Add to Favorites.",
-                    "Свои папки в разделе Избранное. Правый клик по папке → Add to Favorites.",
+                    "Your own folders and files under Favorites in the sidebar. Right-click any folder or file → Add to Favorites.",
+                    "Свои папки и файлы в разделе Избранное. Правый клик по папке или файлу → Add to Favorites.",
                 ),
                 palette,
             ))

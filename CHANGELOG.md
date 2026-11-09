@@ -5,6 +5,10 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.21
+
+- Favorites take files too: right-click a file → Add to Favorites. In the sidebar it shows by name with its own icon; a click opens it, a middle-click (or Show in Folder) shows it in its folder.
+
 ## 0.1.20
 
 - PDFs scroll in Quick Look: every page (up to 60), rendered in the background on every system (hayro, pure Rust), appearing one after another; the preview panel shows the first page.

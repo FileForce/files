@@ -3230,6 +3230,17 @@ mod tests {
         view.update(cx, |this, cx| this.remove_favorite(&favorite, cx));
         cx.run_until_parked();
         assert!(!item_shown(cx, &favorite), "removed favorite is still shown");
+        // A file is a favorite too: shown by name, a click opens it.
+        let report = dir.join("report.pdf");
+        std::fs::write(&report, b"%PDF-").unwrap();
+        view.update(cx, |this, cx| this.add_favorite(report.clone(), cx));
+        cx.run_until_parked();
+        assert!(item_shown(cx, &report), "a favorite file is not in the sidebar");
+        let bounds = cx.debug_bounds(Box::leak(format!("favorite-probe-{}", report.display()).into_boxed_str())).unwrap();
+        crate::default_apps::opened().lock().unwrap().clear();
+        cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        assert!(crate::default_apps::opened().lock().unwrap().iter().any(|(path, _)| path == &report), "a click opens the file");
     }
 
     #[test]

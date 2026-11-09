@@ -553,10 +553,18 @@ impl FileExplorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let location = Location::from_path(&path);
-        let selected = active == location;
-        let missing = !path.is_dir();
+        // A favorite file opens; a folder is browsed.
+        let file = path.is_file();
+        let selected = !file && active == location;
+        let missing = !path.exists();
         let view = cx.entity();
         let remove = path.clone();
+        let (open, reveal) = (path.clone(), path.clone());
+        let name = path.file_name().map_or_else(|| location.label().to_string(), |name| name.to_string_lossy().into_owned());
+        let icon = match crate::model::entry_at(&path).filter(|_| file) {
+            Some(entry) => crate::views::files::file_icon_or_app(entry, palette, 14.),
+            None => Icon::new(IconName::Folder).small().text_color(if selected { palette.accent } else { palette.folder }).into_any_element(),
+        };
         let item = div();
         #[cfg(test)]
         let item = {
@@ -576,16 +584,37 @@ impl FileExplorer {
             .bg(if selected { palette.selection } else { palette.sidebar })
             .when(missing, |this| this.opacity(0.5))
             .hover(|style| style.bg(palette.hover).text_color(palette.text))
-            .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
+            .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
+                if file {
+                    this.reveal_path(&reveal, window, cx);
+                } else {
+                    this.open_in_new_tab(location, window, cx);
+                }
+            }))
             .on_click(cx.listener(move |this, _, window, cx| {
-                if !missing {
+                if missing {
+                    return;
+                }
+                if file {
+                    if let Some(entry) = crate::model::entry_at(&open) {
+                        this.open_entry(entry.id, window, cx);
+                    }
+                } else {
                     this.navigate(location, window, cx);
                 }
             }))
-            .child(Icon::new(IconName::Folder).small().text_color(if selected { palette.accent } else { palette.folder }))
-            .child(div().flex_1().min_w_0().truncate().child(location.label()))
+            .child(icon)
+            .child(div().flex_1().min_w_0().truncate().child(if file { name } else { location.label().to_string() }))
             .context_menu(move |menu, window, _| {
                 let remove = remove.clone();
+                let show = remove.clone();
+                let menu = if file {
+                    menu.item(PopupMenuItem::new("Show in Folder").icon(IconName::FolderOpen).on_click(window.listener_for(&view, move |this, _, window, cx| {
+                        this.reveal_path(&show, window, cx);
+                    })))
+                } else {
+                    menu
+                };
                 menu.item(
                     PopupMenuItem::new("Remove from Favorites")
                         .icon(IconName::X)
