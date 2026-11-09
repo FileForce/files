@@ -5,6 +5,16 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.20
+
+- PDFs scroll in Quick Look: every page (up to 60), rendered in the background on every system (hayro, pure Rust), appearing one after another; the preview panel shows the first page.
+- The preview panel shows the beginning of text and code files, in a monospace font and scrolling, like Quick Look.
+- Preview is an extension now (Settings → Extensions → Preview, permission: Read files): Quick Look in the context menu and on Space, and the look inside files in the preview panel; turning it off (or taking the permission away) hides both.
+- SDK: `files_sdk::preview` lets an extension preview formats Files does not know — text, a picture, pages or detail rows — in Quick Look; it needs Read files, and runs off the UI thread (shown in DevTools → Tasks).
+- ⌘K (Ctrl+K) understands paths: paste or type `~/Music`, `/etc`, `C:\Users`, a path in quotes or a `file://` address and the first result is that folder (Enter opens it) or file (shown in its folder). A half-typed path completes: `~/Do` offers Documents and Downloads; ending in `/` lists the folders inside.
+- Settings → Appearance → Corners: the theme's, none, small, medium or large, for buttons, fields, menus and dialogs.
+- Release builds: a copy of appimagetool and its runtime is kept in this repository's build-tools release as a last mirror.
+
 ## 0.1.19
 
 - Settings → Appearance → Font: any system font for the whole interface, from a list you can search, with a sample written in it. "Theme default" keeps the theme's (Segoe UI for Windows, the monospace of Omarchy).

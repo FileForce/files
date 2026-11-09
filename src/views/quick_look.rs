@@ -95,6 +95,10 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
     let Some(path) = file.path else {
         return placeholder("No preview · this item is not on the local disk");
     };
+    // A format an extension knows (files_sdk::preview).
+    if let Some((name, content)) = crate::ext_preview::preview(path) {
+        return extension_preview(&name, content, palette);
+    }
     if file.kind == FileKind::Image
         && let Some(source) = crate::thumbnails::source(path)
     {
@@ -137,11 +141,92 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
             )
             .into_any_element();
     }
+    // PDFs: every page, one under the other, scrolling.
+    if crate::pdf_pages::is_pdf(path) {
+        return pdf(path, palette);
+    }
     match crate::thumbnails::quick_look_preview(path) {
         crate::thumbnails::Preview::Ready(rendered) => image(rendered, palette),
         crate::thumbnails::Preview::Pending => placeholder("Generating preview…"),
         crate::thumbnails::Preview::Unavailable(reason) => placeholder(&format!("No preview · {reason}")),
     }
+}
+
+/// What an extension made for a file, with its name.
+fn extension_preview(name: &str, content: files_sdk::preview::PreviewContent, palette: Palette) -> AnyElement {
+    use files_sdk::preview::PreviewContent;
+    let body: AnyElement = match content {
+        PreviewContent::Text { text, monospace } => div()
+            .text_sm()
+            .when(monospace, |this| this.text_xs().font_family(crate::palette::terminal_font()))
+            .whitespace_normal()
+            .child(text)
+            .into_any_element(),
+        PreviewContent::Image(source) => return image(source, palette),
+        PreviewContent::Pages(pages) => v_flex()
+            .gap_3()
+            .children(pages.into_iter().map(|page| img(page).w_full().object_fit(ObjectFit::Contain).into_any_element()))
+            .into_any_element(),
+        PreviewContent::Details(rows) => v_flex()
+            .gap_1()
+            .children(rows.into_iter().map(|(label, value)| {
+                h_flex().gap_3().text_sm().child(div().w(px(160.)).text_color(palette.muted).child(label)).child(div().flex_1().child(value))
+            }))
+            .into_any_element(),
+    };
+    v_flex()
+        .id("quick-look-extension")
+        .size_full()
+        .p_4()
+        .gap_2()
+        .rounded_md()
+        .bg(palette.surface)
+        .overflow_y_scrollbar()
+        .child(div().text_xs().text_color(palette.faint).child(format!("Preview by {name}")))
+        .child(body)
+        .into_any_element()
+}
+
+/// A PDF's pages as they are rendered, scrolling like a document.
+fn pdf(path: &Path, palette: Palette) -> AnyElement {
+    let pages = crate::pdf_pages::pages(path);
+    let note = |text: String| div().p_4().text_sm().text_color(palette.muted).child(text);
+    if let Some(error) = pages.error {
+        return note(format!("No preview · {error}")).into_any_element();
+    }
+    let shown = pages.rendered.len();
+    v_flex()
+        .id("quick-look-pdf")
+        .debug_selector(|| "quick-look-pdf".into())
+        .size_full()
+        .gap_3()
+        .p_3()
+        .rounded_md()
+        .bg(palette.surface)
+        .overflow_y_scrollbar()
+        .when(pages.count == 0, |this| this.child(note("Rendering pages…".into())))
+        .children(pages.rendered.into_iter().enumerate().map(|(index, page)| match page {
+            Some(page) => div()
+                .w_full()
+                .flex_shrink_0()
+                .child(img(page).w_full().object_fit(ObjectFit::Contain).with_fallback(|| div().into_any_element()))
+                .into_any_element(),
+            // Letter-shaped until it arrives, so the scroll height is stable.
+            None => div()
+                .w_full()
+                .h(px(1000.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(palette.elevated)
+                .text_xs()
+                .text_color(palette.faint)
+                .child(format!("Page {}", index + 1))
+                .into_any_element(),
+        }))
+        .when(pages.count > shown && shown > 0, |this| this.child(note(format!("Showing the first {shown} of {} pages · Open to read on", pages.count))))
+        .into_any_element()
 }
 
 /// A saved message (.eml), parsed once per file version.
@@ -341,7 +426,7 @@ fn image(source: std::path::PathBuf, palette: Palette) -> AnyElement {
 }
 
 /// The start of a text-like file, or `None` for binary content.
-fn read_text(path: &Path, kind: FileKind) -> Option<String> {
+pub(crate) fn read_text(path: &Path, kind: FileKind) -> Option<String> {
     use std::io::Read as _;
     let textual = matches!(kind, FileKind::Text | FileKind::Code)
         || path.extension().is_some_and(|extension| {

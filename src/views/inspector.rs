@@ -69,8 +69,9 @@ impl FileExplorer {
                 self.current.label()
             };
             let mut details = v_flex().p_4().gap_5();
+            let look_inside = crate::ext_preview::enabled(&settings);
             details = details
-                .child(file_thumbnail(file, palette, 184.))
+                .child(if look_inside { preview_block(file, palette) } else { file_thumbnail(file, palette, 184.) })
                 .child(
                     v_flex()
                         .gap_1()
@@ -162,7 +163,7 @@ impl FileExplorer {
                 );
 
             // Everything the file itself says: EXIF, streams, compression.
-            if let Some(path) = file.path.filter(|path| crate::media_info::applies(path)) {
+            if let Some(path) = file.path.filter(|path| look_inside && crate::media_info::applies(path)) {
                 match crate::media_info::sections(path) {
                     Some(sections) => {
                         for section in sections {
@@ -403,6 +404,63 @@ impl FileExplorer {
             )
             .into_any_element()
     }
+}
+
+/// The top of the preview: the beginning of a text or code file (as
+/// Quick Look shows it), a PDF's first page, else the thumbnail.
+fn preview_block(file: &'static crate::model::FileEntry, palette: Palette) -> AnyElement {
+    use crate::model::FileKind;
+    if let Some(path) = file.path {
+        if matches!(file.kind, FileKind::Text | FileKind::Code)
+            && let Some(text) = cached_text(path, file.kind)
+        {
+            return div()
+                .id("inspector-text")
+                .debug_selector(|| "inspector-text".into())
+                .w_full()
+                .h(px(220.))
+                .p_3()
+                .rounded_md()
+                .bg(palette.surface)
+                .overflow_y_scrollbar()
+                .child(div().text_size(px(11.)).font_family(crate::palette::terminal_font()).text_color(palette.text).whitespace_normal().child(text))
+                .into_any_element();
+        }
+        if crate::pdf_pages::is_pdf(path)
+            && let Some(Some(first)) = crate::pdf_pages::pages(path).rendered.first().cloned()
+        {
+            return div()
+                .w_full()
+                .h(px(240.))
+                .rounded_md()
+                .overflow_hidden()
+                .bg(palette.surface)
+                .child({
+                    use gpui_kit::StyledImage as _;
+                    gpui_kit::img(first).size_full().object_fit(gpui_kit::ObjectFit::Contain)
+                })
+                .into_any_element();
+        }
+    }
+    file_thumbnail(file, palette, 184.)
+}
+
+/// The start of a text file, kept for the file shown (the preview redraws
+/// often; the file is read once).
+fn cached_text(path: &std::path::Path, kind: crate::model::FileKind) -> Option<String> {
+    static LAST: std::sync::Mutex<Option<(std::path::PathBuf, Option<std::time::SystemTime>, Option<String>)>> = std::sync::Mutex::new(None);
+    let modified = std::fs::metadata(path).ok()?.modified().ok();
+    let mut last = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached, when, text)) = &*last
+        && cached == path
+        && *when == modified
+    {
+        return text.clone();
+    }
+    // A short excerpt: the panel is small; Quick Look shows more.
+    let text = crate::views::quick_look::read_text(path, kind).map(|text| text.lines().take(120).collect::<Vec<_>>().join("\n"));
+    *last = Some((path.to_path_buf(), modified, text.clone()));
+    text
 }
 
 /// Waits for the details being read in the background, then redraws.

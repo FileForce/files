@@ -20,6 +20,8 @@ pub struct AppSettings {
     /// Settings → Appearance → Font: a system font for the whole interface;
     /// `None` uses the theme's.
     pub font: Option<String>,
+    /// Settings → Appearance → Corners: over the theme's.
+    pub corners: Corners,
     /// Settings → Extensions → <extension> → Opens in: a tab or its own
     /// window, by extension id ("mail", "music"). Missing: a tab.
     pub extension_windows: std::collections::BTreeMap<String, OpenIn>,
@@ -163,6 +165,34 @@ impl ThemePreset {
             ThemePreset::Catppuccin => "Catppuccin",
             ThemePreset::Windows => "Windows",
             ThemePreset::MacOs => "macOS",
+        }
+    }
+}
+
+/// How round corners are (Settings → Appearance → Corners).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Corners {
+    /// Whatever the theme uses.
+    #[default]
+    Theme,
+    Square,
+    Small,
+    Medium,
+    Large,
+}
+
+impl Corners {
+    pub const ALL: [Corners; 5] = [Corners::Theme, Corners::Square, Corners::Small, Corners::Medium, Corners::Large];
+
+    /// (controls, panels and cards) in px; `None` for the theme's.
+    pub fn radii(self) -> Option<(f32, f32)> {
+        match self {
+            Corners::Theme => None,
+            Corners::Square => Some((0., 0.)),
+            Corners::Small => Some((3., 6.)),
+            Corners::Medium => Some((7., 11.)),
+            Corners::Large => Some((12., 18.)),
         }
     }
 }
@@ -710,6 +740,7 @@ impl Default for AppSettings {
             theme: ThemePreset::Default,
             icon_theme: IconTheme::Colorful,
             font: None,
+            corners: Corners::Theme,
             extension_windows: std::collections::BTreeMap::new(),
             accent: Accent::Iris,
             language: Language::English,
@@ -775,6 +806,8 @@ pub struct ExtensionSettings {
     pub mail: bool,
     /// The music library, Spotify and Yandex Music.
     pub music: bool,
+    /// Quick Look and the preview panel's look inside files.
+    pub preview: bool,
     /// Archives: "Create folder" is ticked when the extract page opens.
     pub archives_create_folder: bool,
     /// Archives: "Overwrite existing files without asking" starts ticked.
@@ -870,6 +903,7 @@ impl Default for ExtensionSettings {
             agents: true,
             mail: true,
             music: true,
+            preview: true,
             archives_create_folder: true,
             archives_overwrite: false,
             terminal_app: TerminalApp::Terminal,

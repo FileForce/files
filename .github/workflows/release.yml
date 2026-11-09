@@ -84,7 +84,8 @@ jobs:
           # 504s for it in November 2026).
           fetch() { sudo curl -fL --retry 4 --retry-all-errors --retry-delay 5 -o "$1" "$2"; }
           fetch /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage \
-            || fetch /usr/local/bin/appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+            || fetch /usr/local/bin/appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage \
+            || fetch /usr/local/bin/appimagetool https://github.com/FileForce/files/releases/download/build-tools/appimagetool-x86_64.AppImage
           sudo chmod +x /usr/local/bin/appimagetool
           # Runs without FUSE (the older tool from the mirror needs this).
           export APPIMAGE_EXTRACT_AND_RUN=1
@@ -92,7 +93,8 @@ jobs:
           appimagetool --version
           # The runtime appimagetool would fetch itself during the build.
           sudo mkdir -p /opt/appimage
-          sudo curl -fL --retry 5 --retry-all-errors --retry-delay 5 -o /opt/appimage/runtime-x86_64 https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
+          fetch /opt/appimage/runtime-x86_64 https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 \
+            || fetch /opt/appimage/runtime-x86_64 https://github.com/FileForce/files/releases/download/build-tools/runtime-x86_64
           echo "APPIMAGE_RUNTIME=/opt/appimage/runtime-x86_64" >> "$GITHUB_ENV"
       - run: cargo xtask bundle
       - name: Release notes from CHANGELOG.md

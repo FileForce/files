@@ -29,6 +29,7 @@ fn builtin_icon(name: &str) -> Option<IconName> {
         "square-terminal" => IconName::SquareTerminal,
         "mail" => IconName::Mail,
         "music" => IconName::Music,
+        "eye" => IconName::Eye,
         _ => return None,
     })
 }
@@ -94,9 +95,29 @@ static TERMINAL: Manifest = Manifest {
     tier: files_sdk::Tier::Free,
 };
 
+static PREVIEW: Manifest = Manifest {
+    id: "preview",
+    name: "Preview",
+    version: "1.0.0",
+    source: "Built-in",
+    summary: "Look inside files without opening them: Quick Look and the preview panel.",
+    icon: SdkIcon::Builtin("eye"),
+    adds: &[
+        "Space or context menu → Quick Look",
+        "Preview panel: text and code, PDF pages, photo, video, archive and program details",
+        "Other extensions add formats through files_sdk::preview",
+    ],
+    permissions: &[Permission::ReadFiles],
+    commands: &[],
+    menu: &[],
+    sidebar: &[],
+    menu_color: None,
+    tier: files_sdk::Tier::Free,
+};
+
 /// Every extension, in Settings order. Archives, SSH and Forks are separate
 /// crates built on `files-sdk`; the rest are small enough to live in the app.
-pub static CATALOG: [&Manifest; 10] = [
+pub static CATALOG: [&Manifest; 11] = [
     &OPEN_WITH,
     &files_ext_archive::MANIFEST,
     &files_ext_git::MANIFEST,
@@ -107,6 +128,7 @@ pub static CATALOG: [&Manifest; 10] = [
     &files_ext_agents::MANIFEST,
     &files_ext_mail::MANIFEST,
     &files_ext_music::MANIFEST,
+    &PREVIEW,
 ];
 
 pub fn enabled(settings: &ExtensionSettings, index: usize) -> bool {
@@ -120,7 +142,8 @@ pub fn enabled(settings: &ExtensionSettings, index: usize) -> bool {
         6 => settings.forks,
         7 => settings.agents,
         8 => settings.mail,
-        _ => settings.music,
+        9 => settings.music,
+        _ => settings.preview,
     }
 }
 
@@ -135,7 +158,8 @@ pub fn toggle(settings: &mut ExtensionSettings, index: usize) {
         6 => &mut settings.forks,
         7 => &mut settings.agents,
         8 => &mut settings.mail,
-        _ => &mut settings.music,
+        9 => &mut settings.music,
+        _ => &mut settings.preview,
     };
     *flag = !*flag;
 }

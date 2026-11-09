@@ -52,6 +52,13 @@ fn look() -> (ThemePreset, IconTheme) {
 /// Settings → Appearance → Font: the interface font chosen over the theme's.
 static FONT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Settings → Appearance → Corners, over the theme's radii.
+static CORNERS: std::sync::Mutex<crate::settings::Corners> = std::sync::Mutex::new(crate::settings::Corners::Theme);
+
+pub fn set_corners(corners: crate::settings::Corners) {
+    *CORNERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = corners;
+}
+
 pub fn set_font(font: Option<String>) {
     *FONT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = font.filter(|font| !font.trim().is_empty());
 }
@@ -267,6 +274,7 @@ pub fn apply_theme(cx: &mut App, scheme: ColorScheme, accent: Accent) {
         ThemePreset::MacOs => (6., 10.),
         _ => (7., 11.),
     };
+    let (radius, radius_lg) = CORNERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).radii().unwrap_or((radius, radius_lg));
     // Segoe UI where it exists; elsewhere the system font stands in.
     let font: gpui_kit::SharedString = match preset {
         // The user's own choice wins over every theme's.

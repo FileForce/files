@@ -32,6 +32,7 @@ pub mod package;
 pub mod plugin;
 pub mod permissions;
 pub mod power;
+pub mod preview;
 pub mod secrets;
 pub mod storage;
 
@@ -234,6 +235,11 @@ pub trait Extension: Send + Sync {
     fn manifest(&self) -> &'static Manifest;
 
     fn archive(&self) -> Option<&dyn ArchiveProvider> {
+        None
+    }
+
+    /// Previews for the formats it knows (Quick Look, the preview panel).
+    fn preview(&self) -> Option<&dyn preview::PreviewProvider> {
         None
     }
 

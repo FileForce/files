@@ -1425,6 +1425,12 @@ impl FileExplorer {
         if self.search.read(cx).focus_handle(cx).is_focused(window) {
             return;
         }
+        // Settings → Extensions → Preview off (or not allowed to read files).
+        if !crate::ext_preview::enabled(self.appearance.read(cx)) {
+            self.notice = Some("Quick Look is off: Settings → Extensions → Preview".to_string());
+            cx.notify();
+            return;
+        }
         self.toggle_quick_look(window, cx);
     }
 
@@ -4386,8 +4392,25 @@ mod tests {
         assert!(parts.iter().any(|part| part.name == "Mail in memory") && parts.iter().any(|part| part.name == "Thumbnails on disk"));
     }
 
+    /// Tests that change the global theme run one at a time.
+    static LOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn corners_override_the_theme_s() {
+        let _look = LOOK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (_view, cx) = pro_window();
+        let radius = |cx: &mut gpui_kit::VisualTestContext| cx.update(|_, app| app.global::<gpui_kit::component::Theme>().radius);
+        crate::palette::set_corners(crate::settings::Corners::Large);
+        cx.update(|_, app| crate::palette::apply_theme(app, crate::model::ColorScheme::Dark, crate::model::Accent::Iris));
+        assert_eq!(radius(cx), gpui_kit::px(12.));
+        crate::palette::set_corners(crate::settings::Corners::Theme);
+        cx.update(|_, app| crate::palette::apply_theme(app, crate::model::ColorScheme::Dark, crate::model::Accent::Iris));
+        assert_eq!(radius(cx), gpui_kit::px(7.), "Theme: Files' own 7 px");
+    }
+
     #[test]
     fn a_chosen_font_wins_over_the_theme_s() {
+        let _look = LOOK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_view, cx) = pro_window();
         let font = |cx: &mut gpui_kit::VisualTestContext| cx.update(|_, app| app.global::<gpui_kit::component::Theme>().font_family.to_string());
         crate::palette::set_look(crate::settings::ThemePreset::Omarchy, crate::settings::IconTheme::Colorful);

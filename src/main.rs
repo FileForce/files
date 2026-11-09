@@ -33,6 +33,8 @@ mod instance;
 mod media_info;
 mod pe_info;
 mod tasks;
+mod pdf_pages;
+mod ext_preview;
 mod system_notify;
 mod media_keys;
 mod menu_colors;
@@ -105,6 +107,7 @@ fn main() {
         palette::apply_motion(cx, loaded.look.motion);
         palette::set_look(loaded.theme, loaded.icon_theme);
         palette::set_font(loaded.font.clone());
+        palette::set_corners(loaded.corners);
         apply_theme(cx, loaded.scheme, loaded.accent);
         app::register_keys(cx);
         keymap::apply(cx, &Default::default(), &loaded.keymap);

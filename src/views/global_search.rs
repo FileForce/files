@@ -28,6 +28,24 @@ enum SearchResult {
 }
 
 #[cfg(test)]
+mod path_tests {
+    #[test]
+    fn a_pasted_path_is_offered_and_a_half_typed_one_completes() {
+        let dir = std::env::temp_dir().join(format!("file-force-typed-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Documents")).unwrap();
+        std::fs::create_dir_all(dir.join("Downloads")).unwrap();
+        let text = dir.display().to_string();
+        assert_eq!(super::typed_path(&text), vec![dir.clone()], "an existing folder");
+        assert_eq!(super::typed_path(&format!("\"{text}\"")), vec![dir.clone()], "in quotes, as copied from a terminal");
+        assert_eq!(super::typed_path(&format!("{text}/Do")), vec![dir.join("Documents"), dir.join("Downloads")], "half-typed: the folders it could be");
+        assert_eq!(super::typed_path(&format!("{text}/")).first(), Some(&dir), "ending in /: the folder, then its folders");
+        assert!(super::typed_path("invoice 2026").is_empty(), "words stay a search");
+        assert!(!super::typed_path("~").is_empty(), "~ is home");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 impl SearchResult {
     fn name(&self) -> &str {
         match self {
@@ -465,7 +483,53 @@ fn mail_query(query: &str) -> Option<&str> {
     (enabled && key.eq_ignore_ascii_case("email") && !value.trim().is_empty()).then_some(value)
 }
 
+/// A path typed or pasted into the search: `~/Music`, `/etc`, `C:\Users`,
+/// with quotes or as `file://`. The folder (or file) itself when it exists;
+/// else the folders in its parent starting with the last part, so a path
+/// half-typed completes.
+pub(crate) fn typed_path(query: &str) -> Vec<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    let text = query.trim().trim_matches(['"', '\'']);
+    let looks_like_path = text.starts_with('/') || text.starts_with('~') || text.starts_with("file://") || text.starts_with("\\\\")
+        || (text.len() >= 2 && text.as_bytes()[1] == b':' && text.as_bytes()[0].is_ascii_alphabetic());
+    if !looks_like_path {
+        return Vec::new();
+    }
+    let expanded: PathBuf = if let Some(rest) = text.strip_prefix('~') {
+        let Some(home) = dirs::home_dir() else { return Vec::new() };
+        home.join(rest.trim_start_matches(['/', '\\']))
+    } else if let Some(path) = crate::desktop::launch_path(["files".to_string(), text.to_string()]).filter(|_| text.starts_with("file://")) {
+        path
+    } else {
+        PathBuf::from(text)
+    };
+    if expanded.exists() && !text.ends_with(['/', '\\']) {
+        return vec![expanded];
+    }
+    // "…/Docu" → the folders of "…/" starting with "Docu"; "…/" → its folders.
+    let (parent, prefix) = if text.ends_with(['/', '\\']) { (expanded.as_path(), String::new()) } else { (expanded.parent().unwrap_or(Path::new("/")), expanded.file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default()) };
+    let Ok(read) = std::fs::read_dir(parent) else { return Vec::new() };
+    let mut found: Vec<PathBuf> = read
+        .flatten()
+        .filter(|item| item.file_name().to_string_lossy().to_lowercase().starts_with(&prefix) && !item.file_name().to_string_lossy().starts_with('.'))
+        .map(|item| item.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    found.sort();
+    found.truncate(8);
+    // "…/" alone: the folder itself first, then what is in it.
+    if prefix.is_empty() && parent.is_dir() {
+        found.insert(0, parent.to_path_buf());
+    }
+    found
+}
+
 fn ranked_results(root: &std::path::Path, query: &str, include_remote: bool) -> Vec<SearchResult> {
+    // A path: go there.
+    let paths: Vec<SearchResult> = typed_path(query).iter().filter_map(|path| crate::model::entry_at(path)).map(SearchResult::File).collect();
+    if !paths.is_empty() {
+        return paths;
+    }
     if let Some(query) = music_query(query) {
         return files_ext_music::search_everywhere(query, MAX_RESULTS).into_iter().map(SearchResult::Track).collect();
     }

@@ -78,14 +78,16 @@ pub(crate) fn file_context_menu(
                     }
                 })))
             })
-            .item(tinted_command_item(
-                "Quick Look",
-                IconName::Eye,
-                tint("quick-look"),
-                DemoCommand::QuickLook,
-                window,
-                &view,
-            ))
+            .when(crate::ext_preview::enabled(&settings), |menu| {
+                menu.item(tinted_command_item(
+                    "Quick Look",
+                    IconName::Eye,
+                    tint("quick-look"),
+                    DemoCommand::QuickLook,
+                    window,
+                    &view,
+                ))
+            })
             .when(entry.is_folder() && entry.path.is_some(), |menu| {
                 let path = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
                 let favorite = view.read(cx).is_favorite(&path, cx);

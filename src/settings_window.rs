@@ -303,6 +303,7 @@ impl SettingsWindow {
                 });
                 crate::palette::set_look(self.draft.theme, self.draft.icon_theme);
                 crate::palette::set_font(self.draft.font.clone());
+                crate::palette::set_corners(self.draft.corners);
                 apply_theme(cx, self.draft.scheme, self.draft.accent);
                 cx.notify();
             }
@@ -1089,6 +1090,27 @@ impl SettingsWindow {
                             .when_some(self.draft.font.clone(), |this, font| this.font_family(font))
                             .child(tr(language, "The quick brown fox · 0123", "Съешь же ещё этих булок · 0123")),
                     ),
+                palette,
+            ))
+            .child(setting_row(
+                tr(language, "Corners", "Скругление"),
+                h_flex().gap_2().flex_wrap().children(crate::settings::Corners::ALL.map(|corners| {
+                    let label = match corners {
+                        crate::settings::Corners::Theme => tr(language, "Theme", "По теме"),
+                        crate::settings::Corners::Square => tr(language, "None", "Нет"),
+                        crate::settings::Corners::Small => tr(language, "Small", "Малое"),
+                        crate::settings::Corners::Medium => tr(language, "Medium", "Среднее"),
+                        crate::settings::Corners::Large => tr(language, "Large", "Большое"),
+                    };
+                    // A small square with these corners, as the sample.
+                    let radius = corners.radii().map_or(5., |(radius, _)| radius);
+                    option_button(gpui_kit::ElementId::Name(format!("corners-{corners:?}").into()), label, self.draft.corners == corners)
+                        .child(div().size(px(12.)).rounded(px(radius.min(6.))).border_1().border_color(palette.muted))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.draft.corners = corners;
+                            cx.notify();
+                        }))
+                })),
                 palette,
             ))
             .child(setting_row(
