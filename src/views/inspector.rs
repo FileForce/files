@@ -429,6 +429,22 @@ fn preview_block(file: &'static crate::model::FileEntry, palette: Palette, fit: 
                 .child(div().text_size(px(11.)).font_family(crate::palette::terminal_font()).text_color(palette.text).whitespace_normal().child(text))
                 .into_any_element();
         }
+        if crate::office_text::applies(path)
+            && let Some(text) = crate::office_text::cached(path)
+        {
+            let excerpt: String = text.lines().take(80).collect::<Vec<_>>().join("\n");
+            return div()
+                .id("inspector-document")
+                .debug_selector(|| "inspector-document".into())
+                .w_full()
+                .h(px(240.))
+                .p_3()
+                .rounded_md()
+                .bg(palette.surface)
+                .overflow_y_scrollbar()
+                .child(div().text_xs().text_color(palette.text).whitespace_normal().child(excerpt))
+                .into_any_element();
+        }
         if crate::pdf_pages::is_pdf(path)
             && let Some(Some(first)) = crate::pdf_pages::pages(path).rendered.first().cloned()
         {

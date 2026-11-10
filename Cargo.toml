@@ -3,7 +3,7 @@ members = ["crates/*"]
 
 [package]
 name = "file-force"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2024"
 description = "Files: a fast file explorer for macOS and Linux with Git, SSH, AI agents and extensions."
 license = "FSL-1.1-MIT"
@@ -26,6 +26,8 @@ gpui-kit = "=0.8.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 dirs = "6"
 url = "2"
+# Office documents (.docx, .odt, .pptx) are zip files: their text for the preview.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 getrandom = "0.3"
 nucleo = "=0.5.0"
 rust-embed = { version = "8.7", features = ["include-exclude"] }

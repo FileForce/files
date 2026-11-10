@@ -102,7 +102,22 @@ impl GlobalSearch {
         });
         let appearance_subscription = cx.observe(&appearance, |_, _, cx| cx.notify());
 
-        let results = ranked_results(&root, "", include_remote);
+        // Opens at once: the index walk and the first results come from a
+        // background thread.
+        let first_root = root.clone();
+        cx.spawn(async move |this, cx| {
+            let results = cx.background_executor().spawn(async move { ranked_results(&first_root, "", include_remote) }).await;
+            let _ = this.update(cx, |this, cx| {
+                // Typing began meanwhile: its own search answers.
+                if this.generation == 0 {
+                    this.results = results;
+                    this.searching = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        let results = Vec::new();
         Self {
             explorer,
             root,
@@ -113,7 +128,7 @@ impl GlobalSearch {
             query: String::new(),
             results,
             generation: 0,
-            searching: false,
+            searching: true,
             selected: 0,
             scroll_handle: ScrollHandle::new(),
             _input_subscription: input_subscription,

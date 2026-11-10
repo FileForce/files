@@ -1654,6 +1654,22 @@ impl FileExplorer {
         cx.notify();
     }
 
+    /// Files → Install Command Line Tool: `files .` in a terminal.
+    fn on_install_cli(&mut self, _: &crate::menus::InstallCommandLineTool, _: &mut Window, cx: &mut Context<Self>) {
+        let (level, title, body) = match crate::desktop::install_cli() {
+            Ok(message) => (files_sdk::log::Level::Success, "The files command is installed".to_string(), message),
+            Err(error) => (files_sdk::log::Level::Error, "The files command was not installed".to_string(), error.to_string()),
+        };
+        files_sdk::log::notify("files", level, title, Some(body));
+        cx.notify();
+    }
+
+    fn on_uninstall(&mut self, _: &crate::menus::UninstallFiles, window: &mut Window, cx: &mut Context<Self>) {
+        // Settings (a dialog) may be what asked: the confirmation takes its place.
+        window.close_dialog(cx);
+        crate::uninstall::open(self.appearance.clone(), window, cx);
+    }
+
     fn on_report_bug(&mut self, _: &crate::menus::ReportBug, window: &mut Window, cx: &mut Context<Self>) {
         crate::bug_report::open(self.appearance.clone(), window, cx);
     }
@@ -1784,6 +1800,8 @@ impl Render for FileExplorer {
             .on_action(cx.listener(Self::on_paste_files))
             .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_report_bug))
+            .on_action(cx.listener(Self::on_install_cli))
+            .on_action(cx.listener(Self::on_uninstall))
             .on_action(cx.listener(Self::on_toggle_dev_tools))
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
@@ -4030,6 +4048,7 @@ mod tests {
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
         assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "Quick Look did not open");
+        crate::views::quick_look::settle(cx);
         let tiles = (0..10).filter(|index| cx.debug_bounds(Box::leak(format!("quick-look-item-{index}").into_boxed_str())).is_some()).count();
         assert_eq!(tiles, 4, "the folder's 1 subfolder and 3 files are previewed");
         let _ = std::fs::remove_dir_all(&dir);
@@ -4100,6 +4119,7 @@ mod tests {
                 cx.simulate_keystrokes("space");
             }
             cx.run_until_parked();
+            crate::views::quick_look::settle(cx);
             assert!(cx.debug_bounds("quick-look-archive").is_some(), "{name}: no archive listing in Quick Look");
         }
         let _ = std::fs::remove_dir_all(&dir);

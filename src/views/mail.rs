@@ -783,11 +783,14 @@ impl MailWindow {
         let Some(downloads) = dirs::download_dir() else { return };
         self.notice = Some(match files_ext_mail::save_attachment(&attachment, &downloads) {
             Ok(path) => {
-                files_sdk::log::notify(
+                // What to do with it next, right on the notification.
+                let actions = crate::views::console::file_actions(&path);
+                files_sdk::log::notify_actions(
                     files_ext_mail::MANIFEST.id,
                     files_sdk::log::Level::Success,
                     format!("Saved {}", path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()),
                     Some(path.display().to_string()),
+                    actions,
                 );
                 format!("Saved to {}", path.display())
             }

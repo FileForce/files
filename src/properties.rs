@@ -264,6 +264,7 @@ pub(crate) fn watch_folder_sizes<T: 'static>(cx: &mut Context<T>) {
                 + crate::pdf_pages::generation()
                 + crate::media_info::generation()
                 + crate::ext_preview::generation()
+                + crate::views::quick_look::generation()
         };
         let mut seen = generation();
         loop {

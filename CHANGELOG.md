@@ -5,6 +5,15 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.23
+
+- Quick Look opens at once: the window shows right away with "Loading preview…" while the file is read in the background (text, documents, mail, archives, folders), then fills in; files seen before show instantly.
+- ⌘K opens at once too: its index is walked in the background (and built quietly a few seconds after Files starts), so the window never waits for it.
+- Word (.docx), OpenDocument (.odt) and PowerPoint (.pptx, slide by slide) show their text in Quick Look, scrolling through the whole document, and its beginning in the preview panel instead of a placeholder — read by Files itself on every system.
+- Mail: the "Saved …" notification of an attachment has Reveal (its folder in a new tab, the file selected), Open (its default app) and Open With… (choose another), like the context menu.
+- The `files` command, on every system: `files .` opens the current folder in Files, `files ~/Music` any folder (like `code .`). Install it in Settings → General → Command line, or on macOS from Files → Install Command Line Tool; no administrator needed (macOS: a script and a PATH line in your shell profile; Windows: files.cmd on your user PATH; Linux: ~/.local/bin/files).
+- Uninstall Files… (Settings → General, and the Files menu on macOS): removes the files command and the open helper with their PATH lines, gives folders back to Finder or Explorer, removes the Linux desktop entry, clears the caches, optionally the settings and favorites too, then removes the app (macOS: to the Trash; Windows: its uninstaller; Linux: the AppImage) and quits. It asks first and lists every step.
+
 ## 0.1.22
 
 - Pictures are no longer cut off in Quick Look and the preview panel: they show whole (Fit) by default. A Fit ⇄ Fill button next to the picture switches to filling the frame, and the choice is remembered.

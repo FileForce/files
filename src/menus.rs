@@ -6,7 +6,7 @@ use gpui_kit::{App, Menu, MenuItem, OsAction, SystemMenuType, actions};
 
 use crate::app::*;
 
-actions!(app_menu, [Quit, Hide, HideOthers, ShowAll, About, CheckForUpdates, ReportBug]);
+actions!(app_menu, [Quit, Hide, HideOthers, ShowAll, About, CheckForUpdates, ReportBug, InstallCommandLineTool, UninstallFiles]);
 
 pub fn register(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
@@ -23,6 +23,8 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Settings…", ShowSettings),
+            MenuItem::action("Install Command Line Tool (files)…", InstallCommandLineTool),
+            MenuItem::action("Uninstall Files…", UninstallFiles),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),

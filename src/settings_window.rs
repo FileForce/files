@@ -39,6 +39,8 @@ actions!(
 pub struct SettingsWindow {
     /// Shown in a tab, not the modal: Close and Cancel keep the tab.
     pub(crate) in_tab: bool,
+    /// Settings → General → Command line: what Install or Uninstall said.
+    cli_message: Option<String>,
     /// Settings → Extensions → License: where the key is pasted.
     license_input: Entity<InputState>,
     /// Settings → General → Check now: `None` until asked, then the answer.
@@ -244,6 +246,7 @@ impl SettingsWindow {
             return_focus: None,
             just_saved: false,
             in_tab: false,
+            cli_message: None,
             storage_usage: None,
             storage_extensions: Vec::new(),
             storage_slider,
@@ -990,6 +993,52 @@ impl SettingsWindow {
                     language,
                     "The preview panel empties too. Shift- and ⌘-clicks never clear the selection.",
                     "Панель предпросмотра тоже очищается. Клики с Shift и ⌘ выделение не снимают.",
+                ),
+                palette,
+            ))
+                        .child(section(IconName::SquareTerminal, tr(language, "Command line", "Командная строка"), palette))
+            .child(setting_row(
+                tr(language, "The files command", "Команда files"),
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(if crate::desktop::cli_installed() {
+                        Button::new("cli-uninstall").ghost().small().icon(IconName::Trash).label(tr(language, "Uninstall", "Удалить")).on_click(cx.listener(|this, _, _, cx| {
+                            this.cli_message = Some(match crate::desktop::uninstall_cli() {
+                                Ok(()) => "Removed".to_string(),
+                                Err(error) => error.to_string(),
+                            });
+                            cx.notify();
+                        }))
+                    } else {
+                        Button::new("cli-install").primary().small().icon(IconName::SquareTerminal).label(tr(language, "Install", "Установить")).on_click(cx.listener(|this, _, _, cx| {
+                            this.cli_message = Some(crate::desktop::install_cli().unwrap_or_else(|error| error.to_string()));
+                            cx.notify();
+                        }))
+                    })
+                    .children(self.cli_message.clone().map(|message| div().text_xs().text_color(palette.muted).child(message))),
+                palette,
+            ))
+            .child(note(
+                tr(
+                    language,
+                    "files . opens the current folder in Files, files ~/Music any folder, like code . does for VS Code. No administrator needed; new terminals pick it up.",
+                    "files . открывает текущую папку в Files, files ~/Music — любую папку, как code . у VS Code. Права администратора не нужны; работает в новых окнах терминала.",
+                ),
+                palette,
+            ))
+            .child(setting_row(
+                tr(language, "Uninstall", "Удаление"),
+                Button::new("uninstall-files").ghost().small().icon(IconName::Trash).label(tr(language, "Uninstall Files…", "Удалить Files…")).on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(crate::menus::UninstallFiles), cx);
+                }),
+                palette,
+            ))
+            .child(note(
+                tr(
+                    language,
+                    "Removes the files command, the open helper and their PATH lines, gives folders back to Finder or Explorer, clears the caches, then removes the app. Asks first.",
+                    "Удаляет команду files, помощник open и их строки в PATH, возвращает папки Finder или Проводнику, чистит кэши и удаляет приложение. Сначала спрашивает.",
                 ),
                 palette,
             ))

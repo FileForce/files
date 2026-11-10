@@ -146,7 +146,7 @@ impl FileExplorer {
     }
 
     /// Lets the user pick an application, then opens `path` with it.
-    fn open_with_chooser(&mut self, path: &'static Path, name: &'static str, cx: &mut Context<Self>) {
+    pub(crate) fn open_with_chooser(&mut self, path: &'static Path, name: &'static str, cx: &mut Context<Self>) {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             self.notice = Some(format!("Choose an application for {name}…"));

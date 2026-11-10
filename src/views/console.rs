@@ -47,6 +47,23 @@ fn level_icon(level: Level, palette: Palette) -> Icon {
     }
 }
 
+/// The buttons a notification about a file gets (a saved attachment…):
+/// Reveal it in a new tab, Open it in its app, Open With… another one.
+pub(crate) fn file_actions(path: &std::path::Path) -> Vec<log::Action> {
+    let encoded: String = url::form_urlencoded::byte_serialize(path.to_string_lossy().as_bytes()).collect();
+    [("Reveal", "reveal"), ("Open", "open"), ("Open With…", "open-with")]
+        .into_iter()
+        .map(|(label, verb)| log::Action { label: label.into(), url: format!("files:file/{verb}?{encoded}") })
+        .collect()
+}
+
+/// `files:file/<verb>?<path>` → the verb and the path.
+pub(crate) fn file_command(command: &str) -> Option<(&str, std::path::PathBuf)> {
+    let (verb, encoded) = command.strip_prefix("file/")?.split_once('?')?;
+    let path: String = url::form_urlencoded::parse(format!("p={encoded}").as_bytes()).find(|(key, _)| key == "p")?.1.into_owned();
+    Some((verb, std::path::PathBuf::from(path)))
+}
+
 /// A notification's buttons: open their link (release notes…), or run an
 /// app command for `files:` links. The first one is the primary.
 fn action_buttons(prefix: &'static str, notification: &log::Notification, explorer: &gpui_kit::WeakEntity<FileExplorer>) -> gpui_kit::Div {
@@ -56,9 +73,11 @@ fn action_buttons(prefix: &'static str, notification: &log::Notification, explor
         let button = Button::new((prefix, (id as usize) * 8 + index)).xsmall().label(action.label.clone());
         let button = if index == 0 { button.primary() } else { button.ghost() };
         let explorer = explorer.clone();
-        button.on_click(move |_, _, cx| {
+        button.on_click(move |_, window, cx| {
             cx.stop_propagation();
-            if let Some(command) = url.strip_prefix("files:") {
+            if let Some((verb, path)) = url.strip_prefix("files:").and_then(file_command) {
+                let _ = explorer.update(cx, |this, cx| this.run_file_action(verb, &path, window, cx));
+            } else if let Some(command) = url.strip_prefix("files:") {
                 let _ = explorer.update(cx, |this, cx| this.run_notification_command(command, id, cx));
             } else {
                 cx.open_url(&url);
@@ -108,6 +127,30 @@ fn prime_chimes() {
 }
 
 impl FileExplorer {
+    /// A notification's file button: Reveal (a new tab, the file selected),
+    /// Open (its app), Open With… (choose one).
+    pub(crate) fn run_file_action(&mut self, verb: &str, path: &std::path::Path, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        let Some(entry) = crate::model::entry_at(path) else {
+            self.notice = Some(format!("{} is gone", path.display()));
+            cx.notify();
+            return;
+        };
+        match verb {
+            "reveal" => {
+                self.open_in_new_tab(entry.parent, window, cx);
+                self.reveal_path(path, window, cx);
+            }
+            "open" => self.open_file(entry, cx),
+            "open-with" => {
+                if let Some(path) = entry.path {
+                    self.open_with_chooser(path, entry.name, cx);
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
     /// Redraws when the journal changes, and checks the free disk space.
     pub(crate) fn watch_journal(cx: &mut Context<Self>) {
         prime_chimes();
@@ -629,6 +672,20 @@ impl FileExplorer {
             )
             .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod file_action_tests {
+    #[test]
+    fn a_file_notification_carries_its_path_through_every_button() {
+        let path = std::path::Path::new("/Users/me/Downloads/Report & notes (1).pdf");
+        let actions = super::file_actions(path);
+        assert_eq!(actions.iter().map(|action| action.label.as_str()).collect::<Vec<_>>(), ["Reveal", "Open", "Open With…"]);
+        for (action, verb) in actions.iter().zip(["reveal", "open", "open-with"]) {
+            let (got, back) = super::file_command(action.url.strip_prefix("files:").unwrap()).unwrap();
+            assert_eq!((got, back.as_path()), (verb, path), "spaces, & and brackets survive");
+        }
     }
 }
 

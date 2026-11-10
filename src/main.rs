@@ -23,6 +23,7 @@ mod resources;
 mod sound;
 mod storage;
 mod bug_report;
+mod uninstall;
 mod alloc_stats;
 
 #[cfg(debug_assertions)]
@@ -34,6 +35,7 @@ mod media_info;
 mod pe_info;
 mod tasks;
 mod pdf_pages;
+mod office_text;
 mod ext_preview;
 mod system_notify;
 mod media_keys;
@@ -112,11 +114,21 @@ fn main() {
         app::register_keys(cx);
         keymap::apply(cx, &Default::default(), &loaded.keymap);
         menus::register(cx);
+        let loaded_search_root = loaded.search_filters.global_root().unwrap_or_default();
         let appearance = cx.new(|_| loaded);
         power::watch(appearance.clone(), cx);
         // Linux: the menu, notifications and "Open with" know Files.
         std::thread::spawn(desktop::install_desktop_entry);
         std::thread::spawn(desktop::refresh_folder_verb);
+        // The ⌘K index, built quietly a moment after start so the first
+        // search finds it ready.
+        let search_root = loaded_search_root.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            if !power::power_saving() {
+                let _ = model::searchable_entries(&search_root);
+            }
+        });
 
         MAIN.with(|main| main.borrow_mut().appearance = Some(appearance));
         let window = open_main_window(cx).expect("Failed to open File Explorer");

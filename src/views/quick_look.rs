@@ -90,11 +90,20 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
             .into_any_element()
     };
     if file.is_folder() {
+        if let Some(path) = file.path
+            && !warmed(path, file.kind)
+        {
+            return placeholder("Loading…");
+        }
         return folder(file, palette, settings).unwrap_or_else(|| placeholder(file.metadata));
     }
     let Some(path) = file.path else {
         return placeholder("No preview · this item is not on the local disk");
     };
+    // Opens at once; the file is read in the background, then shown.
+    if !warmed(path, file.kind) {
+        return placeholder("Loading preview…");
+    }
     // A format an extension knows (files_sdk::preview).
     if let Some((name, content)) = crate::ext_preview::preview(path) {
         return extension_preview(&name, content, palette);
@@ -123,7 +132,7 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
                 .into_any_element();
         }
     }
-    if let Some(text) = read_text(path, file.kind) {
+    if let Some(text) = cached_text(path, file.kind) {
         return div()
             .id("quick-look-text")
             .size_full()
@@ -139,6 +148,21 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
                     .whitespace_normal()
                     .child(text),
             )
+            .into_any_element();
+    }
+    // Word, OpenDocument, PowerPoint: their text, scrolling.
+    if crate::office_text::applies(path)
+        && let Some(text) = crate::office_text::cached(path)
+    {
+        return div()
+            .id("quick-look-document")
+            .debug_selector(|| "quick-look-document".into())
+            .size_full()
+            .p_5()
+            .rounded_md()
+            .bg(palette.surface)
+            .overflow_y_scrollbar()
+            .child(div().text_sm().text_color(palette.text).whitespace_normal().child(text))
             .into_any_element();
     }
     // PDFs: every page, one under the other, scrolling.
@@ -242,6 +266,86 @@ fn pdf(path: &Path, palette: Palette) -> AnyElement {
         }))
         .when(pages.count > shown && shown > 0, |this| this.child(note(format!("Showing the first {shown} of {} pages · Open to read on", pages.count))))
         .into_any_element()
+}
+
+/// Files whose preview has been read (kept in the caches below).
+static WARM: std::sync::Mutex<Option<std::collections::HashSet<std::path::PathBuf>>> = std::sync::Mutex::new(None);
+static WARMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Bumped as previews finish reading: Quick Look redraws.
+pub(crate) fn generation() -> u64 {
+    WARMED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether `path`'s preview is ready to draw without waiting; if not, it is
+/// read on a background thread (once) and Quick Look redraws after.
+fn warmed(path: &Path, kind: FileKind) -> bool {
+    if WARM_DONE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref().is_some_and(|done| done.contains(path)) {
+        return true;
+    }
+    let mut warm = WARM.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Reading began already: still the placeholder.
+    if !warm.get_or_insert_with(Default::default).insert(path.to_path_buf()) {
+        return false;
+    }
+    drop(warm);
+    let owned = path.to_path_buf();
+    let job = crate::tasks::queue("quick look read", owned.display().to_string());
+    std::thread::spawn(move || {
+        crate::tasks::start(job);
+        if owned.is_dir() {
+            let _ = crate::model::entries(crate::model::Location::from_path(&owned), "");
+        } else if crate::office_text::applies(&owned) {
+            let _ = crate::office_text::cached(&owned);
+        } else if owned.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("eml")) {
+            let _ = email(&owned);
+        } else if files_ext_archive::ArchiveKind::of(&owned).is_some() {
+            let _ = archive_items(&owned);
+        } else {
+            let _ = cached_text(&owned, kind);
+        }
+        crate::tasks::finish(job, Ok(()));
+        // Not ready before the thread is done: mark it as read now.
+        WARM_DONE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get_or_insert_with(Default::default).insert(owned);
+        WARMED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    false
+}
+
+static WARM_DONE: std::sync::Mutex<Option<std::collections::HashSet<std::path::PathBuf>>> = std::sync::Mutex::new(None);
+
+/// Tests: waits until every preview being read is ready, then redraws.
+#[cfg(test)]
+pub(crate) fn settle(cx: &mut gpui_kit::VisualTestContext) {
+    for _ in 0..200 {
+        let started = WARM.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone().unwrap_or_default();
+        let done = WARM_DONE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone().unwrap_or_default();
+        if started.is_subset(&done) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if let Some(view) = last_for_test() {
+        view.update(cx, |_, cx| cx.notify());
+    }
+    cx.run_until_parked();
+}
+
+/// The start of a text file, kept for the last one shown.
+fn cached_text(path: &Path, kind: FileKind) -> Option<String> {
+    type Entry = (std::path::PathBuf, Option<std::time::SystemTime>, Option<String>);
+    static LAST: std::sync::Mutex<Option<Entry>> = std::sync::Mutex::new(None);
+    let modified = std::fs::metadata(path).ok()?.modified().ok();
+    let mut last = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached, when, text)) = &*last
+        && cached == path
+        && *when == modified
+    {
+        return text.clone();
+    }
+    let text = read_text(path, kind);
+    *last = Some((path.to_path_buf(), modified, text.clone()));
+    text
 }
 
 /// A saved message (.eml), parsed once per file version.

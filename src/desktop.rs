@@ -360,14 +360,118 @@ pub fn set_open_script(install: bool) -> std::io::Result<()> {
     } else {
         let _ = std::fs::remove_file(dir.join("open"));
     }
+    sync_profiles(&dir)
+}
+
+/// The PATH lines stay while either command (`open`, `files`) is there.
+fn sync_profiles(dir: &std::path::Path) -> std::io::Result<()> {
+    let keep = dir.join("open").is_file() || dir.join("files").is_file();
     for profile in profiles() {
         let before = std::fs::read_to_string(&profile).unwrap_or_default();
-        let after = with_profile_block(&before, install.then_some(dir.as_path()));
+        let after = with_profile_block(&before, keep.then_some(dir));
         if after != before {
             std::fs::write(&profile, after)?;
         }
     }
     Ok(())
+}
+
+// --------------------------------------------------- the `files` command
+
+/// macOS and Linux: `files [path…]` opens them in Files; no path, the
+/// current folder (like `code .`).
+#[cfg_attr(windows, allow(dead_code))]
+pub fn files_script(program: &str) -> String {
+    format!(
+        "#!/bin/sh\n# file FORCE on the command line: files [folder or file…]; no argument opens the current folder.\n# Written by Settings → General → Command line; Uninstall there removes it.\n[ \"$#\" -eq 0 ] && set -- \"$PWD\"\n{program}\n"
+    )
+}
+
+/// Windows: `files [path…]` as a .cmd next to nothing else on PATH.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn files_cmd(exe: &std::path::Path) -> String {
+    format!(
+        "@echo off\r\nrem file FORCE on the command line: files [folder or file]; no argument opens the current folder.\r\nif \"%~1\"==\"\" (start \"\" \"{exe}\" \"%CD%\") else (start \"\" \"{exe}\" %*)\r\n",
+        exe = exe.display()
+    )
+}
+
+/// Where `files` goes.
+fn cli_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return Some(dirs::data_local_dir()?.join("file-force").join("bin"));
+    }
+    if cfg!(target_os = "macos") {
+        return open_script_dir();
+    }
+    // Linux: ~/.local/bin, on PATH on most desktops already.
+    Some(dirs::home_dir()?.join(".local").join("bin"))
+}
+
+fn cli_file() -> Option<PathBuf> {
+    Some(cli_dir()?.join(if cfg!(windows) { "files.cmd" } else { "files" }))
+}
+
+pub fn cli_installed() -> bool {
+    cli_file().is_some_and(|file| file.is_file())
+}
+
+/// Installs `files`; says what to do next.
+pub fn install_cli() -> std::io::Result<String> {
+    let dir = cli_dir().ok_or_else(|| std::io::Error::other("No folder for the command"))?;
+    std::fs::create_dir_all(&dir)?;
+    let file = cli_file().ok_or_else(|| std::io::Error::other("No folder for the command"))?;
+    #[cfg(windows)]
+    {
+        std::fs::write(&file, files_cmd(&std::env::current_exe()?))?;
+        windows_user_path(&dir, true)?;
+        return Ok("Installed: open a new terminal and type files .".to_string());
+    }
+    #[cfg(not(windows))]
+    {
+        // macOS: through Launch Services (the installed app, single instance);
+        // Linux: the AppImage (or binary) itself.
+        let program = if cfg!(target_os = "macos") {
+            format!("exec /usr/bin/open -b {APP_ID} \"$@\"")
+        } else {
+            let exe = std::env::var_os("APPIMAGE").map(PathBuf::from).or_else(|| std::env::current_exe().ok()).unwrap_or_default();
+            format!("exec \"{}\" \"$@\"", exe.display().to_string().replace('"', "\\\""))
+        };
+        std::fs::write(&file, files_script(&program))?;
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))?;
+        if cfg!(target_os = "macos") {
+            sync_profiles(&dir)?;
+        }
+        Ok("Installed: open a new terminal and type files .".to_string())
+    }
+}
+
+pub fn uninstall_cli() -> std::io::Result<()> {
+    let Some(dir) = cli_dir() else { return Ok(()) };
+    if let Some(file) = cli_file() {
+        let _ = std::fs::remove_file(file);
+    }
+    #[cfg(windows)]
+    windows_user_path(&dir, false)?;
+    if cfg!(target_os = "macos") {
+        sync_profiles(&dir)?;
+    }
+    Ok(())
+}
+
+/// Windows: adds or removes `dir` in the user's PATH (no administrator);
+/// new terminals see it.
+#[cfg(windows)]
+fn windows_user_path(dir: &std::path::Path, add: bool) -> std::io::Result<()> {
+    let dir = dir.display().to_string().replace('\'', "''");
+    let script = if add {
+        format!("$p=[Environment]::GetEnvironmentVariable('Path','User'); if (($p -split ';') -notcontains '{dir}') {{ [Environment]::SetEnvironmentVariable('Path', (($p.TrimEnd(';')) + ';{dir}').TrimStart(';'), 'User') }}")
+    } else {
+        format!("$p=[Environment]::GetEnvironmentVariable('Path','User'); [Environment]::SetEnvironmentVariable('Path', (($p -split ';') | Where-Object {{ $_ -and $_ -ne '{dir}' }}) -join ';', 'User')")
+    };
+    let status = files_sdk::log::command("powershell").args(["-NoProfile", "-Command", &script]).status()?;
+    if status.success() { Ok(()) } else { Err(std::io::Error::other("Could not change PATH")) }
 }
 
 /// Windows: Explorer opens folders again.
@@ -417,6 +521,18 @@ mod tests {
         assert_eq!(launch_path(["files".to_string(), "--flag".to_string(), url]).unwrap(), dir.canonicalize().unwrap());
         assert_eq!(launch_path(["files".to_string()]), None);
         assert_eq!(launch_path(["files".to_string(), "/no/such/folder".to_string()]), None);
+    }
+
+    #[test]
+    fn the_files_command_opens_its_arguments_or_the_current_folder() {
+        let script = files_script("exec /usr/bin/open -b dev.fileforce.files \"$@\"");
+        assert!(script.starts_with("#!/bin/sh") && script.contains("set -- \"$PWD\"") && script.contains("open -b dev.fileforce.files"));
+        let path = std::env::temp_dir().join(format!("file-force-cli-{}.sh", std::process::id()));
+        std::fs::write(&path, &script).unwrap();
+        assert!(std::process::Command::new("sh").arg("-n").arg(&path).status().unwrap().success(), "valid sh");
+        let _ = std::fs::remove_file(&path);
+        let cmd = files_cmd(std::path::Path::new(r"C:\Program Files\Files\file-force.exe"));
+        assert!(cmd.contains(r#"start "" "C:\Program Files\Files\file-force.exe" "%CD%""#) && cmd.contains("%*"));
     }
 
     #[test]
