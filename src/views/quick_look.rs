@@ -102,7 +102,7 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
     if file.kind == FileKind::Image
         && let Some(source) = crate::thumbnails::source(path)
     {
-        return image(source, palette);
+        return image_with(source, palette, settings.image_fit);
     }
     if crate::archive::is_supported(file) {
         return archive(path, palette, settings);
@@ -150,6 +150,21 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
         crate::thumbnails::Preview::Pending => placeholder("Generating preview…"),
         crate::thumbnails::Preview::Unavailable(reason) => placeholder(&format!("No preview · {reason}")),
     }
+}
+
+/// Fit ⇄ Fill for pictures; remembered in settings.
+pub(crate) fn fit_button(id: &'static str, fit: crate::settings::ImageFit, appearance: Entity<AppearanceSettings>) -> Button {
+    let (icon, label, tooltip) = match fit {
+        crate::settings::ImageFit::Fit => (IconName::Shrink, "Fit", "The whole picture · click to fill the frame"),
+        crate::settings::ImageFit::Fill => (IconName::Expand, "Fill", "The frame filled · click to see the whole picture"),
+    };
+    Button::new(id).ghost().xsmall().icon(icon).label(label).tooltip(tooltip).on_click(move |_, _, cx| {
+        appearance.update(cx, |settings, cx| {
+            settings.image_fit = settings.image_fit.toggled();
+            let _ = crate::settings::save(settings);
+            cx.notify();
+        });
+    })
 }
 
 /// What an extension made for a file, with its name.
@@ -411,15 +426,24 @@ fn folder(file: &'static FileEntry, palette: Palette, settings: &crate::settings
 }
 
 fn image(source: std::path::PathBuf, palette: Palette) -> AnyElement {
+    image_with(source, palette, crate::settings::ImageFit::Fit)
+}
+
+/// A picture in the frame, whole or filling it. Placed over the frame (not
+/// in its flow), so a big picture can never push past and get cut.
+fn image_with(source: std::path::PathBuf, palette: Palette, fit: crate::settings::ImageFit) -> AnyElement {
     div()
+        .relative()
         .size_full()
         .rounded_md()
         .overflow_hidden()
         .bg(palette.surface)
         .child(
             img(source)
+                .absolute()
+                .inset_0()
                 .size_full()
-                .object_fit(ObjectFit::Contain)
+                .object_fit(fit.object_fit())
                 .with_fallback(|| div().into_any_element()),
         )
         .into_any_element()
@@ -473,7 +497,7 @@ impl Render for QuickLookView {
                 v_flex()
                     .size_full()
                     .gap_3()
-                    .child(div().flex_1().min_h_0().child(match &self.video {
+                    .child(v_flex().flex_1().min_h_0().child(match &self.video {
                         Some(player) => player.clone().into_any_element(),
                         None => body(file, palette, &settings),
                     }))
@@ -500,6 +524,7 @@ impl Render for QuickLookView {
                                     ))),
                             )
                             .child(div().text_xs().text_color(palette.faint).child("↑↓ browse · Space close"))
+                            .when(file.kind == FileKind::Image, |this| this.child(fit_button("quick-look-fit", settings.image_fit, self.appearance.clone())))
                             .child(
                                 Button::new("quick-look-open")
                                     .primary()

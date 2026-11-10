@@ -5,6 +5,10 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## 0.1.22
+
+- Pictures are no longer cut off in Quick Look and the preview panel: they show whole (Fit) by default. A Fit ⇄ Fill button next to the picture switches to filling the frame, and the choice is remembered.
+
 ## 0.1.21
 
 - Favorites take files too: right-click a file → Add to Favorites. In the sidebar it shows by name with its own icon; a click opens it, a middle-click (or Show in Folder) shows it in its folder.

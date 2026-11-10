@@ -71,7 +71,10 @@ impl FileExplorer {
             let mut details = v_flex().p_4().gap_5();
             let look_inside = crate::ext_preview::enabled(&settings);
             details = details
-                .child(if look_inside { preview_block(file, palette) } else { file_thumbnail(file, palette, 184.) })
+                .child(if look_inside { preview_block(file, palette, settings.image_fit) } else { file_thumbnail(file, palette, 184.) })
+                .when(file.kind == crate::model::FileKind::Image, |this| {
+                    this.child(h_flex().justify_end().child(crate::views::quick_look::fit_button("inspector-fit", settings.image_fit, self.appearance.clone())))
+                })
                 .child(
                     v_flex()
                         .gap_1()
@@ -408,7 +411,7 @@ impl FileExplorer {
 
 /// The top of the preview: the beginning of a text or code file (as
 /// Quick Look shows it), a PDF's first page, else the thumbnail.
-fn preview_block(file: &'static crate::model::FileEntry, palette: Palette) -> AnyElement {
+fn preview_block(file: &'static crate::model::FileEntry, palette: Palette, fit: crate::settings::ImageFit) -> AnyElement {
     use crate::model::FileKind;
     if let Some(path) = file.path {
         if matches!(file.kind, FileKind::Text | FileKind::Code)
@@ -442,7 +445,7 @@ fn preview_block(file: &'static crate::model::FileEntry, palette: Palette) -> An
                 .into_any_element();
         }
     }
-    file_thumbnail(file, palette, 184.)
+    crate::views::files::file_thumbnail_fit(file, palette, 184., fit.object_fit())
 }
 
 /// The start of a text file, kept for the file shown (the preview redraws

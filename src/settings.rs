@@ -22,6 +22,9 @@ pub struct AppSettings {
     pub font: Option<String>,
     /// Settings → Appearance → Corners: over the theme's.
     pub corners: Corners,
+    /// Quick Look and the preview panel: the whole picture or the frame
+    /// filled (the button on the picture switches).
+    pub image_fit: ImageFit,
     /// Settings → Extensions → <extension> → Opens in: a tab or its own
     /// window, by extension id ("mail", "music"). Missing: a tab.
     pub extension_windows: std::collections::BTreeMap<String, OpenIn>,
@@ -165,6 +168,33 @@ impl ThemePreset {
             ThemePreset::Catppuccin => "Catppuccin",
             ThemePreset::Windows => "Windows",
             ThemePreset::MacOs => "macOS",
+        }
+    }
+}
+
+/// How a picture fills its frame in Quick Look and the preview panel.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageFit {
+    /// The whole picture, with bands around it if its shape differs.
+    #[default]
+    Fit,
+    /// The frame filled; edges of the picture cut off.
+    Fill,
+}
+
+impl ImageFit {
+    pub fn toggled(self) -> Self {
+        match self {
+            ImageFit::Fit => ImageFit::Fill,
+            ImageFit::Fill => ImageFit::Fit,
+        }
+    }
+
+    pub fn object_fit(self) -> gpui_kit::ObjectFit {
+        match self {
+            ImageFit::Fit => gpui_kit::ObjectFit::Contain,
+            ImageFit::Fill => gpui_kit::ObjectFit::Cover,
         }
     }
 }
@@ -741,6 +771,7 @@ impl Default for AppSettings {
             icon_theme: IconTheme::Colorful,
             font: None,
             corners: Corners::Theme,
+            image_fit: ImageFit::Fit,
             extension_windows: std::collections::BTreeMap::new(),
             accent: Accent::Iris,
             language: Language::English,
@@ -1477,5 +1508,18 @@ mod change_log_tests {
         assert_eq!(listed[1], ("power_saving".into(), "\"automatic\"".into(), "\"on\"".into()));
         assert_eq!(listed[2].1, "100");
         assert_eq!(listed[0].2, "••••", "never the key itself");
+    }
+}
+
+#[cfg(test)]
+mod image_fit_tests {
+    use super::*;
+
+    #[test]
+    fn pictures_fit_whole_by_default_and_switch_to_fill() {
+        assert_eq!(AppSettings::default().image_fit, ImageFit::Fit, "never cropped unless asked");
+        assert!(matches!(ImageFit::Fit.object_fit(), gpui_kit::ObjectFit::Contain));
+        assert_eq!(ImageFit::Fit.toggled(), ImageFit::Fill);
+        assert!(matches!(ImageFit::Fill.object_fit(), gpui_kit::ObjectFit::Cover));
     }
 }

@@ -754,6 +754,11 @@ fn kind_placeholder(kind: FileKind, palette: Palette) -> AnyElement {
 }
 
 pub(crate) fn file_thumbnail(entry: &FileEntry, palette: Palette, height: f32) -> AnyElement {
+    file_thumbnail_fit(entry, palette, height, ObjectFit::Cover)
+}
+
+/// A thumbnail whose picture fits (whole) or fills (cropped) its frame.
+pub(crate) fn file_thumbnail_fit(entry: &FileEntry, palette: Palette, height: f32, fit: ObjectFit) -> AnyElement {
     let base = div()
         .relative()
         .w_full()
@@ -784,7 +789,7 @@ pub(crate) fn file_thumbnail(entry: &FileEntry, palette: Palette, height: f32) -
             img(source)
                 .w_full()
                 .h_full()
-                .object_fit(ObjectFit::Cover)
+                .object_fit(fit)
                 // A file that fails to decode shows its kind instead of a blank card.
                 .with_fallback(move || kind_placeholder(kind, palette)),
         );
