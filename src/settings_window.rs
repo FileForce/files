@@ -750,6 +750,15 @@ impl SettingsWindow {
             )
             .child(section(IconName::AppWindow, tr(language, "Windows", "Окна"), palette))
             .child(
+                Switch::new("restore-tabs")
+                    .label(tr(language, "Restore tabs when Files starts again", "Восстанавливать вкладки при новом запуске"))
+                    .checked(self.draft.behavior.restore_tabs)
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.draft.behavior.restore_tabs = *checked;
+                        cx.notify();
+                    })),
+            )
+            .child(
                 Switch::new("single-instance")
                     .label(tr(
                         language,

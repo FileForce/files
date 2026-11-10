@@ -65,6 +65,11 @@ pub fn system_default(extension: &str) -> Option<AppChoice> {
     lookup(extension).0
 }
 
+/// Opens `file` in `app` (the Open With list).
+pub fn open_in(app: &Path, file: &Path) -> io::Result<()> {
+    platform::open_with(app, file)
+}
+
 /// Apps the OS considers able to open `extension`, by name.
 pub fn candidates(extension: &str) -> Vec<AppChoice> {
     lookup(extension).1
@@ -285,5 +290,16 @@ mod tests {
         let all = candidates("txt");
         assert!(all.iter().any(|app| app.path == default.path), "default is among candidates");
         println!("txt → {} ({} candidates)", default.name, all.len());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod live_candidates {
+    #[test]
+    #[ignore]
+    fn print_candidates() {
+        for app in super::candidates(&std::env::var("EXT").unwrap()) {
+            println!("{} · {}", app.name, app.path.display());
+        }
     }
 }

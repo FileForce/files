@@ -30,6 +30,7 @@ fn builtin_icon(name: &str) -> Option<IconName> {
         "mail" => IconName::Mail,
         "music" => IconName::Music,
         "eye" => IconName::Eye,
+        "zap" => IconName::Zap,
         _ => return None,
     })
 }
@@ -115,9 +116,30 @@ static PREVIEW: Manifest = Manifest {
     tier: files_sdk::Tier::Free,
 };
 
+static QUICK_ACTIONS: Manifest = Manifest {
+    id: "quick-actions",
+    name: "Quick Actions",
+    version: "1.0.0",
+    source: "Built-in",
+    summary: "Actions for the selected files, after Copy in the context menu: Convert Image, Rotate and your own scripts.",
+    icon: SdkIcon::Builtin("zap"),
+    adds: &[
+        "Context menu → Quick Actions → Convert Image… (PNG, JPEG, WebP, HEIC), Rotate Image…",
+        "Scripts in Python, Lua, JavaScript, Rust, Go or shell, for the files they fit",
+        "Quick Actions → Customize…: write them, or let an agent write them",
+        "Other extensions add actions through files_sdk::quick_actions",
+    ],
+    permissions: &[Permission::ReadFiles, Permission::WriteFiles, Permission::LaunchApps],
+    commands: &[],
+    menu: &[],
+    sidebar: &[],
+    menu_color: None,
+    tier: files_sdk::Tier::Free,
+};
+
 /// Every extension, in Settings order. Archives, SSH and Forks are separate
 /// crates built on `files-sdk`; the rest are small enough to live in the app.
-pub static CATALOG: [&Manifest; 11] = [
+pub static CATALOG: [&Manifest; 12] = [
     &OPEN_WITH,
     &files_ext_archive::MANIFEST,
     &files_ext_git::MANIFEST,
@@ -129,6 +151,7 @@ pub static CATALOG: [&Manifest; 11] = [
     &files_ext_mail::MANIFEST,
     &files_ext_music::MANIFEST,
     &PREVIEW,
+    &QUICK_ACTIONS,
 ];
 
 pub fn enabled(settings: &ExtensionSettings, index: usize) -> bool {
@@ -143,7 +166,8 @@ pub fn enabled(settings: &ExtensionSettings, index: usize) -> bool {
         7 => settings.agents,
         8 => settings.mail,
         9 => settings.music,
-        _ => settings.preview,
+        10 => settings.preview,
+        _ => settings.quick_actions,
     }
 }
 
@@ -159,7 +183,8 @@ pub fn toggle(settings: &mut ExtensionSettings, index: usize) {
         7 => &mut settings.agents,
         8 => &mut settings.mail,
         9 => &mut settings.music,
-        _ => &mut settings.preview,
+        10 => &mut settings.preview,
+        _ => &mut settings.quick_actions,
     };
     *flag = !*flag;
 }

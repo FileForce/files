@@ -691,6 +691,8 @@ pub struct BehaviorSettings {
     pub drop_action: DropAction,
     /// Ask Copy / Move on every drop.
     pub ask_on_drop: bool,
+    /// Tabs come back after Files is quit and started again.
+    pub restore_tabs: bool,
     /// Before 0.1.16: where Mail opened. Read once into
     /// `extension_windows["mail"]`; not written by Settings any more.
     pub open_in: OpenIn,
@@ -712,6 +714,7 @@ impl Default for BehaviorSettings {
             default_view: crate::model::ViewMode::Expressive,
             drop_action: DropAction::Copy,
             ask_on_drop: false,
+            restore_tabs: true,
             open_in: OpenIn::Tab,
         }
     }
@@ -839,6 +842,8 @@ pub struct ExtensionSettings {
     pub music: bool,
     /// Quick Look and the preview panel's look inside files.
     pub preview: bool,
+    /// The context menu's Quick Actions (Convert Image, scripts…).
+    pub quick_actions: bool,
     /// Archives: "Create folder" is ticked when the extract page opens.
     pub archives_create_folder: bool,
     /// Archives: "Overwrite existing files without asking" starts ticked.
@@ -935,6 +940,7 @@ impl Default for ExtensionSettings {
             mail: true,
             music: true,
             preview: true,
+            quick_actions: true,
             archives_create_folder: true,
             archives_overwrite: false,
             terminal_app: TerminalApp::Terminal,

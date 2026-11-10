@@ -22,6 +22,8 @@ mod power;
 mod resources;
 mod sound;
 mod storage;
+mod session;
+mod quick_actions;
 mod bug_report;
 mod uninstall;
 mod alloc_stats;
@@ -132,6 +134,11 @@ fn main() {
 
         MAIN.with(|main| main.borrow_mut().appearance = Some(appearance));
         let window = open_main_window(cx).expect("Failed to open File Explorer");
+        // The tabs of last time (unless started with a folder: that one shows).
+        {
+            let (handle, explorer) = window.clone();
+            let _ = handle.update(cx, |_, window, cx| explorer.update(cx, |explorer, cx| explorer.restore_session(window, cx)));
+        }
         if single {
             instance::listen();
             cx.on_app_quit(|_| async { instance::release() }).detach();
@@ -142,6 +149,22 @@ fn main() {
         cx.spawn(async move |cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
+                // Scripts waiting for a dialog (libfiles `ask`).
+                for ask in quick_actions::take_asks() {
+                    let _ = cx.update(|cx| {
+                        let Some((handle, _)) = main_window(cx) else {
+                            let _ = ask.reply.send(None);
+                            return;
+                        };
+                        let appearance = MAIN.with(|main| main.borrow().appearance.clone());
+                        let _ = handle.update(cx, |_, window, cx| match appearance {
+                            Some(appearance) => views::quick_actions::ask_for_script(ask, appearance, window, cx),
+                            None => {
+                                let _ = ask.reply.send(None);
+                            }
+                        });
+                    });
+                }
                 let opened = desktop::take_opened();
                 let activate = instance::take_activate();
                 if opened.is_empty() && !activate {
@@ -172,8 +195,9 @@ fn main() {
             let (handle, explorer) = window;
             let _ = handle.update(cx, |_, window, cx| {
                 explorer.update(cx, |explorer, cx| {
+                    // A new tab beside the restored ones.
                     if path.is_dir() {
-                        explorer.navigate(crate::model::Location::from_path(&path), window, cx);
+                        explorer.open_in_new_tab(crate::model::Location::from_path(&path), window, cx);
                     } else {
                         explorer.reveal_path(&path, window, cx);
                     }

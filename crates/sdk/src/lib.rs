@@ -33,6 +33,7 @@ pub mod plugin;
 pub mod permissions;
 pub mod power;
 pub mod preview;
+pub mod quick_actions;
 pub mod secrets;
 pub mod storage;
 
@@ -240,6 +241,11 @@ pub trait Extension: Send + Sync {
 
     /// Previews for the formats it knows (Quick Look, the preview panel).
     fn preview(&self) -> Option<&dyn preview::PreviewProvider> {
+        None
+    }
+
+    /// Quick Actions for selected files (the context menu, after Copy).
+    fn quick_actions(&self) -> Option<&dyn quick_actions::QuickActionProvider> {
         None
     }
 

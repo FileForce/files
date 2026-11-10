@@ -153,21 +153,43 @@ pub(crate) fn file_context_menu(
                     window,
                     cx,
                     move |submenu, window, _| {
-                        submenu
-                            .item(command_item(
-                                "Default Application",
-                                IconName::SquareArrowOutUpRight,
-                                DemoCommand::OpenWithDefault,
-                                window,
-                                &open_with_view,
-                            ))
-                            .item(command_item(
-                                "Choose Application…",
-                                IconName::AppWindow,
-                                DemoCommand::OpenWithChooser,
-                                window,
-                                &open_with_view,
-                            ))
+                        // Like Finder: the default, every app that can open
+                        // this kind of file, then any other app.
+                        let extension = entry.path.and_then(crate::default_apps::extension_of).unwrap_or_default();
+                        let default = crate::default_apps::system_default(&extension);
+                        let others: Vec<_> = crate::default_apps::candidates(&extension)
+                            .into_iter()
+                            .filter(|app| default.as_ref().is_none_or(|default| default.path != app.path))
+                            .collect();
+                        let default_label = default.as_ref().map_or_else(|| "Default Application".to_string(), |app| format!("{} (default)", app.name));
+                        let mut submenu = submenu.item(command_item(
+                            Box::leak(default_label.into_boxed_str()),
+                            IconName::SquareArrowOutUpRight,
+                            DemoCommand::OpenWithDefault,
+                            window,
+                            &open_with_view,
+                        ));
+                        if !others.is_empty() {
+                            submenu = submenu.separator();
+                        }
+                        for app in others {
+                            let view = open_with_view.clone();
+                            let file = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
+                            submenu = submenu.item(PopupMenuItem::new(app.name.clone()).icon(IconName::AppWindow).on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                this.notice = Some(match crate::default_apps::open_in(&app.path, &file) {
+                                    Ok(()) => format!("Opened in {}", app.name),
+                                    Err(error) => format!("{} could not open it: {error}", app.name),
+                                });
+                                cx.notify();
+                            })));
+                        }
+                        submenu.separator().item(command_item(
+                            "Choose Application…",
+                            IconName::AppWindow,
+                            DemoCommand::OpenWithChooser,
+                            window,
+                            &open_with_view,
+                        ))
                     },
                 )
             })
@@ -233,6 +255,40 @@ pub(crate) fn file_context_menu(
                                 window,
                                 &copy_view,
                             ))
+                    },
+                )
+            })
+            // Quick Actions: what fits the selection, then Customize….
+            .when(extensions.quick_actions && entry.path.is_some(), |menu| {
+                let qa_view = view.clone();
+                let selection = {
+                    let explorer = view.read(cx);
+                    let selected = explorer.selected_paths();
+                    let own = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
+                    if selected.contains(&own) { selected } else { vec![own] }
+                };
+                menu.submenu_with_icon(
+                    Some(tinted_icon(crate::extensions::icon("Quick Actions"), tint("quick-actions"))),
+                    "Quick Actions",
+                    window,
+                    cx,
+                    move |submenu, window, _| {
+                        let actions = crate::quick_actions::for_selection(&selection);
+                        let mut submenu = submenu;
+                        if actions.is_empty() {
+                            submenu = submenu.item(PopupMenuItem::new("Nothing for these files").disabled(true));
+                        }
+                        for (source, action) in actions {
+                            let (view, selection) = (qa_view.clone(), selection.clone());
+                            let title = action.title.clone();
+                            submenu = submenu.item(PopupMenuItem::new(title).icon(IconName::Zap).on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                crate::views::quick_actions::start(source.clone(), action.clone(), selection.clone(), this.appearance.clone(), window, cx);
+                            })));
+                        }
+                        let view = qa_view.clone();
+                        submenu.separator().item(PopupMenuItem::new("Customize…").icon(IconName::SlidersHorizontal).on_click(window.listener_for(&view, move |this, _, window, cx| {
+                            crate::views::quick_actions::open_customize(this.appearance.clone(), window, cx);
+                        })))
                     },
                 )
             })

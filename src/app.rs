@@ -195,6 +195,8 @@ pub struct FileExplorer {
     /// Where each virtual grid (Pro rows, Expressive folders, files) was
     /// painted last frame: only the rows on screen are built.
     pub(crate) grid_bounds: [std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>; 3],
+    /// The main window: its tabs are saved for the next start.
+    pub(crate) keeps_session: bool,
     /// The last list `entries_for` built, and what it was built from.
     pub(crate) entries_cache: std::cell::RefCell<Option<(EntriesKey, Vec<&'static FileEntry>)>>,
     pub(crate) sidebar_scroll: ScrollHandle,
@@ -372,6 +374,7 @@ impl FileExplorer {
             tab_scroll: ScrollHandle::new(),
             list_scroll: ScrollHandle::new(),
             entries_cache: Default::default(),
+            keeps_session: false,
             grid_bounds: Default::default(),
             sidebar_scroll: ScrollHandle::new(),
             reveal: None,
@@ -670,6 +673,43 @@ impl FileExplorer {
         });
         self.tab_scroll.scroll_to_item(self.active_tab);
         cx.notify();
+    }
+
+    /// The main window: its tabs as they were when Files was quit.
+    pub(crate) fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keeps_session = true;
+        if !self.appearance.read(cx).behavior.restore_tabs {
+            return;
+        }
+        let Some(session) = crate::session::load().filter(|session| !session.tabs.is_empty()) else { return };
+        self.tabs.clear();
+        for saved in &session.tabs {
+            if let Some(panel) = saved.place.strip_prefix("panel:") {
+                match panel {
+                    "Music" => self.open_music(window, cx),
+                    "Mail" => self.open_mail(None, false, window, cx),
+                    "Settings" => self.open_settings_tab(window, cx),
+                    _ => continue,
+                }
+            } else if let Some(location) = crate::session::location_of(&saved.place) {
+                let id = self.next_tab_id;
+                self.next_tab_id += 1;
+                let mut tab = WorkspaceTab::new(id, location);
+                tab.mode = saved.mode;
+                self.tabs.push(tab);
+            } else {
+                continue;
+            }
+            if let Some(tab) = self.tabs.last_mut() {
+                tab.pinned = saved.pinned;
+            }
+        }
+        if self.tabs.is_empty() {
+            self.tabs.push(WorkspaceTab::new(0, Location::Home));
+        }
+        self.tabs.sort_by_key(|tab| !tab.pinned);
+        self.active_tab = session.active.min(self.tabs.len() - 1);
+        self.restore_active_tab(window, cx);
     }
 
     pub fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1727,6 +1767,10 @@ impl FileExplorer {
 impl Render for FileExplorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_reveal(window);
+        // The main window's tabs, for the next start (written when they change).
+        if self.keeps_session && self.appearance.read(cx).behavior.restore_tabs {
+            crate::session::save_if_changed(crate::session::capture(self));
+        }
         let palette = self.palette();
         // The desktop shows (blurred) only when there is no own background.
         // Text size: every rem-based size in the window scales with this.
@@ -4529,6 +4573,33 @@ mod tests {
         let before = counts();
         let _ = crate::model::searchable_entries(&dir);
         report("search index of the folder", 1, counts() - before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tabs_come_back_after_a_restart() {
+        let dir = std::env::temp_dir().join(format!("file-force-session-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        let (view, cx) = rooted_window(&dir);
+        // Last time: a pinned folder in Pro, another one active.
+        let session = crate::session::Session {
+            tabs: vec![
+                crate::session::SavedTab { place: format!("path:{}", dir.join("a").display()), pinned: false, mode: ViewMode::Expressive },
+                crate::session::SavedTab { place: format!("path:{}", dir.join("b").display()), pinned: true, mode: ViewMode::Pro },
+                crate::session::SavedTab { place: "path:/no/such/folder".into(), pinned: false, mode: ViewMode::Expressive },
+            ],
+            active: 1,
+        };
+        let file = crate::settings::settings_path().unwrap().parent().unwrap().join("session.toml");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, toml::to_string(&session).unwrap()).unwrap();
+        view.update_in(cx, |this, window, cx| this.restore_session(window, cx));
+        let tabs = cx.read(|app| view.read(app).tabs.iter().map(|tab| (tab.current, tab.pinned, tab.mode)).collect::<Vec<_>>());
+        assert_eq!(tabs.len(), 2, "a folder that is gone is left out");
+        assert_eq!(tabs[0], (Location::from_path(&dir.join("b")), true, ViewMode::Pro), "pinned first, its view kept");
+        assert_eq!(cx.read(|app| view.read(app).current), Location::from_path(&dir.join("a")), "the active tab was the second saved one");
+        let _ = std::fs::remove_file(&file);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -16,6 +16,7 @@ pub(crate) mod files;
 pub(crate) mod global_search;
 mod inspector;
 pub(crate) mod quick_look;
+pub(crate) mod quick_actions;
 mod about;
 mod shell;
 pub(crate) mod ssh;
