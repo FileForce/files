@@ -30,7 +30,7 @@ pub struct BuiltIn;
 
 impl QuickActionProvider for BuiltIn {
     fn actions(&self) -> Vec<QuickAction> {
-        vec![
+        let mut actions = vec![
             QuickAction {
                 id: "convert-image".into(),
                 title: "Convert Image…".into(),
@@ -60,10 +60,26 @@ impl QuickActionProvider for BuiltIn {
                     Field::Choice { key: "save".into(), label: "Save".into(), options: ["As a copy", "Over the original"].map(String::from).to_vec() },
                 ],
             },
-        ]
+        ];
+        // macOS packages: in, like Finder's Show Package Contents.
+        if cfg!(target_os = "macos") {
+            actions.push(QuickAction {
+                id: "show-package".into(),
+                title: "Show Package Contents".into(),
+                applies: Applies { extensions: crate::model::PACKAGES.iter().map(|package| package.to_string()).collect(), folders: true, min: 1, max: 0 },
+                order: -10,
+                ask: Vec::new(),
+            });
+        }
+        actions
     }
 
     fn run(&self, id: &str, selection: &[PathBuf], answers: &[(String, String)]) -> io::Result<Outcome> {
+        if id == "show-package" {
+            // Each opens in a tab, browsed as a folder.
+            crate::desktop::opened_from_system(selection.iter().map(|path| path.display().to_string()).collect());
+            return Ok(Outcome { summary: String::new(), made: Vec::new() });
+        }
         let mut made = Vec::new();
         for path in selection {
             made.push(match id {
@@ -663,6 +679,22 @@ mod tests {
         assert_eq!(outcome.summary, "Chose small", "the dialog's answer reached the script");
         assert_eq!(outcome.made, vec![file.clone()]);
         let _ = std::fs::remove_file(&file);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apps_are_one_file_and_open_their_contents_from_quick_actions() {
+        let app = std::env::temp_dir().join(format!("file-force-pkg-{}/Tool.app", std::process::id()));
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        assert!(crate::model::is_package(&app));
+        let entry = crate::model::entry_at(&app).unwrap();
+        assert!(!entry.is_folder() && entry.kind == crate::model::FileKind::Application && entry.target.is_none(), "an app is a file that opens");
+        let titles: Vec<String> = for_selection(std::slice::from_ref(&app)).into_iter().map(|(_, action)| action.title).collect();
+        assert_eq!(titles.first().map(String::as_str), Some("Show Package Contents"));
+        let folder = app.parent().unwrap().join("Plain");
+        std::fs::create_dir_all(&folder).unwrap();
+        assert!(!for_selection(&[folder]).iter().any(|(_, action)| action.id == "show-package"), "a plain folder is not a package");
+        let _ = std::fs::remove_dir_all(app.parent().unwrap());
     }
 
     #[test]

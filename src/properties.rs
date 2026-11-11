@@ -244,7 +244,8 @@ pub(crate) fn demo_human_size(
 
 /// Folder sizes arrive asynchronously; `None` means still calculating.
 pub(crate) fn demo_size_bytes(file: &FileEntry) -> Option<u64> {
-    if file.is_folder() && file.path.is_some() {
+    // A package (an app…) weighs what its folder holds, like a folder.
+    if file.path.is_some_and(|path| file.is_folder() || crate::model::is_package(path)) {
         crate::model::folder_size(file)
     } else {
         Some(file.bytes)

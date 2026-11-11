@@ -29,8 +29,8 @@ impl Applies {
             return false;
         }
         selection.iter().all(|path| {
-            if path.is_dir() {
-                return self.folders;
+            if path.is_dir() && !self.folders {
+                return false;
             }
             self.extensions.is_empty()
                 || path.extension().is_some_and(|extension| self.extensions.iter().any(|wanted| wanted.eq_ignore_ascii_case(&extension.to_string_lossy())))

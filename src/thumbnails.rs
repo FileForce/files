@@ -138,11 +138,34 @@ fn enqueue(path: &Path, cached: PathBuf) {
     }
 }
 
+/// A macOS app bundle (its icon is in Contents/Resources).
+fn mac_app(path: &Path) -> bool {
+    cfg!(target_os = "macos") && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("app")) && path.is_dir()
+}
+
+/// The app's .icns (CFBundleIconFile in its Info.plist), as a 256 px PNG.
+fn mac_app_icon(app: &Path, target: &Path) -> std::io::Result<()> {
+    let contents = app.join("Contents");
+    let info: plist::Dictionary = plist::from_file(contents.join("Info.plist")).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let name = info.get("CFBundleIconFile").and_then(|value| value.as_string()).unwrap_or("AppIcon");
+    let name = if name.ends_with(".icns") { name.to_string() } else { format!("{name}.icns") };
+    let icns = contents.join("Resources").join(name);
+    if !icns.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no .icns (the icon is in an asset catalog)"));
+    }
+    let partial = target.with_extension("partial.png");
+    let output = files_sdk::log::run(SOURCE, std::process::Command::new("/usr/bin/sips").args(["-s", "format", "png", "-Z", "256"]).arg(&icns).arg("--out").arg(&partial))?;
+    if !output.status.success() || !partial.is_file() {
+        return Err(std::io::Error::other("sips could not read the icon"));
+    }
+    std::fs::rename(&partial, target)
+}
+
 /// A program's own icon (from a Windows .exe or .dll), made once in the
 /// background. `None` while it is made, or when it has none (the generic
 /// icon shows).
 pub fn app_icon(path: &Path) -> Option<PathBuf> {
-    if !crate::pe_info::applies(path) {
+    if !crate::pe_info::applies(path) && !mac_app(path) {
         return None;
     }
     let cached = cache_path(path)?.with_extension("icon.png");
@@ -287,6 +310,9 @@ fn convert(source: &Path, target: &Path) -> std::io::Result<()> {
         return shrink(source, target);
     }
     if target.to_string_lossy().ends_with(".icon.png") {
+        if mac_app(source) {
+            return mac_app_icon(source, target);
+        }
         return crate::pe_info::save_icon(source, target, 256);
     }
     let partial = target.with_extension("partial.jpg");

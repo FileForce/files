@@ -242,7 +242,10 @@ impl FileKind {
             "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "crate" | "dmg"
             | "iso" | "jar" => Self::Archive,
             "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "aiff" => Self::Audio,
-            "exe" | "msi" | "appimage" | "app" | "bat" | "cmd" | "com" | "scr" => Self::Application,
+            "exe" | "msi" | "appimage" | "app" | "bat" | "cmd" | "com" | "scr" | "pkg" | "mpkg" | "prefpane" | "appex" | "bundle" | "plugin" | "kext" | "saver" => Self::Application,
+            "xcodeproj" | "xcworkspace" | "playground" | "swiftpm" => Self::Code,
+            "photoslibrary" => Self::Image,
+            "rtfd" | "scptd" => Self::Document,
             _ => Self::Text,
         }
     }
@@ -332,6 +335,20 @@ pub fn mounted_volumes() -> Vec<PathBuf> {
         .collect();
     volumes.sort();
     volumes
+}
+
+/// Folders macOS shows as one file (Finder's packages): apps, installers,
+/// Xcode projects, the Photos library, Keynote/Pages/Numbers documents…
+/// Double-click opens them; Quick Actions → Show Package Contents goes in.
+pub const PACKAGES: [&str; 21] = [
+    "app", "pkg", "mpkg", "bundle", "plugin", "kext", "prefpane", "appex", "saver", "xcodeproj", "xcworkspace", "playground", "swiftpm",
+    "photoslibrary", "musiclibrary", "rtfd", "scptd", "key", "pages", "numbers", "wdgt",
+];
+
+pub fn is_package(path: &Path) -> bool {
+    cfg!(target_os = "macos")
+        && path.extension().is_some_and(|extension| PACKAGES.iter().any(|package| package.eq_ignore_ascii_case(&extension.to_string_lossy())))
+        && path.is_dir()
 }
 
 /// Disk images the system can mount: ISO and IMG everywhere, DMG on macOS,
@@ -937,7 +954,7 @@ impl SortOrder {
 }
 
 fn entry_bytes(entry: &FileEntry) -> u64 {
-    if entry.is_folder() {
+    if entry.is_folder() || entry.path.is_some_and(is_package) {
         folder_size(entry).unwrap_or(0)
     } else {
         entry.bytes
@@ -1514,7 +1531,8 @@ mod fs_index {
     }
 
     fn build_entry(path: &Path, metadata: &Metadata) -> FileEntry {
-        let is_dir = metadata.is_dir();
+        // A macOS package (an app, a Keynote document…) is one file here.
+        let is_dir = metadata.is_dir() && !super::is_package(path);
         let extension = path
             .extension()
             .map(|extension| extension.to_string_lossy().into_owned())
@@ -1524,7 +1542,8 @@ mod fs_index {
         } else {
             FileKind::from_extension(&extension)
         };
-        let bytes = if is_dir { 0 } else { metadata.len() };
+        // A package's size is its folder's, measured in the background.
+        let bytes = if is_dir || metadata.is_dir() { 0 } else { metadata.len() };
         let metadata_label = if is_dir {
             match fs::read_dir(path) {
                 Ok(children) => format!(

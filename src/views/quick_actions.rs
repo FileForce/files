@@ -38,6 +38,8 @@ fn run_in_background(source: Source, action: QuickAction, selection: Vec<PathBuf
             crate::tasks::finish(job, result.as_ref().map(|_| ()).map_err(ToString::to_string));
             let title = action.title.trim_end_matches('…').to_string();
             match result {
+                // Nothing to say (Show Package Contents opened a tab).
+                Ok(outcome) if outcome.summary.is_empty() && outcome.made.is_empty() => {}
                 Ok(outcome) => {
                     let actions = outcome.made.first().map(|path| crate::views::console::file_actions(path)).unwrap_or_default();
                     files_sdk::log::notify_actions("quick-actions", files_sdk::log::Level::Success, format!("{title}: {}", outcome.summary), outcome.made.first().map(|path| path.display().to_string()), actions);

@@ -5,6 +5,19 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## Unreleased
+
+- macOS: apps and other packages (.app, .pkg, Xcode projects, the Photos library, Keynote, Pages and Numbers documents…) show as one item, like in Finder: an app has its own icon and its size, and a double-click starts it. Quick Actions → **Show Package Contents** opens what is inside, in a new tab.
+
+## 0.1.24
+
+- Quick Actions (a built-in extension, like Finder's): the context menu has Quick Actions after Copy, showing only what fits the selection, in order. **Convert Image…** turns PNG, JPEG, WebP, HEIC and JPEG XL into one another, with a quality choice (High, Medium, Low) for JPEG and JPEG XL — a JPEG becomes JPEG XL losslessly at High (about a fifth smaller, and reversible; needs cjxl from libjxl). **Rotate Image…** turns or mirrors pictures, as a copy or over the original. Each asks in a dialog first.
+- Your own Quick Actions: **Customize…** writes them in Python, Lua, JavaScript, Rust, Go or shell, for the file types you choose (only installed languages are offered). With Agents on, **Write with agent** drafts the script from a sentence — choose the agent, its model and its effort.
+- **libfiles** for Quick Action scripts, bundled with each run: `import libfiles` (Python), `require('libfiles')` (JavaScript, Lua) — `selection()`, `ask()` opens a dialog in Files while the script runs and returns the answers, `notify()`, `made()` (Reveal / Open on the notification), `reveal()`, `progress()`. Rust and Go speak the same JSON-lines protocol on stdout/stdin.
+- Open With lists the apps that can open the file, like Finder: the default first, then every other app the system knows for that kind (LibreOffice for .pptx, say), then Choose Application… for any other — including apps macOS's own chooser hides.
+- Tabs come back: quit Files and start it again, and the main window has its tabs as they were — folders, Recents, Trash, tags and Music, Mail and Settings tabs, which are pinned, the view of each and the active one (Settings → General → Windows → Restore tabs, on by default).
+- SDK: `files_sdk::quick_actions` — an extension offers actions with the selections they fit, the questions to ask (choice, text, number, drawn by Files) and how to run.
+
 ## 0.1.23
 
 - Quick Look opens at once: the window shows right away with "Loading preview…" while the file is read in the background (text, documents, mail, archives, folders), then fills in; files seen before show instantly.
