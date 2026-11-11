@@ -5,6 +5,13 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
+## Unreleased
+
+## 0.1.26
+
+- SVG thumbnails are rasterized once, at 320 px, in the background and cached. Before, an SVG card was drawn at the file's own size: a 1024 px SVG with filters cost ~290 ms and 4 MB per card. Now a screen of 30 is ~0.9 s once in the background, then ~18 ms and 12 MB on every visit.
+- Windows and Linux builds of 0.1.25 failed (a macOS-only app-icon helper); fixed.
+
 ## 0.1.25
 
 - Music takes the keyboard: with a Music tab in front, ↑/↓ move through the tracks (not the files underneath), Home/End and Page Up/Down jump, Enter plays the selected track, Space shows it big (cover, title, artist, album, length).

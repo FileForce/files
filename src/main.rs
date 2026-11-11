@@ -37,6 +37,7 @@ mod media_info;
 mod pe_info;
 mod tasks;
 mod pdf_pages;
+mod svg_stress;
 mod office_text;
 mod ext_preview;
 mod system_notify;

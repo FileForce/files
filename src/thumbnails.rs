@@ -39,6 +39,19 @@ pub fn thumbnail(path: &Path) -> Option<PathBuf> {
     if needs_conversion(path) {
         return source(path);
     }
+    if is_svg(path) {
+        // GPUI draws an SVG at its own size: a 1024 px one with filters is
+        // ~290 ms and 4 MB per card. Rasterized once at 320 px instead.
+        let cached = cache_path(path)?.with_extension("svg.png");
+        if cached.is_file() {
+            return Some(cached);
+        }
+        if state().failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains_key(&cached) {
+            return Some(path.to_path_buf());
+        }
+        enqueue(path, cached);
+        return None;
+    }
     let metadata = std::fs::metadata(path).ok()?;
     if metadata.len() <= SMALL_IMAGE {
         return Some(path.to_path_buf());
@@ -53,6 +66,25 @@ pub fn thumbnail(path: &Path) -> Option<PathBuf> {
     }
     enqueue(path, cached);
     None
+}
+
+fn is_svg(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+}
+
+/// Rasterizes an SVG to a PNG at most THUMB_SIZE on its longer side (transparency kept).
+pub(crate) fn rasterize_svg(source: &Path, target: &Path) -> std::io::Result<()> {
+    let bytes = std::fs::read(source)?;
+    let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default()).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let size = tree.size();
+    let scale = THUMB_SIZE as f32 / size.width().max(size.height());
+    let width = ((size.width() * scale).round() as u32).max(1);
+    let height = ((size.height() * scale).round() as u32).max(1);
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).ok_or_else(|| std::io::Error::other("empty SVG"))?;
+    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    let partial = target.with_extension("partial.png");
+    pixmap.save_png(&partial).map_err(|error| std::io::Error::other(error.to_string()))?;
+    std::fs::rename(&partial, target)
 }
 
 /// Decodes and shrinks an image to a JPEG thumbnail.
@@ -143,7 +175,14 @@ fn mac_app(path: &Path) -> bool {
     cfg!(target_os = "macos") && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("app")) && path.is_dir()
 }
 
+/// Elsewhere there are no app bundles.
+#[cfg(not(target_os = "macos"))]
+fn mac_app_icon(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "app bundles are macOS's"))
+}
+
 /// The app's .icns (CFBundleIconFile in its Info.plist), as a 256 px PNG.
+#[cfg(target_os = "macos")]
 fn mac_app_icon(app: &Path, target: &Path) -> std::io::Result<()> {
     let contents = app.join("Contents");
     let info: plist::Dictionary = plist::from_file(contents.join("Info.plist")).map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -186,7 +225,7 @@ fn job_kind(target: &Path) -> &'static str {
         "quick look"
     } else if name.ends_with(".icon.png") {
         "program icon"
-    } else if name.ends_with(".thumb.jpg") {
+    } else if name.ends_with(".thumb.jpg") || name.ends_with(".svg.png") {
         "thumbnail"
     } else {
         "image conversion"
@@ -197,7 +236,7 @@ fn job_kind(target: &Path) -> &'static str {
 /// next time it shows, it is made again.
 pub fn retry(source: &str) {
     let Some(base) = cache_path(Path::new(source)) else { return };
-    let targets = [base.clone(), base.with_extension("thumb.jpg"), base.with_extension("ql.png"), base.with_extension("icon.png")];
+    let targets = [base.clone(), base.with_extension("thumb.jpg"), base.with_extension("svg.png"), base.with_extension("ql.png"), base.with_extension("icon.png")];
     let state = state();
     let mut failed = state.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut queued = state.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -308,6 +347,9 @@ fn convert(source: &Path, target: &Path) -> std::io::Result<()> {
     }
     if target.to_string_lossy().ends_with(".thumb.jpg") {
         return shrink(source, target);
+    }
+    if target.to_string_lossy().ends_with(".svg.png") {
+        return rasterize_svg(source, target);
     }
     if target.to_string_lossy().ends_with(".icon.png") {
         if mac_app(source) {
