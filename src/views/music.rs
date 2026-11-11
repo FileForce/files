@@ -672,7 +672,17 @@ enum TrackAction {
     Download,
 }
 
+gpui_kit::actions!(music, [MusicUp, MusicDown, MusicHome, MusicEnd, MusicPageUp, MusicPageDown, MusicPlaySelected, MusicPreview]);
+
+/// Rows a Page Up / Page Down moves.
+const PAGE: usize = 12;
+
+use gpui_kit::component::WindowExt as _;
+
 pub(crate) struct MusicView {
+    /// The track the keyboard is on (↑↓, Home/End, PgUp/PgDn; Enter plays).
+    cursor: Option<usize>,
+    list_scroll: gpui_kit::UniformListScrollHandle,
     appearance: Entity<AppearanceSettings>,
     /// The file browser, for Show in Files.
     explorer: gpui_kit::WeakEntity<FileExplorer>,
@@ -706,6 +716,91 @@ impl Focusable for MusicView {
 }
 
 impl MusicView {
+    #[cfg(test)]
+    pub(crate) fn set_tracks_for_test(&mut self, tracks: Vec<Track>) {
+        self.tracks = tracks;
+        self.shelf = Shelf::Library;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cursor_for_test(&self) -> Option<usize> {
+        self.cursor
+    }
+
+    /// Moves the keyboard's track by `delta` (or to an end) and keeps it on screen.
+    fn move_cursor(&mut self, to: impl FnOnce(Option<usize>, usize) -> usize, cx: &mut Context<Self>) {
+        let count = self.shown_tracks(cx).len();
+        if count == 0 {
+            return;
+        }
+        let next = to(self.cursor, count).min(count - 1);
+        self.cursor = Some(next);
+        self.list_scroll.scroll_to_item(next, gpui_kit::ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    fn on_up(&mut self, _: &MusicUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(|cursor, _| cursor.map_or(0, |at| at.saturating_sub(1)), cx);
+    }
+
+    fn on_down(&mut self, _: &MusicDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(|cursor, _| cursor.map_or(0, |at| at + 1), cx);
+    }
+
+    fn on_home(&mut self, _: &MusicHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(|_, _| 0, cx);
+    }
+
+    fn on_end(&mut self, _: &MusicEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(|_, count| count - 1, cx);
+    }
+
+    fn on_page_up(&mut self, _: &MusicPageUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(|cursor, _| cursor.unwrap_or(0).saturating_sub(PAGE), cx);
+    }
+
+    fn on_page_down(&mut self, _: &MusicPageDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(|cursor, _| cursor.map_or(0, |at| at + PAGE), cx);
+    }
+
+    /// Enter: the keyboard's track plays.
+    fn on_play_selected(&mut self, _: &MusicPlaySelected, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.cursor else { return };
+        if self.shelf == Shelf::YandexWave {
+            self.jukebox.update(cx, |jukebox, cx| jukebox.jump(index, cx));
+        } else {
+            self.play(index, cx);
+        }
+    }
+
+    /// Space: the track big — cover, title, artist, album, length.
+    fn on_preview(&mut self, _: &MusicPreview, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(track) = self.cursor.and_then(|index| self.shown_tracks(cx).get(index).cloned()) else { return };
+        let palette = Palette::from_settings(self.appearance.read(cx));
+        let index = self.cursor.unwrap_or(0);
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let view = view.clone();
+            dialog.w(px(520.)).centered().overlay(true).overlay_closable(true).close_button(false).child(
+                v_flex()
+                    .gap_3()
+                    .items_center()
+                    .p_4()
+                    .child(cover_thumb(&track, 320., palette))
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).text_center().child(track.title.clone()))
+                    .child(div().text_sm().text_color(palette.muted).text_center().child(format!("{} · {}", track.artist, track.album)))
+                    .child(div().text_xs().text_color(palette.faint).child(format!("{} · Esc closes", track.duration())))
+                    .child(Button::new("music-preview-play").primary().small().icon(IconName::Play).label("Play").on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        let _ = view.update(cx, |this, cx| {
+                            this.cursor = Some(index);
+                            this.on_play_selected(&MusicPlaySelected, window, cx);
+                        });
+                    })),
+            )
+        });
+    }
+
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>, appearance: Entity<AppearanceSettings>, explorer: gpui_kit::WeakEntity<FileExplorer>) -> Self {
         let jukebox = jukebox(cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search the library, Spotify or Yandex Music · Enter"));
@@ -755,6 +850,8 @@ impl MusicView {
             spotify_editable: Vec::new(),
             jukebox,
             focus_handle: cx.focus_handle(),
+            cursor: None,
+            list_scroll: gpui_kit::UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
             shelf: Shelf::Library,
             library: None,
@@ -1252,7 +1349,8 @@ impl MusicView {
             .items_center()
             .border_b_1()
             .border_color(palette.border)
-            .bg(if current { palette.selection } else { palette.window })
+            .bg(if current { palette.selection } else if self.cursor == Some(index) { palette.hover } else { palette.window })
+            .when(self.cursor == Some(index), |row| row.border_l_2().border_color(palette.accent))
             .hover(|style| style.bg(palette.hover))
             .child(div().w(px(24.)).text_xs().text_color(palette.faint).child(if current { "▶".to_string() } else { (index + 1).to_string() }))
             .child(cover_thumb(track, 32., palette))
@@ -1265,7 +1363,9 @@ impl MusicView {
             )
             .child(div().w(px(200.)).truncate().text_xs().text_color(palette.muted).child(track.album.clone()))
             .child(div().w(px(48.)).text_right().text_xs().text_color(palette.faint).child(track.duration()))
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.cursor = Some(index);
+                window.focus(&this.focus_handle, cx);
                 if wave {
                     this.jukebox.update(cx, |jukebox, cx| jukebox.jump(index, cx));
                 } else {
@@ -1364,6 +1464,7 @@ impl MusicView {
                     .collect::<Vec<_>>()
             }),
         )
+        .track_scroll(&self.list_scroll)
         .flex_1()
         .w_full()
         .min_w_0()
@@ -1479,6 +1580,14 @@ impl Render for MusicView {
         v_flex()
             .key_context("Music")
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::on_up))
+            .on_action(cx.listener(Self::on_down))
+            .on_action(cx.listener(Self::on_home))
+            .on_action(cx.listener(Self::on_end))
+            .on_action(cx.listener(Self::on_page_up))
+            .on_action(cx.listener(Self::on_page_down))
+            .on_action(cx.listener(Self::on_play_selected))
+            .on_action(cx.listener(Self::on_preview))
             .size_full()
             .bg(palette.window)
             .text_color(palette.text)

@@ -672,6 +672,11 @@ impl FileExplorer {
             state.set_value(tab.query, window, cx);
         });
         self.tab_scroll.scroll_to_item(self.active_tab);
+        // A Music tab takes the keyboard (↑↓, Enter, Space work on its tracks).
+        if let Some(music) = self.active_panel().and_then(|panel| panel.downcast::<crate::views::music::MusicView>().ok()) {
+            let focus = gpui_kit::Focusable::focus_handle(music.read(cx), cx);
+            window.focus(&focus, cx);
+        }
         cx.notify();
     }
 
@@ -4727,6 +4732,40 @@ mod tests {
         assert_eq!(ids(cx), [before[0], before[2], before[1]]);
         cx.update(|window, app| view.update(app, |this, cx| this.move_tab(2, 0, window, cx)));
         assert_eq!(ids(cx)[0], before[0], "nothing goes before the pinned tab");
+    }
+
+    #[test]
+    fn the_keyboard_moves_through_music_tracks_not_the_files() {
+        let (view, cx) = pro_window();
+        let selected_file = cx.read(|app| view.read(app).selected);
+        cx.update(|window, app| view.update(app, |this, cx| this.open_music(window, cx)));
+        let music = cx.read(|app| view.read(app).active_panel().and_then(|panel| panel.downcast::<crate::views::music::MusicView>().ok())).unwrap();
+        let track = |title: &str| files_ext_music::Track {
+            source: files_ext_music::Source::Url(format!("https://example.com/{title}.mp3")),
+            title: title.into(),
+            artist: "Artist".into(),
+            album: "Album".into(),
+            duration_ms: 60_000,
+            cover_url: None,
+            artist_id: None,
+            album_id: None,
+        };
+        music.update(cx, |music, cx| {
+            music.set_tracks_for_test((0..30).map(|index| track(&format!("t{index}"))).collect());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("down down");
+        assert_eq!(cx.read(|app| music.read(app).cursor_for_test()), Some(1), "↓ moves through the tracks");
+        cx.simulate_keystrokes("pagedown");
+        assert_eq!(cx.read(|app| music.read(app).cursor_for_test()), Some(13));
+        cx.simulate_keystrokes("end");
+        // The real library may load meanwhile: the last of whatever is listed.
+        let last = cx.read(|app| music.read(app).cursor_for_test()).unwrap();
+        assert!(last >= 29, "End goes to the last track, got {last}");
+        cx.simulate_keystrokes("home");
+        assert_eq!(cx.read(|app| music.read(app).cursor_for_test()), Some(0));
+        assert_eq!(cx.read(|app| view.read(app).tabs[0].selected), selected_file, "the file list underneath is left alone");
     }
 
     #[test]

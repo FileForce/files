@@ -5,8 +5,9 @@ release workflow copies it to the GitHub release, which the website's
 downloads page and the app's "Check for Updates" show. Write the next
 version's notes under "Unreleased", then rename it when you tag.
 
-## Unreleased
+## 0.1.25
 
+- Music takes the keyboard: with a Music tab in front, ↑/↓ move through the tracks (not the files underneath), Home/End and Page Up/Down jump, Enter plays the selected track, Space shows it big (cover, title, artist, album, length).
 - macOS: apps and other packages (.app, .pkg, Xcode projects, the Photos library, Keynote, Pages and Numbers documents…) show as one item, like in Finder: an app has its own icon and its size, and a double-click starts it. Quick Actions → **Show Package Contents** opens what is inside, in a new tab.
 
 ## 0.1.24
