@@ -1737,24 +1737,24 @@ mod fs_index {
                     .into_iter()
                     .map(|item| {
                         let name = item.name.to_string_lossy().into_owned();
-                        let entry: Entry = Box::leak(Box::new(FileEntry {
-                            id: leak(format!("trash:{}", item.id.to_string_lossy())),
+                        FileEntry {
+                            id: format!("trash:{}", item.id.to_string_lossy()).into(),
                             kind: FileKind::from_extension(
                                 Path::new(&name).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default().as_str(),
                             ),
-                            name: leak(name),
+                            name: name.into(),
                             parent: Location::Trash,
                             target: None,
-                            modified: "—",
+                            modified: "—".into(),
                             modified_at: None,
                             bytes: 0,
-                            metadata: leak(format!("From {}", item.original_parent.display())),
+                            metadata: format!("From {}", item.original_parent.display()).into(),
                             tags: &[],
                             preview: None,
                             path: None,
                             cloud: super::CloudState::Local,
-                        }));
-                        entry
+                        }
+                        .shared()
                     })
                     .collect()
             }

@@ -147,10 +147,11 @@ impl FileExplorer {
 
     /// Lets the user pick an application, then opens `path` with it.
     pub(crate) fn open_with_chooser(&mut self, path: &Path, name: &str, cx: &mut Context<Self>) {
+        // Owned: both go into a task that outlives this call.
+        let (path, name) = (path.to_path_buf(), name.to_string());
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             self.notice = Some(format!("Choose an application for {name}…"));
-            let (path, name) = (path.to_path_buf(), name.to_string());
             cx.spawn(async move |this, cx| {
                 let result = cx
                     .background_executor()
@@ -184,11 +185,11 @@ impl FileExplorer {
                     _ => return,
                 };
                 let result = files_sdk::log::command(&application)
-                    .arg(path)
+                    .arg(&path)
                     .spawn()
                     .map(|_| Some(application.display().to_string()));
                 let _ = this.update(cx, |this, cx| {
-                    this.notice = open_with_notice(name, result);
+                    this.notice = open_with_notice(&name, result);
                     cx.notify();
                 });
             })

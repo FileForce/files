@@ -1748,7 +1748,7 @@ checksum = "629c9d6b6f30b5604089e0980f4d924a013aacb1654a6cdf5d3d852224f68651"
 
 [[package]]
 name = "file-force"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
