@@ -7,6 +7,12 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+- Memory: pictures shown in Quick Look, the Inspector and Music covers were kept for good (GPUI's global image cache never lets go) — after days of use that grew to gigabytes. Each now lives in its own cache, freed when you move on.
+- Memory: a file rewritten over and over (build output, logs) leaked ~700 bytes per change; now ~170.
+
+- Music → Space on a track: the track already playing shows Pause (and Play again) instead of restarting it.
+- Music → Space again closes the track preview, like Quick Look.
+
 ## 0.1.26
 
 - SVG thumbnails are rasterized once, at 320 px, in the background and cached. Before, an SVG card was drawn at the file's own size: a 1024 px SVG with filters cost ~290 ms and 4 MB per card. Now a screen of 30 is ~0.9 s once in the background, then ~18 ms and 12 MB on every visit.

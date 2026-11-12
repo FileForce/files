@@ -4736,7 +4736,8 @@ mod tests {
 
     #[test]
     fn the_keyboard_moves_through_music_tracks_not_the_files() {
-        let (view, cx) = pro_window();
+        // A real window root: the track preview is a dialog.
+        let (view, cx) = rooted_window(&std::env::temp_dir());
         let selected_file = cx.read(|app| view.read(app).selected);
         cx.update(|window, app| view.update(app, |this, cx| this.open_music(window, cx)));
         let music = cx.read(|app| view.read(app).active_panel().and_then(|panel| panel.downcast::<crate::views::music::MusicView>().ok())).unwrap();
@@ -4766,6 +4767,12 @@ mod tests {
         cx.simulate_keystrokes("home");
         assert_eq!(cx.read(|app| music.read(app).cursor_for_test()), Some(0));
         assert_eq!(cx.read(|app| view.read(app).tabs[0].selected), selected_file, "the file list underneath is left alone");
+        cx.simulate_keystrokes("space");
+        cx.run_until_parked();
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "Space shows the track big");
+        cx.simulate_keystrokes("space");
+        cx.run_until_parked();
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)), "Space again closes it");
     }
 
     #[test]

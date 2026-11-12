@@ -659,7 +659,15 @@ impl Render for QuickLookView {
             .w_full()
             .h(px(560.))
             .text_color(palette.text)
-            .child(content)
+            // The shown file's pictures in their own cache, freed on moving on:
+            // GPUI's global one keeps every image it ever decoded.
+            .child(
+                gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(
+                    format!("quick-look-{:?}", file.and_then(|file| file.path)).into(),
+                )))
+                .size_full()
+                .child(content),
+            )
     }
 }
 

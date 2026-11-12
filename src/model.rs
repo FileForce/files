@@ -1516,13 +1516,16 @@ mod fs_index {
     fn register(path: &Path, metadata: &Metadata) -> &'static FileEntry {
         let modified = metadata.modified().ok();
         let bytes = if metadata.is_dir() { 0 } else { metadata.len() };
-        if let Some((cached_modified, cached_bytes, entry)) = lock().entries.get(path)
-            && *cached_modified == modified
-            && *cached_bytes == bytes
+        let previous = lock().entries.get(path).copied();
+        if let Some((cached_modified, cached_bytes, entry)) = previous
+            && cached_modified == modified
+            && cached_bytes == bytes
         {
             return entry;
         }
-        let entry: &'static FileEntry = Box::leak(Box::new(build_entry(path, metadata)));
+        // A file rewritten again and again (build output, logs) leaks only what
+        // changed: the earlier entry may still be held, so it cannot be freed.
+        let entry: &'static FileEntry = Box::leak(Box::new(build_entry(path, metadata, previous.map(|(_, _, entry)| entry))));
         MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         lock()
             .entries
@@ -1530,7 +1533,7 @@ mod fs_index {
         entry
     }
 
-    fn build_entry(path: &Path, metadata: &Metadata) -> FileEntry {
+    fn build_entry(path: &Path, metadata: &Metadata, previous: Option<&'static FileEntry>) -> FileEntry {
         // A macOS package (an app, a Keynote document…) is one file here.
         let is_dir = metadata.is_dir() && !super::is_package(path);
         let extension = path
@@ -1559,26 +1562,32 @@ mod fs_index {
         } else {
             format!("{} · {}", extension.to_uppercase(), kind.label())
         };
-        let path: &'static Path = Box::leak(path.to_path_buf().into_boxed_path());
+        // Unchanged text is the earlier entry's, not another leaked copy.
+        let reuse = |text: String, old: Option<&'static str>| match old {
+            Some(old) if old == text => old,
+            _ => leak(text),
+        };
+        let path: &'static Path = previous.and_then(|old| old.path).unwrap_or_else(|| Box::leak(path.to_path_buf().into_boxed_path()));
         let parent = path
             .parent()
             .map(Location::from_path)
             .unwrap_or(Location::Home);
         FileEntry {
-            id: leak(path.to_string_lossy().into_owned()),
-            name: leak(dir_name(path)),
+            id: previous.map_or_else(|| leak(path.to_string_lossy().into_owned()), |old| old.id),
+            name: previous.map_or_else(|| leak(dir_name(path)), |old| old.name),
             kind,
             parent,
             target: is_dir.then(|| Location::from_path(path)),
-            modified: leak(
+            modified: reuse(
                 metadata
                     .modified()
                     .map(format_time)
                     .unwrap_or_else(|_| "—".to_string()),
+                previous.map(|old| old.modified),
             ),
             modified_at: metadata.modified().ok(),
             bytes,
-            metadata: leak(metadata_label),
+            metadata: reuse(metadata_label, previous.map(|old| old.metadata)),
             tags: finder_tags_of(path),
             preview: None,
             path: Some(path),
@@ -1920,6 +1929,24 @@ mod folder_sizes {
 
 #[cfg(test)]
 mod tests {
+    /// How much one size change of a watched file leaks (each change makes a new entry).
+    #[test]
+    #[ignore]
+    fn leak_per_changed_file() {
+        let dir = std::env::temp_dir().join(format!("file-force-leak-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("growing-build-output-with-a-long-name.rlib");
+        std::fs::write(&file, b"x").unwrap();
+        let _ = fs_index::entry_for_path(&file);
+        let before = crate::alloc_stats::counts();
+        for size in 2..10_002u64 {
+            std::fs::File::options().write(true).open(&file).unwrap().set_len(size).unwrap();
+            let _ = fs_index::entry_for_path(&file);
+        }
+        let after = crate::alloc_stats::counts() - before;
+        println!("10,000 changes: {} allocations never freed, {} bytes allocated in all ({} per change)", after.allocs.saturating_sub(after.frees), after.bytes, after.bytes / 10_000);
+    }
+
     use super::*;
     use std::time::{Duration, SystemTime};
 

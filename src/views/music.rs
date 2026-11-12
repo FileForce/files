@@ -683,6 +683,8 @@ pub(crate) struct MusicView {
     /// The track the keyboard is on (↑↓, Home/End, PgUp/PgDn; Enter plays).
     cursor: Option<usize>,
     list_scroll: gpui_kit::UniformListScrollHandle,
+    /// The track preview's own focus: Space there closes it again.
+    preview_focus: FocusHandle,
     appearance: Entity<AppearanceSettings>,
     /// The file browser, for Show in Files.
     explorer: gpui_kit::WeakEntity<FileExplorer>,
@@ -779,18 +781,43 @@ impl MusicView {
         let palette = Palette::from_settings(self.appearance.read(cx));
         let index = self.cursor.unwrap_or(0);
         let view = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, _| {
+        let jukebox = self.jukebox.clone();
+        let focus = self.preview_focus.clone();
+        let dialog_focus = focus.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
             let view = view.clone();
+            let jukebox = jukebox.clone();
+            // The shown track already playing: Pause (and Play again), not a restart.
+            let state = jukebox.read(cx);
+            let current = state.current().is_some_and(|playing| playing.source == track.source);
+            let playing = current && state.playing;
             dialog.w(px(520.)).centered().overlay(true).overlay_closable(true).close_button(false).child(
                 v_flex()
+                    .track_focus(&dialog_focus)
+                    .on_key_down(|event, window, cx| {
+                        if event.keystroke.key == "space" {
+                            window.close_dialog(cx);
+                            cx.stop_propagation();
+                        }
+                    })
                     .gap_3()
                     .items_center()
                     .p_4()
                     .child(cover_thumb(&track, 320., palette))
                     .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).text_center().child(track.title.clone()))
                     .child(div().text_sm().text_color(palette.muted).text_center().child(format!("{} · {}", track.artist, track.album)))
-                    .child(div().text_xs().text_color(palette.faint).child(format!("{} · Esc closes", track.duration())))
-                    .child(Button::new("music-preview-play").primary().small().icon(IconName::Play).label("Play").on_click(move |_, window, cx| {
+                    .child(div().text_xs().text_color(palette.faint).child(format!("{} · Space or Esc closes", track.duration())))
+                    .child(
+                        Button::new("music-preview-play")
+                            .primary()
+                            .small()
+                            .icon(if playing { IconName::Pause } else { IconName::Play })
+                            .label(if playing { "Pause" } else { "Play" })
+                            .on_click(move |_, window, cx| {
+                        if current {
+                            jukebox.update(cx, |jukebox, cx| jukebox.toggle(cx));
+                            return;
+                        }
                         window.close_dialog(cx);
                         let _ = view.update(cx, |this, cx| {
                             this.cursor = Some(index);
@@ -799,6 +826,7 @@ impl MusicView {
                     })),
             )
         });
+        focus.focus(window, cx);
     }
 
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>, appearance: Entity<AppearanceSettings>, explorer: gpui_kit::WeakEntity<FileExplorer>) -> Self {
@@ -852,6 +880,7 @@ impl MusicView {
             focus_handle: cx.focus_handle(),
             cursor: None,
             list_scroll: gpui_kit::UniformListScrollHandle::new(),
+            preview_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
             shelf: Shelf::Library,
             library: None,
@@ -1577,6 +1606,15 @@ impl Render for MusicView {
             self.seek.update(cx, |seek, cx| seek.set_value(fraction, window, cx));
         }
         let palette = Palette::from_settings(&settings);
+        // Covers in a cache of the shelf being shown, freed on switching shelves.
+        gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(format!("music-{:?}", self.shelf).into())))
+            .size_full()
+            .child(self.render_body(palette, &settings, window, cx))
+    }
+}
+
+impl MusicView {
+    fn render_body(&mut self, palette: Palette, settings: &AppearanceSettings, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("Music")
             .track_focus(&self.focus_handle)

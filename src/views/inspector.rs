@@ -71,7 +71,12 @@ impl FileExplorer {
             let mut details = v_flex().p_4().gap_5();
             let look_inside = crate::ext_preview::enabled(&settings);
             details = details
-                .child(if look_inside { preview_block(file, palette, settings.image_fit) } else { file_thumbnail(file, palette, 184.) })
+                .child(
+                    // Freed when another file is selected (the global cache never lets go).
+                    gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(format!("inspector-{:?}", file.path).into())))
+                        .w_full()
+                        .child(if look_inside { preview_block(file, palette, settings.image_fit) } else { file_thumbnail(file, palette, 184.) }),
+                )
                 .when(file.kind == crate::model::FileKind::Image, |this| {
                     this.child(h_flex().justify_end().child(crate::views::quick_look::fit_button("inspector-fit", settings.image_fit, self.appearance.clone())))
                 })
