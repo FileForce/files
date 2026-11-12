@@ -1609,12 +1609,12 @@ impl Render for MusicView {
         // Covers in a cache of the shelf being shown, freed on switching shelves.
         gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(format!("music-{:?}", self.shelf).into())))
             .size_full()
-            .child(self.render_body(palette, &settings, window, cx))
+            .child(self.render_body(palette, cx))
     }
 }
 
 impl MusicView {
-    fn render_body(&mut self, palette: Palette, settings: &AppearanceSettings, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_body(&mut self, palette: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("Music")
             .track_focus(&self.focus_handle)

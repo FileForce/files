@@ -13,7 +13,7 @@ use gpui_kit::{
 };
 
 use crate::app::{AppearanceSettings, FileExplorer};
-use crate::model::{FileEntry, searchable_entries};
+use crate::model::searchable_entries;
 use crate::palette::Palette;
 use crate::properties::demo_human_size;
 use crate::views::files::file_icon;
@@ -22,7 +22,7 @@ const MAX_RESULTS: usize = 8;
 
 #[derive(Clone, Debug)]
 enum SearchResult {
-    File(&'static FileEntry),
+    File(crate::model::Entry),
     Mail(files_ext_mail::MailResult),
     Track(files_ext_music::Track),
 }
@@ -49,7 +49,7 @@ mod path_tests {
 impl SearchResult {
     fn name(&self) -> &str {
         match self {
-            Self::File(file) => file.name,
+            Self::File(file) => &file.name,
             Self::Mail(mail) => &mail.summary.subject,
             Self::Track(track) => &track.title,
         }

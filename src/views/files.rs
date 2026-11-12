@@ -37,12 +37,12 @@ impl FileExplorer {
         }
         let folders: Vec<_> = files
             .iter()
-            .copied()
+            .cloned()
             .filter(|entry| entry.is_folder())
             .collect();
         let documents: Vec<_> = files
             .iter()
-            .copied()
+            .cloned()
             .filter(|entry| !entry.is_folder())
             .collect();
         let selection = self.selection_ids();
@@ -63,11 +63,11 @@ impl FileExplorer {
             content = content
                 .child(section_title("Folders", folders.len(), palette))
                 .child({
-                    let reveal = self.reveal.and_then(|id| folders.iter().position(|entry| entry.id == id));
+                    let reveal = self.reveal.clone().and_then(|id| folders.iter().position(|entry| entry.id == id));
                     let columns = self.grid_columns(Grid::Folders);
                     self.virtual_grid(Grid::Folders, folders.len(), columns, FOLDER_CARD_HEIGHT, CARD_GAP, reveal, |index| {
-                        let entry = folders[index];
-                        self.folder_card(entry, selection.contains(&entry.id), palette, cx).into_any_element()
+                        let entry = folders[index].clone();
+                        { let selected = selection.contains(&entry.id); self.folder_card(entry, selected, palette, cx) }.into_any_element()
                     })
                 });
         }
@@ -75,11 +75,11 @@ impl FileExplorer {
             content = content
                 .child(section_title("Files", documents.len(), palette))
                 .child({
-                    let reveal = self.reveal.and_then(|id| documents.iter().position(|entry| entry.id == id));
+                    let reveal = self.reveal.clone().and_then(|id| documents.iter().position(|entry| entry.id == id));
                     let columns = self.grid_columns(Grid::Files);
                     self.virtual_grid(Grid::Files, documents.len(), columns, FILE_CARD_HEIGHT, CARD_GAP, reveal, |index| {
-                        let entry = documents[index];
-                        self.file_card(entry, selection.contains(&entry.id), palette, cx).into_any_element()
+                        let entry = documents[index].clone();
+                        { let selected = selection.contains(&entry.id); self.file_card(entry, selected, palette, cx) }.into_any_element()
                     })
                 });
         }
@@ -102,21 +102,21 @@ impl FileExplorer {
 
     fn folder_card(
         &self,
-        entry: &'static FileEntry,
+        entry: crate::model::Entry,
         selected: bool,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let id = entry.id;
+        let id = entry.id.clone();
         h_flex()
-            .id(entry.id)
+            .id(entry.id.clone())
             // Middle click on a folder: open it in a new tab, like a browser.
             .when(entry.is_folder(), |this| {
-                this.on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx)))
+                this.on_mouse_up(MouseButton::Middle, { let entry = entry.clone(); cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry.clone(), window, cx)) })
             })
-            .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
+            .when(entry.path.as_deref().is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
             .relative()
-            .children(self.reveal_marker(entry.id))
+            .children(self.reveal_marker(&entry.id))
             .w(px(176.))
             .h(px(58.))
             .p_2()
@@ -135,15 +135,15 @@ impl FileExplorer {
                 palette.surface
             })
             .hover(|style| style.bg(palette.hover))
-            .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+            .on_click({ let id = id.clone(); cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                 this.focus_main(window, cx);
-                this.click_entry(id, event.modifiers(), cx);
-            }))
-            .on_double_click(cx.listener(move |this, _, window, cx| {
-                this.open_entry(id, window, cx);
-            }))
+                this.click_entry(&id, event.modifiers(), cx);
+            }) })
+            .on_double_click({ let id = id.clone(); cx.listener(move |this, _, window, cx| {
+                this.open_entry(&id, window, cx);
+            }) })
             .when(entry.path.is_some(), |this| {
-                this.on_drag(dragged_file(entry, palette, cx), |drag, _, _, cx| {
+                this.on_drag(dragged_file(entry.clone(), palette, cx), |drag, _, _, cx| {
                     let preview = DragFilePreview::new(drag, cx);
                     cx.new(|_| preview)
                 })
@@ -151,12 +151,12 @@ impl FileExplorer {
             })
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, _, window, cx| {
+                { let id = id.clone(); cx.listener(move |this, _, window, cx| {
                     this.focus_main(window, cx);
-                    this.select_for_context_menu(id, cx);
-                }),
+                    this.select_for_context_menu(&id, cx);
+                }) },
             )
-            .context_menu(file_context_menu(entry, cx.entity()))
+            .context_menu(file_context_menu(entry.clone(), cx.entity()))
             .child(
                 div()
                     .size(px(34.))
@@ -165,7 +165,7 @@ impl FileExplorer {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(file_icon(entry, palette, 19.)),
+                    .child(file_icon(&entry, palette, 19.)),
             )
             .child(
                 v_flex()
@@ -175,13 +175,13 @@ impl FileExplorer {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(name_with_badges(entry, 16, palette)),
+                            .child(name_with_badges(&entry, 16, palette)),
                     )
                     .child(
                         div()
                             .text_size(px(10.))
                             .text_color(palette.muted)
-                            .child(entry.metadata),
+                            .child(entry.metadata.clone()),
                     ),
             )
             .into_any_element()
@@ -189,25 +189,25 @@ impl FileExplorer {
 
     fn file_card(
         &self,
-        entry: &'static FileEntry,
+        entry: crate::model::Entry,
         selected: bool,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let id = entry.id;
-        let size = crate::properties::demo_human_size(entry, self.appearance.read(cx).human_sizes);
+        let id = entry.id.clone();
+        let size = crate::properties::demo_human_size(&entry, self.appearance.read(cx).human_sizes);
         let card = v_flex();
         #[cfg(test)]
-        let card = card.debug_selector(move || format!("card-{}", entry.name));
+        let card = card.debug_selector({ let name = entry.name.clone(); move || format!("card-{name}") });
         card
-            .id(entry.id)
+            .id(entry.id.clone())
             // Middle click on a folder: open it in a new tab, like a browser.
             .when(entry.is_folder(), |this| {
-                this.on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx)))
+                this.on_mouse_up(MouseButton::Middle, { let entry = entry.clone(); cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry.clone(), window, cx)) })
             })
-            .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
+            .when(entry.path.as_deref().is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
             .relative()
-            .children(self.reveal_marker(entry.id))
+            .children(self.reveal_marker(&entry.id))
             .w(px(CARD_WIDTH))
             .h(px(FILE_CARD_HEIGHT))
             .overflow_hidden()
@@ -226,15 +226,15 @@ impl FileExplorer {
                 transparent_black()
             })
             .hover(|style| style.bg(palette.hover))
-            .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+            .on_click({ let id = id.clone(); cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                 this.focus_main(window, cx);
-                this.click_entry(id, event.modifiers(), cx);
-            }))
-            .on_double_click(cx.listener(move |this, _, window, cx| {
-                this.open_entry(id, window, cx);
-            }))
+                this.click_entry(&id, event.modifiers(), cx);
+            }) })
+            .on_double_click({ let id = id.clone(); cx.listener(move |this, _, window, cx| {
+                this.open_entry(&id, window, cx);
+            }) })
             .when(entry.path.is_some(), |this| {
-                this.on_drag(dragged_file(entry, palette, cx), |drag, _, _, cx| {
+                this.on_drag(dragged_file(entry.clone(), palette, cx), |drag, _, _, cx| {
                     let preview = DragFilePreview::new(drag, cx);
                     cx.new(|_| preview)
                 })
@@ -242,13 +242,13 @@ impl FileExplorer {
             })
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, _, window, cx| {
+                { let id = id.clone(); cx.listener(move |this, _, window, cx| {
                     this.focus_main(window, cx);
-                    this.select_for_context_menu(id, cx);
-                }),
+                    this.select_for_context_menu(&id, cx);
+                }) },
             )
-            .context_menu(file_context_menu(entry, cx.entity()))
-            .child(file_thumbnail(entry, palette, 108.))
+            .context_menu(file_context_menu(entry.clone(), cx.entity()))
+            .child(file_thumbnail(&entry, palette, 108.))
             .child(
                 v_flex()
                     .px_1()
@@ -258,7 +258,7 @@ impl FileExplorer {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(name_with_badges(entry, 22, palette)),
+                            .child(name_with_badges(&entry, 22, palette)),
                     )
                     .child(
                         h_flex()
@@ -331,23 +331,23 @@ impl FileExplorer {
         let [name_header, kind_header, modified_header, size_header] =
             [SortKey::Name, SortKey::Kind, SortKey::Modified, SortKey::Size]
                 .map(|key| self.sort_header(key, "pro", palette, cx));
-        let reveal = self.reveal.and_then(|id| files.iter().position(|entry| entry.id == id));
+        let reveal = self.reveal.clone().and_then(|id| files.iter().position(|entry| entry.id == id));
         let count = files.len();
-        let mut make_row = |entry: &'static FileEntry| {
-            let id = entry.id;
+        let mut make_row = |entry: crate::model::Entry| {
+            let id = entry.id.clone();
             let is_selected = selection.contains(&id);
             let row = h_flex();
             #[cfg(test)]
-            let row = row.debug_selector(move || format!("pro-row-{}", entry.name));
+            let row = row.debug_selector({ let name = entry.name.clone(); move || format!("pro-row-{name}") });
             row
-                .id(entry.id)
+                .id(entry.id.clone())
                 // Middle click on a folder: open it in a new tab, like a browser.
                 .when(entry.is_folder(), |this| {
-                    this.on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx)))
+                    this.on_mouse_up(MouseButton::Middle, { let entry = entry.clone(); cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry.clone(), window, cx)) })
                 })
-            .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
+            .when(entry.path.as_deref().is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
             .relative()
-            .children(self.reveal_marker(entry.id))
+            .children(self.reveal_marker(&entry.id))
                 .w_full()
                 .h(px(PRO_ROW_HEIGHT))
                 .px_4()
@@ -361,15 +361,15 @@ impl FileExplorer {
                     transparent_black()
                 })
                 .hover(|style| style.bg(palette.hover))
-                .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                .on_click({ let id = id.clone(); cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                     this.focus_main(window, cx);
-                    this.click_entry(id, event.modifiers(), cx);
-                }))
-                .on_double_click(cx.listener(move |this, _, window, cx| {
-                    this.open_entry(id, window, cx);
-                }))
+                    this.click_entry(&id, event.modifiers(), cx);
+                }) })
+                .on_double_click({ let id = id.clone(); cx.listener(move |this, _, window, cx| {
+                    this.open_entry(&id, window, cx);
+                }) })
                 .when(entry.path.is_some(), |this| {
-                    this.on_drag(dragged_file(entry, palette, cx), |drag, _, _, cx| {
+                    this.on_drag(dragged_file(entry.clone(), palette, cx), |drag, _, _, cx| {
                         let preview = DragFilePreview::new(drag, cx);
                         cx.new(|_| preview)
                     })
@@ -377,20 +377,20 @@ impl FileExplorer {
                 })
                 .on_mouse_down(
                     MouseButton::Right,
-                    cx.listener(move |this, _, window, cx| {
+                    { let id = id.clone(); cx.listener(move |this, _, window, cx| {
                         this.focus_main(window, cx);
-                        this.select_for_context_menu(id, cx);
-                    }),
+                        this.select_for_context_menu(&id, cx);
+                    }) },
                 )
-                .context_menu(file_context_menu(entry, cx.entity()))
+                .context_menu(file_context_menu(entry.clone(), cx.entity()))
                 .child(
                     h_flex()
                         .flex_1()
                         .min_w_0()
                         .items_center()
                         .gap_3()
-                        .child(file_icon_or_app(entry, palette, 16.))
-                        .child(div().text_sm().flex_1().min_w_0().child(name_with_badges(entry, 64, palette))),
+                        .child(file_icon_or_app(&entry, palette, 16.))
+                        .child(div().text_sm().flex_1().min_w_0().child(name_with_badges(&entry, 64, palette))),
                 )
                 .child(
                     div()
@@ -400,7 +400,7 @@ impl FileExplorer {
                         .child(entry.kind.label()),
                 )
                 .child(div().w(px(132.)).text_xs().text_color(palette.muted).child(
-                    crate::settings::format_demo_date(entry.modified, settings.date_time),
+                    crate::settings::format_demo_date(&entry.modified, settings.date_time),
                 ))
                 .child(
                     div()
@@ -409,13 +409,13 @@ impl FileExplorer {
                         .text_xs()
                         .text_color(palette.muted)
                         .child(crate::properties::demo_human_size(
-                            entry,
+                            &entry,
                             settings.human_sizes,
                         )),
                 )
                 .into_any_element()
         };
-        let rows = self.virtual_grid(Grid::ProRows, count, 1, PRO_ROW_HEIGHT, 0., reveal, |index| make_row(files[index]));
+        let rows = self.virtual_grid(Grid::ProRows, count, 1, PRO_ROW_HEIGHT, 0., reveal, |index| make_row(files[index].clone()));
 
         v_flex()
             .flex_1()
@@ -658,7 +658,7 @@ impl FileExplorer {
 
 /// The program's own icon when it has one (a Windows .exe), else the kind's.
 pub(crate) fn file_icon_or_app(entry: &FileEntry, palette: Palette, size: f32) -> AnyElement {
-    match entry.path.and_then(crate::thumbnails::app_icon) {
+    match entry.path.as_deref().and_then(crate::thumbnails::app_icon) {
         Some(icon) => img(icon).size(px(size)).flex_shrink_0().object_fit(ObjectFit::Contain).into_any_element(),
         None => file_icon(entry, palette, size).into_any_element(),
     }
@@ -703,7 +703,7 @@ pub(crate) fn status_badges(entry: &FileEntry, palette: Palette) -> Option<AnyEl
         ),
         crate::model::CloudState::Local => None,
     };
-    let forked = entry.is_folder() && entry.path.is_some_and(crate::forks::has_forks);
+    let forked = entry.is_folder() && entry.path.as_deref().is_some_and(crate::forks::has_forks);
     if cloud.is_none() && !forked {
         return None;
     }
@@ -724,7 +724,7 @@ pub(crate) fn status_badges(entry: &FileEntry, palette: Palette) -> Option<AnyEl
 /// `max_chars` trims long names in the middle (extension kept); CSS
 /// truncation stays as a safety net for narrow widths.
 pub(crate) fn name_with_badges(entry: &FileEntry, max_chars: usize, palette: Palette) -> AnyElement {
-    let name = crate::model::trim_middle(entry.name, max_chars).into_owned();
+    let name = crate::model::trim_middle(&entry.name, max_chars).into_owned();
     h_flex()
         .w_full()
         .min_w_0()
@@ -767,15 +767,15 @@ pub(crate) fn file_thumbnail_fit(entry: &FileEntry, palette: Palette, height: f3
         .overflow_hidden()
         .bg(palette.surface);
 
-    let source = match (entry.preview, entry.path) {
+    let source = match (entry.preview, entry.path.clone()) {
         (Some(preview), _) => Some(gpui_kit::ImageSource::from(preview)),
         // A small cached copy (HEIC/AVIF converted); until it is ready the icon shows.
         (None, Some(path)) if entry.kind == FileKind::Image => {
-            crate::thumbnails::thumbnail(path).map(gpui_kit::ImageSource::from)
+            crate::thumbnails::thumbnail(&path).map(gpui_kit::ImageSource::from)
         }
         // A program's own icon, centred like Explorer shows it.
         (None, Some(path)) => {
-            if let Some(icon) = crate::thumbnails::app_icon(path) {
+            if let Some(icon) = crate::thumbnails::app_icon(&path) {
                 let size = (height * 0.62).min(128.);
                 return base.flex().items_center().justify_center().child(img(icon).size(px(size)).object_fit(ObjectFit::Contain)).into_any_element();
             }

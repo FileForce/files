@@ -18,7 +18,7 @@ use gpui_kit::{
 };
 
 use crate::app::{AppearanceSettings, FileExplorer};
-use crate::model::{FileEntry, FileKind};
+use crate::model::FileKind;
 use crate::palette::Palette;
 
 actions!(quick_look, [CloseQuickLook, QuickLookPrevious, QuickLookNext, QuickLookOpen]);
@@ -45,7 +45,7 @@ impl Focusable for QuickLookView {
 }
 
 impl QuickLookView {
-    fn current(&self, cx: &gpui_kit::App) -> Option<&'static FileEntry> {
+    fn current(&self, cx: &gpui_kit::App) -> Option<crate::model::Entry> {
         self.explorer.upgrade()?.read(cx).selected_entry_any()
     }
 
@@ -73,51 +73,51 @@ impl QuickLookView {
         let Some(file) = self.current(cx) else {
             return;
         };
-        let _ = self.explorer.update(cx, |explorer, cx| explorer.open_entry(file.id, window, cx));
+        let _ = self.explorer.update(cx, |explorer, cx| explorer.open_entry(&file.id, window, cx));
     }
 }
 
 /// What the big preview area shows for a file.
-fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::AppSettings) -> AnyElement {
+fn body(file: crate::model::Entry, palette: Palette, settings: &crate::settings::AppSettings) -> AnyElement {
     let placeholder = |message: &str| {
         v_flex()
             .size_full()
             .items_center()
             .justify_center()
             .gap_3()
-            .child(crate::views::files::file_icon(file, palette, 72.))
+            .child(crate::views::files::file_icon(&file, palette, 72.))
             .child(div().text_sm().text_color(palette.muted).child(message.to_string()))
             .into_any_element()
     };
     if file.is_folder() {
-        if let Some(path) = file.path
-            && !warmed(path, file.kind)
+        if let Some(path) = file.path.clone()
+            && !warmed(&path, file.kind)
         {
             return placeholder("Loading…");
         }
-        return folder(file, palette, settings).unwrap_or_else(|| placeholder(file.metadata));
+        return folder(file.clone(), palette, settings).unwrap_or_else(|| placeholder(&file.metadata));
     }
-    let Some(path) = file.path else {
+    let Some(path) = file.path.clone() else {
         return placeholder("No preview · this item is not on the local disk");
     };
     // Opens at once; the file is read in the background, then shown.
-    if !warmed(path, file.kind) {
+    if !warmed(&path, file.kind) {
         return placeholder("Loading preview…");
     }
     // A format an extension knows (files_sdk::preview).
-    if let Some((name, content)) = crate::ext_preview::preview(path) {
+    if let Some((name, content)) = crate::ext_preview::preview(&path) {
         return extension_preview(&name, content, palette);
     }
     if file.kind == FileKind::Image
-        && let Some(source) = crate::thumbnails::source(path)
+        && let Some(source) = crate::thumbnails::source(&path)
     {
         return image_with(source, palette, settings.image_fit);
     }
-    if crate::archive::is_supported(file) {
-        return archive(path, palette, settings);
+    if crate::archive::is_supported(&file) {
+        return archive(&path, palette, settings);
     }
     if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("eml")) {
-        if let Some(message) = email(path) {
+        if let Some(message) = email(&path) {
             return v_flex()
                 .id("quick-look-email")
                 .debug_selector(|| "quick-look-email".into())
@@ -132,7 +132,7 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
                 .into_any_element();
         }
     }
-    if let Some(text) = cached_text(path, file.kind) {
+    if let Some(text) = cached_text(&path, file.kind) {
         return div()
             .id("quick-look-text")
             .size_full()
@@ -151,8 +151,8 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
             .into_any_element();
     }
     // Word, OpenDocument, PowerPoint: their text, scrolling.
-    if crate::office_text::applies(path)
-        && let Some(text) = crate::office_text::cached(path)
+    if crate::office_text::applies(&path)
+        && let Some(text) = crate::office_text::cached(&path)
     {
         return div()
             .id("quick-look-document")
@@ -166,10 +166,10 @@ fn body(file: &'static FileEntry, palette: Palette, settings: &crate::settings::
             .into_any_element();
     }
     // PDFs: every page, one under the other, scrolling.
-    if crate::pdf_pages::is_pdf(path) {
-        return pdf(path, palette);
+    if crate::pdf_pages::is_pdf(&path) {
+        return pdf(&path, palette);
     }
-    match crate::thumbnails::quick_look_preview(path) {
+    match crate::thumbnails::quick_look_preview(&path) {
         crate::thumbnails::Preview::Ready(rendered) => image(rendered, palette),
         crate::thumbnails::Preview::Pending => placeholder("Generating preview…"),
         crate::thumbnails::Preview::Unavailable(reason) => placeholder(&format!("No preview · {reason}")),
@@ -441,13 +441,13 @@ fn archive(path: &Path, palette: Palette, settings: &crate::settings::AppSetting
 }
 
 /// What a folder holds: a summary and a grid of its items with thumbnails.
-fn folder(file: &'static FileEntry, palette: Palette, settings: &crate::settings::AppSettings) -> Option<AnyElement> {
+fn folder(file: crate::model::Entry, palette: Palette, settings: &crate::settings::AppSettings) -> Option<AnyElement> {
     let target = file.target?;
     let mut items = crate::model::entries(target, "");
     items.sort_by_key(|entry| (!entry.is_folder(), entry.name.to_lowercase()));
     let folders = items.iter().filter(|entry| entry.is_folder()).count();
     let files = items.len() - folders;
-    let size = crate::model::folder_size(file)
+    let size = crate::model::folder_size(&file)
         .map_or_else(|| "calculating size…".to_string(), |bytes| crate::settings::format_size(bytes, settings.human_sizes));
     let plural = |count: usize, one: &str, many: &str| format!("{count} {}", if count == 1 { one } else { many });
     let summary = format!("{} · {} · {size}", plural(folders, "folder", "folders"), plural(files, "file", "files"));
@@ -459,7 +459,7 @@ fn folder(file: &'static FileEntry, palette: Palette, settings: &crate::settings
                 .items_center()
                 .justify_center()
                 .gap_3()
-                .child(crate::views::files::file_icon(file, palette, 72.))
+                .child(crate::views::files::file_icon(&file, palette, 72.))
                 .child(div().text_sm().text_color(palette.muted).child("This folder is empty"))
                 .into_any_element(),
         );
@@ -471,7 +471,7 @@ fn folder(file: &'static FileEntry, palette: Palette, settings: &crate::settings
             .w(px(104.))
             .gap_1()
             .items_center()
-            .child(div().w(px(84.)).h(px(70.)).rounded_md().overflow_hidden().child(crate::views::files::file_thumbnail(entry, palette, 70.)))
+            .child(div().w(px(84.)).h(px(70.)).rounded_md().overflow_hidden().child(crate::views::files::file_thumbnail(&entry, palette, 70.)))
             .child(
                 div()
                     .w_full()
@@ -479,7 +479,7 @@ fn folder(file: &'static FileEntry, palette: Palette, settings: &crate::settings
                     .text_xs()
                     .text_color(palette.text)
                     .truncate()
-                    .child(crate::model::trim_middle(entry.name, 18).into_owned()),
+                    .child(crate::model::trim_middle(&entry.name, 18).into_owned()),
             );
         #[cfg(test)]
         let tile = tile.debug_selector(move || format!("quick-look-item-{index}"));
@@ -493,7 +493,7 @@ fn folder(file: &'static FileEntry, palette: Palette, settings: &crate::settings
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .child(crate::views::files::file_icon(file, palette, 28.))
+                    .child(crate::views::files::file_icon(&file, palette, 28.))
                     .child(div().text_sm().text_color(palette.muted).child(summary)),
             )
             .child(
@@ -584,9 +584,9 @@ impl Render for QuickLookView {
         let file = self.current(cx);
         // Videos play in place (through VLC); another item stops the player.
         let video_path = file
-            .filter(|file| file.kind == FileKind::Video || (file.kind == FileKind::Audio && file.path.is_some_and(files_ext_music::local::is_audio)))
-            .and_then(|file| file.path)
-            .map(Path::to_path_buf);
+            .clone()
+            .filter(|file| file.kind == FileKind::Video || (file.kind == FileKind::Audio && file.path.as_deref().is_some_and(files_ext_music::local::is_audio)))
+            .and_then(|file| file.path.as_deref().map(Path::to_path_buf));
         let current = self.video.as_ref().map(|player| player.read(cx).path.clone());
         if video_path != current {
             if let Some(old) = self.video.take() {
@@ -595,22 +595,22 @@ impl Render for QuickLookView {
             self.video = video_path.map(|path| cx.new(|cx| crate::views::video_player::VideoPlayer::new(path, palette, window, cx)));
         }
         let content = match file {
-            Some(file) => {
-                let size = crate::properties::demo_human_size(file, settings.human_sizes);
-                let modified = crate::settings::format_demo_date(file.modified, settings.date_time);
+            Some(ref file) => {
+                let size = crate::properties::demo_human_size(&file, settings.human_sizes);
+                let modified = crate::settings::format_demo_date(&file.modified, settings.date_time);
                 v_flex()
                     .size_full()
                     .gap_3()
                     .child(v_flex().flex_1().min_h_0().child(match &self.video {
                         Some(player) => player.clone().into_any_element(),
-                        None => body(file, palette, &settings),
+                        None => body(file.clone(), palette, &settings),
                     }))
                     .child(
                         h_flex()
                             .flex_shrink_0()
                             .gap_3()
                             .items_center()
-                            .child(crate::views::files::file_icon(file, palette, 18.))
+                            .child(crate::views::files::file_icon(&file, palette, 18.))
                             .child(
                                 v_flex()
                                     .flex_1()
@@ -620,7 +620,7 @@ impl Render for QuickLookView {
                                             .text_sm()
                                             .font_weight(FontWeight::MEDIUM)
                                             .truncate()
-                                            .child(file.name),
+                                            .child(file.name.clone()),
                                     )
                                     .child(div().text_xs().text_color(palette.muted).child(format!(
                                         "{} · {size} · {modified}",
@@ -663,7 +663,7 @@ impl Render for QuickLookView {
             // GPUI's global one keeps every image it ever decoded.
             .child(
                 gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(
-                    format!("quick-look-{:?}", file.and_then(|file| file.path)).into(),
+                    format!("quick-look-{:?}", file.as_ref().and_then(|file| file.path.clone())).into(),
                 )))
                 .size_full()
                 .child(content),
@@ -673,8 +673,8 @@ impl Render for QuickLookView {
 
 impl FileExplorer {
     /// The selection in the active pane, in any view mode.
-    pub(crate) fn selected_entry_any(&self) -> Option<&'static FileEntry> {
-        self.active_selection().and_then(crate::model::entry)
+    pub(crate) fn selected_entry_any(&self) -> Option<crate::model::Entry> {
+        self.active_selection().and_then(|id| crate::model::entry(&id))
     }
 
     /// Moves the selection by `delta` in the active list (all view modes).
@@ -691,11 +691,11 @@ impl FileExplorer {
             Some(index) => (index as isize + delta).clamp(0, files.len() as isize - 1) as usize,
             None => 0,
         };
-        let id = files[next].id;
+        let id = files[next].id.clone();
         if self.mode == crate::model::ViewMode::Dual {
-            self.select_in_pane(self.active_pane, id, cx);
+            self.select_in_pane(self.active_pane, &id, cx);
         } else {
-            self.select_entry(id, cx);
+            self.select_entry(&id, cx);
         }
     }
 

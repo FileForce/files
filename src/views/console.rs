@@ -142,8 +142,8 @@ impl FileExplorer {
             }
             "open" => self.open_file(entry, cx),
             "open-with" => {
-                if let Some(path) = entry.path {
-                    self.open_with_chooser(path, entry.name, cx);
+                if let Some(path) = entry.path.clone() {
+                    self.open_with_chooser(&path, &entry.name, cx);
                 }
             }
             _ => {}
@@ -821,7 +821,12 @@ fn render_indexes(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElemen
     let (known, made, listings, search) = crate::model::index_stats();
     let (waiting, failed) = crate::thumbnails::stats();
     let rows: Vec<(&'static str, String, &'static str, Option<(&'static str, fn())>)> = vec![
-        ("File entries", format!("{known} known · {made} made since launch"), "Every file and folder seen; kept until quit", None),
+        (
+            "File entries",
+            format!("{known} known · {} alive · {made} made since launch", crate::model::LIVE_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)),
+            "Every file and folder seen; a replaced one is freed once nothing shows it",
+            None,
+        ),
         ("Folder listings", format!("{listings} folders"), "Read again after a short while, or now", Some(("Read again", crate::model::invalidate_listings as fn()))),
         ("Global search", format!("{search} items"), "The ⌘K index: a few levels of the search folder", Some(("Rebuild", crate::model::clear_search_index as fn()))),
         ("File details", format!("{} files", crate::media_info::cached()), "EXIF, streams, archive and program details", Some(("Read again", crate::media_info::clear as fn()))),

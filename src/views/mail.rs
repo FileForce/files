@@ -332,7 +332,7 @@ impl FileExplorer {
     }
 
     /// Context menu → Send as Attachment…: the selected files, or this one.
-    pub(crate) fn send_as_attachment(&mut self, entry: &'static crate::model::FileEntry, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn send_as_attachment(&mut self, entry: crate::model::Entry, window: &mut Window, cx: &mut Context<Self>) {
         let files = self.attachment_files(entry);
         if accounts().is_empty() {
             self.notice = Some("Add a mail account first: sidebar → Mail → Add account…".to_string());
@@ -344,9 +344,9 @@ impl FileExplorer {
     }
 
     /// The right-clicked file, or every selected file when it is one of them.
-    pub(crate) fn attachment_files(&self, entry: &'static crate::model::FileEntry) -> Vec<PathBuf> {
+    pub(crate) fn attachment_files(&self, entry: crate::model::Entry) -> Vec<PathBuf> {
         let selected: Vec<PathBuf> = self.selected_paths().into_iter().filter(|path| path.is_file()).collect();
-        match entry.path {
+        match entry.path.as_deref() {
             Some(path) if !selected.iter().any(|file| file == path) => vec![path.to_path_buf()],
             _ => selected,
         }

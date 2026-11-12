@@ -12,7 +12,7 @@ use gpui_kit::{
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 
-use crate::model::{Accent, ColorScheme, FileEntry, Location, Pane, ViewMode, entries, entry};
+use crate::model::{Accent, ColorScheme, Location, Pane, ViewMode, entries, entry};
 use crate::palette::{Palette, apply_theme};
 use crate::views::global_search::{GlobalSearch, close_global_search};
 
@@ -76,7 +76,7 @@ pub struct FolderPicker {
 #[derive(Clone)]
 pub struct PaneState {
     pub location: Location,
-    pub selected: Option<&'static str>,
+    pub selected: Option<gpui_kit::SharedString>,
 }
 
 /// What a built file list depends on (see `entries_for`).
@@ -94,7 +94,7 @@ pub(crate) struct EntriesKey {
 pub struct WorkspaceTab {
     pub id: u64,
     pub current: Location,
-    pub selected: Option<&'static str>,
+    pub selected: Option<gpui_kit::SharedString>,
     pub history: Vec<Location>,
     pub history_index: usize,
     pub query: String,
@@ -152,12 +152,12 @@ pub struct FileExplorer {
     pub scheme: ColorScheme,
     pub accent: Accent,
     pub current: Location,
-    pub selected: Option<&'static str>,
+    pub selected: Option<gpui_kit::SharedString>,
     /// Multi-selection (Expressive/Pro). Only meaningful while it contains
     /// `selected`; a plain assignment to `selected` therefore means "just that".
-    pub selection: Vec<&'static str>,
+    pub selection: Vec<gpui_kit::SharedString>,
     /// Where a shift-click or shift-arrow range starts.
-    pub(crate) anchor: Option<&'static str>,
+    pub(crate) anchor: Option<gpui_kit::SharedString>,
     pub(crate) parent_selected: bool,
     pub show_inspector: bool,
     pub left: PaneState,
@@ -176,7 +176,7 @@ pub struct FileExplorer {
     pub history: Vec<Location>,
     pub history_index: usize,
     pub drop_active: bool,
-    pub pending_drop: Option<(Entity<FileExplorer>, &'static FileEntry)>,
+    pub pending_drop: Option<(Entity<FileExplorer>, crate::model::Entry)>,
     pub appearance: Entity<AppearanceSettings>,
     pub ssh_connection: Option<crate::model::SshConnection>,
     /// The remote home folder of `ssh_connection`.
@@ -198,11 +198,11 @@ pub struct FileExplorer {
     /// The main window: its tabs are saved for the next start.
     pub(crate) keeps_session: bool,
     /// The last list `entries_for` built, and what it was built from.
-    pub(crate) entries_cache: std::cell::RefCell<Option<(EntriesKey, Vec<&'static FileEntry>)>>,
+    pub(crate) entries_cache: std::cell::RefCell<Option<(EntriesKey, Vec<crate::model::Entry>)>>,
     pub(crate) sidebar_scroll: ScrollHandle,
     /// An item to bring into view (after a paste, a drop or arrow keys) and
     /// where it was painted last frame.
-    pub(crate) reveal: Option<&'static str>,
+    pub(crate) reveal: Option<gpui_kit::SharedString>,
     pub(crate) reveal_bounds: std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>,
     next_tab_id: u64,
     focus_handle: FocusHandle,
@@ -296,7 +296,7 @@ impl FileExplorer {
             if matches!(event, InputEvent::Change) {
                 this.query = state.read(cx).value().to_string();
                 this.parent_selected = false;
-                if let Some(selected) = this.selected {
+                if let Some(selected) = this.selected.clone() {
                     let visible = this.entries_for(this.current);
                     if !visible.iter().any(|entry| entry.id == selected) {
                         this.selected = None;
@@ -428,7 +428,7 @@ impl FileExplorer {
         self.focus_handle.focus(window, cx);
     }
 
-    pub fn entries_for(&self, location: Location) -> Vec<&'static FileEntry> {
+    pub fn entries_for(&self, location: Location) -> Vec<crate::model::Entry> {
         if location.is_remote() && self.ssh_connection.is_none() {
             return Vec::new();
         }
@@ -454,7 +454,7 @@ impl FileExplorer {
         entries
     }
 
-    fn build_entries(&self, location: Location) -> Vec<&'static FileEntry> {
+    fn build_entries(&self, location: Location) -> Vec<crate::model::Entry> {
         let started = std::time::Instant::now();
         let mut candidates = entries(location, "");
         // A folder picker only offers destinations, never files.
@@ -490,12 +490,12 @@ impl FileExplorer {
         cx.notify();
     }
 
-    pub fn current_entries(&self) -> Vec<&'static FileEntry> {
+    pub fn current_entries(&self) -> Vec<crate::model::Entry> {
         self.entries_for(self.current)
     }
 
-    pub fn selected_entry(&self) -> Option<&'static FileEntry> {
-        entry(self.selected?)
+    pub fn selected_entry(&self) -> Option<crate::model::Entry> {
+        entry(self.selected.as_deref()?)
     }
 
     pub fn active_location(&self) -> Location {
@@ -508,14 +508,14 @@ impl FileExplorer {
         self.current
     }
 
-    pub fn active_selection(&self) -> Option<&'static str> {
+    pub fn active_selection(&self) -> Option<gpui_kit::SharedString> {
         if self.mode == ViewMode::Dual {
             return match self.active_pane {
-                Pane::Left => self.left.selected,
-                Pane::Right => self.right.selected,
+                Pane::Left => self.left.selected.clone(),
+                Pane::Right => self.right.selected.clone(),
             };
         }
-        self.selected
+        self.selected.clone()
     }
 
     pub fn set_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
@@ -525,7 +525,7 @@ impl FileExplorer {
         files_sdk::log::record("files", files_sdk::log::Kind::Setting, format!("view: {:?} → {mode:?}", self.mode), None);
         if mode == ViewMode::Dual {
             self.left.location = self.current;
-            self.left.selected = self.selected;
+            self.left.selected = self.selected.clone();
             if self.right.location == self.left.location {
                 self.right.location = Location::Downloads;
                 self.right.selected = None;
@@ -533,8 +533,8 @@ impl FileExplorer {
             self.active_pane = Pane::Left;
         } else if self.mode == ViewMode::Dual {
             let (location, selected) = match self.active_pane {
-                Pane::Left => (self.left.location, self.left.selected),
-                Pane::Right => (self.right.location, self.right.selected),
+                Pane::Left => (self.left.location, self.left.selected.clone()),
+                Pane::Right => (self.right.location, self.right.selected.clone()),
             };
             self.current = location;
             self.selected = selected;
@@ -586,9 +586,9 @@ impl FileExplorer {
     /// The folder the picker would return: a selected folder, else the current one.
     fn picked_folder(&self) -> Option<std::path::PathBuf> {
         self.active_selection()
-            .and_then(entry)
+            .and_then(|id| entry(&id))
             .filter(|file| file.is_folder())
-            .and_then(|file| file.path.map(std::path::Path::to_path_buf))
+            .and_then(|file| file.path.as_deref().map(std::path::Path::to_path_buf))
             .or_else(|| self.active_location().path())
     }
 
@@ -645,7 +645,7 @@ impl FileExplorer {
     fn save_active_tab(&mut self) {
         let tab = &mut self.tabs[self.active_tab];
         tab.current = self.current;
-        tab.selected = self.selected;
+        tab.selected = self.selected.clone();
         tab.history = self.history.clone();
         tab.history_index = self.history_index;
         tab.query = self.query.clone();
@@ -736,7 +736,7 @@ impl FileExplorer {
         files_sdk::log::record("files", files_sdk::log::Kind::Info, format!("New tab: {}", location.label()), None);
     }
 
-    pub(crate) fn open_entry_in_new_tab(&mut self, entry: &'static FileEntry, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_entry_in_new_tab(&mut self, entry: crate::model::Entry, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(target) = entry.target.filter(|_| entry.is_folder()) {
             self.open_in_new_tab(target, window, cx);
         }
@@ -899,7 +899,7 @@ impl FileExplorer {
 
     pub fn open_global_result(
         &mut self,
-        file: &'static FileEntry,
+        file: crate::model::Entry,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -913,9 +913,9 @@ impl FileExplorer {
             self.set_mode(ViewMode::Expressive, cx);
         }
         self.navigate(file.parent, window, cx);
-        self.selected = Some(file.id);
+        self.selected = Some(file.id.clone());
         // Scroll to it: in a long folder it may be far below the top.
-        self.reveal = Some(file.id);
+        self.reveal = Some(file.id.clone());
         self.show_inspector = true;
         self.notice = Some(format!("Preview · {}", file.name));
         cx.notify();
@@ -969,11 +969,11 @@ impl FileExplorer {
     }
 
 
-    pub fn open_entry(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_entry(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(file) = entry(id) else {
             return;
         };
-        if file.target.is_none() && crate::model::remote::entry_path(file).is_some() {
+        if file.target.is_none() && crate::model::remote::entry_path(&file).is_some() {
             self.open_remote_file(file, cx);
             return;
         }
@@ -990,14 +990,14 @@ impl FileExplorer {
 
     /// Opens a file in its app: the override from Settings → Default apps, or
     /// the system default.
-    pub fn open_file(&mut self, file: &'static FileEntry, cx: &mut Context<Self>) {
-        let Some(path) = file.path else {
+    pub fn open_file(&mut self, file: crate::model::Entry, cx: &mut Context<Self>) {
+        let Some(path) = file.path.clone() else {
             self.notice = Some(format!("{} is not on the local disk", file.name));
             cx.notify();
             return;
         };
         let overrides = self.appearance.read(cx).default_apps.clone();
-        self.notice = Some(match crate::default_apps::open(path, &overrides) {
+        self.notice = Some(match crate::default_apps::open(&path, &overrides) {
             Ok(Some(app)) => format!("Opened {} in {app}", file.name),
             Ok(None) => format!("Opened {}", file.name),
             Err(error) => format!("Open failed · {}: {error}", file.name),
@@ -1066,16 +1066,16 @@ impl FileExplorer {
             self.notice = None;
             cx.notify();
         } else if let Some(file) = files.get(target as usize) {
-            let id = file.id;
+            let id = file.id.clone();
             self.parent_selected = false;
             if self.mode == ViewMode::Dual {
-                self.select_in_pane(self.active_pane, id, cx);
+                self.select_in_pane(self.active_pane, &id, cx);
             } else if extend {
-                self.select_range_to(id, cx);
+                self.select_range_to(&id, cx);
             } else {
-                self.select_entry(id, cx);
+                self.select_entry(&id, cx);
             }
-            self.reveal = Some(id);
+            self.reveal = Some(id.clone());
         }
     }
 
@@ -1090,35 +1090,35 @@ impl FileExplorer {
             return;
         }
         if let Some(selected) = self.active_selection() {
-            self.open_entry(selected, window, cx);
+            self.open_entry(&selected, window, cx);
         }
     }
 
     /// Everything selected in the active pane, in list order of selection.
-    pub fn selection_ids(&self) -> Vec<&'static str> {
+    pub fn selection_ids(&self) -> Vec<gpui_kit::SharedString> {
         if self.mode == ViewMode::Dual {
             return self.active_selection().into_iter().collect();
         }
-        match self.selected {
+        match self.selected.clone() {
             None => Vec::new(),
             Some(selected) if self.selection.contains(&selected) => self.selection.clone(),
             Some(selected) => vec![selected],
         }
     }
 
-    pub fn selected_entries(&self) -> Vec<&'static FileEntry> {
-        self.selection_ids().into_iter().filter_map(entry).collect()
+    pub fn selected_entries(&self) -> Vec<crate::model::Entry> {
+        self.selection_ids().into_iter().filter_map(|id| entry(&id)).collect()
     }
 
     pub fn is_selected(&self, id: &str) -> bool {
-        self.selection_ids().contains(&id)
+        self.selection_ids().iter().any(|selected| selected == id)
     }
 
     /// Mouse selection: plain click selects one, shift-click selects the range
     /// from the anchor, cmd-click (ctrl on Windows/Linux) toggles one item.
     pub fn click_entry(
         &mut self,
-        id: &'static str,
+        id: &str,
         modifiers: gpui_kit::Modifiers,
         cx: &mut Context<Self>,
     ) {
@@ -1145,13 +1145,13 @@ impl FileExplorer {
             let mut selection = self.selection_ids();
             if let Some(index) = selection.iter().position(|selected| *selected == id) {
                 selection.remove(index);
-                self.selected = selection.last().copied();
+                self.selected = selection.last().cloned();
             } else {
-                selection.push(id);
-                self.selected = Some(id);
+                selection.push(id.to_string().into());
+                self.selected = Some(id.to_string().into());
             }
             self.selection = selection;
-            self.anchor = Some(id);
+            self.anchor = Some(id.to_string().into());
             self.parent_selected = false;
             self.notice = None;
             cx.notify();
@@ -1195,15 +1195,15 @@ impl FileExplorer {
 
     /// Right-click keeps a multi-selection that contains the item, so its
     /// context menu acts on all of them.
-    pub fn select_for_context_menu(&mut self, id: &'static str, cx: &mut Context<Self>) {
+    pub fn select_for_context_menu(&mut self, id: &str, cx: &mut Context<Self>) {
         if !self.is_selected(id) {
             self.select_entry(id, cx);
         }
     }
 
-    fn select_range_to(&mut self, id: &'static str, cx: &mut Context<Self>) {
+    fn select_range_to(&mut self, id: &str, cx: &mut Context<Self>) {
         let files = self.entries_for(self.current);
-        let anchor = self.anchor.or(self.selected).unwrap_or(id);
+        let anchor = self.anchor.clone().or(self.selected.clone()).unwrap_or_else(|| id.to_string().into());
         let start = files.iter().position(|file| file.id == anchor);
         let end = files.iter().position(|file| file.id == id);
         let (Some(start), Some(end)) = (start, end) else {
@@ -1211,8 +1211,8 @@ impl FileExplorer {
             return;
         };
         let (low, high) = (start.min(end), start.max(end));
-        self.selection = files[low..=high].iter().map(|file| file.id).collect();
-        self.selected = Some(id);
+        self.selection = files[low..=high].iter().map(|file| file.id.clone()).collect();
+        self.selected = Some(id.to_string().into());
         self.anchor = Some(anchor);
         self.parent_selected = false;
         self.notice = None;
@@ -1221,8 +1221,8 @@ impl FileExplorer {
 
     #[cfg(test)]
     fn select_all_for_test(&mut self, cx: &mut Context<Self>) {
-        self.selection = self.entries_for(self.current).iter().map(|file| file.id).collect();
-        self.selected = self.selection.last().copied();
+        self.selection = self.entries_for(self.current).iter().map(|file| file.id.clone()).collect();
+        self.selected = self.selection.last().cloned();
         cx.notify();
     }
 
@@ -1231,33 +1231,33 @@ impl FileExplorer {
             return;
         }
         let files = self.entries_for(self.current);
-        self.selection = files.iter().map(|file| file.id).collect();
-        self.selected = self.selection.last().copied();
-        self.anchor = self.selection.first().copied();
+        self.selection = files.iter().map(|file| file.id.clone()).collect();
+        self.selected = self.selection.last().cloned();
+        self.anchor = self.selection.first().cloned();
         cx.notify();
     }
 
-    pub fn select_entry(&mut self, id: &'static str, cx: &mut Context<Self>) {
+    pub fn select_entry(&mut self, id: &str, cx: &mut Context<Self>) {
         self.parent_selected = false;
         if self.mode == ViewMode::Dual {
             self.select_in_pane(self.active_pane, id, cx);
             return;
         }
-        self.selection = vec![id];
-        self.anchor = Some(id);
-        self.selected = Some(id);
+        self.selection = vec![id.to_string().into()];
+        self.anchor = Some(id.to_string().into());
+        self.selected = Some(id.to_string().into());
         self.notice = None;
         cx.notify();
     }
 
-    pub fn select_in_pane(&mut self, pane: Pane, id: &'static str, cx: &mut Context<Self>) {
+    pub fn select_in_pane(&mut self, pane: Pane, id: &str, cx: &mut Context<Self>) {
         self.parent_selected = false;
         self.active_pane = pane;
         let state = match pane {
             Pane::Left => &mut self.left,
             Pane::Right => &mut self.right,
         };
-        state.selected = Some(id);
+        state.selected = Some(id.to_string().into());
         cx.notify();
     }
 
@@ -1298,10 +1298,10 @@ impl FileExplorer {
     }
 
     pub fn copy_demo_path(&mut self, cx: &mut Context<Self>) {
-        let Some(file) = self.active_selection().and_then(entry) else {
+        let Some(file) = self.active_selection().and_then(|id| entry(&id)) else {
             return;
         };
-        let path = file.path.map_or_else(
+        let path = file.path.as_deref().map_or_else(
             || format!("{}/{}", self.active_location().label(), file.name),
             |path| path.display().to_string(),
         );
@@ -1594,7 +1594,7 @@ impl FileExplorer {
     pub(crate) fn selected_paths(&self) -> Vec<std::path::PathBuf> {
         self.selected_entries()
             .into_iter()
-            .filter_map(|entry| entry.path.map(std::path::Path::to_path_buf))
+            .filter_map(|entry| entry.path.as_deref().map(std::path::Path::to_path_buf))
             .collect()
     }
 
@@ -1759,7 +1759,7 @@ impl FileExplorer {
 
     /// Records where the item to reveal was painted.
     pub(crate) fn reveal_marker(&self, id: &str) -> Option<AnyElement> {
-        (self.reveal == Some(id)).then(|| {
+        (self.reveal.as_deref() == Some(id)).then(|| {
             let cell = self.reveal_bounds.clone();
             gpui_kit::canvas(move |bounds, _, _| cell.set(Some(bounds)), |_, _, _, _| {})
                 .absolute()
@@ -1983,7 +1983,7 @@ mod tests {
     use gpui_kit::{TestAppContext, VisualTestContext, point, px};
 
     /// A real folder with three files; returns the folder and the middle file's id.
-    fn fixture_dir() -> (Location, &'static str) {
+    fn fixture_dir() -> (Location, gpui_kit::SharedString) {
         let dir = std::env::temp_dir().join(format!(
             "file-force-test-{}-{:?}",
             std::process::id(),
@@ -1995,7 +1995,7 @@ mod tests {
             std::fs::write(nested.join(name), name).unwrap();
         }
         let location = Location::from_path(&nested);
-        let middle = crate::model::entries(location, "")[1].id;
+        let middle = crate::model::entries(location, "")[1].id.clone();
         (location, middle)
     }
 
@@ -2014,7 +2014,7 @@ mod tests {
             this.history = vec![location];
             this.left.location = location;
             this.set_mode(ViewMode::Pro, cx);
-            this.selected = Some(middle);
+            this.selected = Some(middle.clone());
         });
         cx.run_until_parked();
         (view, cx)
@@ -2023,22 +2023,22 @@ mod tests {
     #[test]
     fn pro_up_down_change_selection_and_enter_opens() {
         let (view, cx) = pro_window();
-        let middle = cx.read(|app| view.read(app).selected);
+        let middle = cx.read(|app| view.read(app).selected.clone());
         cx.simulate_keystrokes("down");
         assert_ne!(
-            cx.read(|app| view.read(app).selected),
+            cx.read(|app| view.read(app).selected.clone()),
             middle
         );
         cx.simulate_keystrokes("up");
         assert_eq!(
-            cx.read(|app| view.read(app).selected),
+            cx.read(|app| view.read(app).selected.clone()),
             middle
         );
 
         // Left/Right must not change the selection in Pro.
         cx.simulate_keystrokes("left right");
         assert_eq!(
-            cx.read(|app| view.read(app).selected),
+            cx.read(|app| view.read(app).selected.clone()),
             middle
         );
 
@@ -2059,7 +2059,7 @@ mod tests {
     fn explorer_set_right(
         view: &Entity<FileExplorer>,
         cx: &mut VisualTestContext,
-        selected: Option<&'static str>,
+        selected: Option<gpui_kit::SharedString>,
     ) {
         view.update(cx, |this, cx| {
             this.right.selected = selected;
@@ -2075,9 +2075,9 @@ mod tests {
         cx.run_until_parked();
 
         // Left pane is active initially.
-        let before = cx.read(|app| view.read(app).left.selected);
+        let before = cx.read(|app| view.read(app).left.selected.clone());
         cx.simulate_keystrokes("down");
-        let after = cx.read(|app| view.read(app).left.selected);
+        let after = cx.read(|app| view.read(app).left.selected.clone());
         assert_ne!(before, after, "down did not move selection in active pane");
 
         // Right switches to the right pane; arrows then move the right selection.
@@ -2090,7 +2090,7 @@ mod tests {
         cx.simulate_keystrokes("down");
         let right_state = cx.read(|app| {
             let this = view.read(app);
-            (this.right.selected, this.parent_selected)
+            (this.right.selected.clone(), this.parent_selected)
         });
         assert!(
             right_state.0.is_some() || right_state.1,
@@ -2112,7 +2112,7 @@ mod tests {
         // The click may land on empty space and clear the selection; the ".."
         // row then counts as a selection too.
         let state = |cx: &mut VisualTestContext| {
-            cx.read(|app| (view.read(app).selected, view.read(app).parent_selected))
+            cx.read(|app| (view.read(app).selected.clone(), view.read(app).parent_selected))
         };
         let after_click = state(cx);
         let focused = cx.update(|window, cx| window.focused(cx).is_some());
@@ -2128,10 +2128,10 @@ mod tests {
             let focus = view.read(cx).search.read(cx).focus_handle(cx);
             focus.focus(window, cx);
         });
-        let before = cx.read(|app| view.read(app).selected);
+        let before = cx.read(|app| view.read(app).selected.clone());
         cx.simulate_keystrokes("down up");
         assert_eq!(
-            cx.read(|app| view.read(app).selected),
+            cx.read(|app| view.read(app).selected.clone()),
             before,
             "arrows moved list selection while search input was focused"
         );
@@ -2182,7 +2182,7 @@ mod tests {
                 view.read(app)
                     .entries_for(location)
                     .iter()
-                    .map(|entry| entry.name)
+                    .map(|entry| entry.name.clone())
                     .collect::<Vec<_>>()
             })
         };
@@ -2251,8 +2251,8 @@ mod tests {
             assert_eq!(path.is_dir(), folder, "{name} has wrong type");
             assert!(path.exists(), "{name} was not created");
             assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
-            let selected = cx.read(|app| view.read(app).selected);
-            assert_eq!(selected.and_then(crate::model::entry).map(|entry| entry.name), Some(name));
+            let selected = cx.read(|app| view.read(app).selected.clone());
+            assert_eq!(selected.and_then(|id| crate::model::entry(&id)).map(|entry| entry.name.clone()).as_deref(), Some(name));
         }
     }
 
@@ -2286,7 +2286,7 @@ mod tests {
             .unwrap();
         let cx = VisualTestContext::from_window(window, cx).into_mut();
         let location = Location::from_path(&dir);
-        let id = crate::model::entries(location, "")[0].id;
+        let id = crate::model::entries(location, "")[0].id.clone();
         view.update(cx, |this, cx| {
             this.current = location;
             this.set_mode(ViewMode::Pro, cx);
@@ -2314,24 +2314,24 @@ mod tests {
     #[test]
     fn shift_selects_ranges_and_cmd_toggles_items() {
         let (view, cx) = pro_window();
-        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id).collect());
-        let [a, b, c] = ids[..] else { panic!("fixture has three files") };
+        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id.clone()).collect());
+        let [a, b, c] = [&*ids[0], &*ids[1], &*ids[2]];
         let selection = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).selection_ids());
         let shift = gpui_kit::Modifiers { shift: true, ..Default::default() };
 
-        view.update(cx, |this, cx| this.click_entry(a, Default::default(), cx));
+        view.update(cx, |this, cx| this.click_entry(&a, Default::default(), cx));
         assert_eq!(selection(cx), [a]);
-        view.update(cx, |this, cx| this.click_entry(c, shift, cx));
+        view.update(cx, |this, cx| this.click_entry(&c, shift, cx));
         assert_eq!(selection(cx), [a, b, c], "shift-click selects the range");
-        view.update(cx, |this, cx| this.click_entry(b, secondary(), cx));
+        view.update(cx, |this, cx| this.click_entry(&b, secondary(), cx));
         assert_eq!(selection(cx), [a, c], "cmd-click removes one");
-        view.update(cx, |this, cx| this.click_entry(b, secondary(), cx));
+        view.update(cx, |this, cx| this.click_entry(&b, secondary(), cx));
         assert_eq!(selection(cx), [a, c, b], "cmd-click adds one");
-        view.update(cx, |this, cx| this.click_entry(b, Default::default(), cx));
+        view.update(cx, |this, cx| this.click_entry(&b, Default::default(), cx));
         assert_eq!(selection(cx), [b], "plain click resets");
 
         // Shift-click works from the anchor in both directions.
-        view.update(cx, |this, cx| this.click_entry(a, shift, cx));
+        view.update(cx, |this, cx| this.click_entry(&a, shift, cx));
         assert_eq!(selection(cx), [a, b]);
 
         cx.simulate_keystrokes("shift-down shift-down");
@@ -2341,7 +2341,7 @@ mod tests {
         assert_eq!(selection(cx), [a, b, c]);
 
         // Right-click inside the selection keeps it for the context menu.
-        view.update(cx, |this, cx| this.select_for_context_menu(b, cx));
+        view.update(cx, |this, cx| this.select_for_context_menu(&b, cx));
         assert_eq!(selection(cx).len(), 3);
     }
 
@@ -2354,10 +2354,10 @@ mod tests {
             std::fs::write(dir.join(name), name).unwrap();
         }
         let (view, cx) = rooted_window(&dir);
-        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id).collect());
+        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id.clone()).collect());
         view.update(cx, |this, cx| {
-            this.click_entry(ids[0], Default::default(), cx);
-            this.click_entry(ids[1], secondary(), cx);
+            this.click_entry(&ids[0], Default::default(), cx);
+            this.click_entry(&ids[1], secondary(), cx);
         });
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-backspace" } else { "delete" });
         cx.run_until_parked();
@@ -2393,7 +2393,7 @@ mod tests {
     #[test]
     fn real_mouse_clicks_with_modifiers_build_a_multi_selection() {
         let (view, cx) = pro_window();
-        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id).collect());
+        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id.clone()).collect());
         let names = ["a.txt", "b.txt", "c.txt"];
         let center = |cx: &mut VisualTestContext, name: &str| {
             cx.debug_bounds(Box::leak(format!("pro-row-{name}").into_boxed_str()))
@@ -2404,7 +2404,7 @@ mod tests {
 
         let a = center(cx, names[0]);
         cx.simulate_click(a, Default::default());
-        assert_eq!(selection(cx), [ids[0]]);
+        assert_eq!(selection(cx), [ids[0].clone()]);
 
         let c = center(cx, names[2]);
         cx.simulate_click(c, gpui_kit::Modifiers { shift: true, ..Default::default() });
@@ -2412,7 +2412,7 @@ mod tests {
 
         let b = center(cx, names[1]);
         cx.simulate_click(b, secondary());
-        assert_eq!(selection(cx), [ids[0], ids[2]], "cmd-click");
+        assert_eq!(selection(cx), [ids[0].clone(), ids[2].clone()], "cmd-click");
     }
 
     #[test]
@@ -2420,7 +2420,7 @@ mod tests {
         let (view, cx) = pro_window();
         view.update(cx, |this, cx| this.set_mode(ViewMode::Expressive, cx));
         cx.run_until_parked();
-        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id).collect());
+        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id.clone()).collect());
         let center = |cx: &mut VisualTestContext, name: &str| {
             cx.debug_bounds(Box::leak(format!("card-{name}").into_boxed_str()))
                 .expect("card rendered")
@@ -2434,7 +2434,7 @@ mod tests {
         assert_eq!(selection(cx), ids, "shift-click on cards");
         let b = center(cx, "b.txt");
         cx.simulate_click(b, secondary());
-        assert_eq!(selection(cx), [ids[0], ids[2]], "cmd-click on cards");
+        assert_eq!(selection(cx), [ids[0].clone(), ids[2].clone()], "cmd-click on cards");
     }
 
     #[test]
@@ -2523,7 +2523,7 @@ mod tests {
         let fork = fork_and_wait(&view, cx, &dir);
         assert_ne!(fork, dir);
         let names = |view: &Entity<FileExplorer>, cx: &mut VisualTestContext| {
-            cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.name).collect::<Vec<_>>())
+            cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.name.clone()).collect::<Vec<_>>())
         };
         assert_eq!(names(&view, cx), ["original.txt"], "the fork shows the original's files");
 
@@ -2538,9 +2538,9 @@ mod tests {
 
         // Deleting inside the fork deletes only the fork's copy.
         let original = cx.read(|app| {
-            view.read(app).current_entries().into_iter().find(|entry| entry.name == "original.txt").unwrap().id
+            view.read(app).current_entries().into_iter().find(|entry| entry.name == "original.txt").unwrap().id.clone()
         });
-        view.update(cx, |this, cx| this.select_entry(original, cx));
+        view.update(cx, |this, cx| this.select_entry(&original, cx));
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-backspace" } else { "delete" });
         cx.run_until_parked();
         cx.simulate_keystrokes("enter");
@@ -2681,17 +2681,17 @@ mod tests {
         let (view, cx) = rooted_window(&dir);
         let open = |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
         let selected = |cx: &mut VisualTestContext| {
-            cx.read(|app| view.read(app).selected_entry_any().map(|entry| entry.name))
+            cx.read(|app| view.read(app).selected_entry_any().map(|entry| entry.name.clone()))
         };
-        let first = cx.read(|app| view.read(app).current_entries()[0].id);
-        view.update(cx, |this, cx| this.select_entry(first, cx));
+        let first = cx.read(|app| view.read(app).current_entries()[0].id.clone());
+        view.update(cx, |this, cx| this.select_entry(&first, cx));
 
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
         assert!(open(cx), "space did not open Quick Look");
         cx.simulate_keystrokes("down");
         cx.run_until_parked();
-        assert_eq!(selected(cx), Some("b.txt"), "down did not move to the next file");
+        assert_eq!(selected(cx).as_deref(), Some("b.txt"), "down did not move to the next file");
         assert!(open(cx), "browsing closed the panel");
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
@@ -2781,8 +2781,8 @@ mod tests {
     #[test]
     fn extension_shortcuts_follow_the_extension_switch() {
         let (view, cx) = pro_window();
-        let first = cx.read(|app| view.read(app).current_entries()[0].id);
-        view.update(cx, |this, cx| this.select_entry(first, cx));
+        let first = cx.read(|app| view.read(app).current_entries()[0].id.clone());
+        view.update(cx, |this, cx| this.select_entry(&first, cx));
         let keys = if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" };
         let notice = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).notice.clone()).unwrap_or_default();
 
@@ -3045,9 +3045,9 @@ mod tests {
         let (left_view, _right_view, cx) = two_windows(&left, &right);
         let select = |view: &Entity<FileExplorer>, cx: &mut TestAppContext, name: &str| {
             let id = cx.read(|app| {
-                view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id
+                view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id.clone()
             });
-            view.update(cx, |this, cx| this.select_entry(id, cx));
+            view.update(cx, |this, cx| this.select_entry(&id, cx));
         };
 
         // ⌘C there, ⌘V here.
@@ -3131,9 +3131,9 @@ mod tests {
     fn cmd_c_and_cmd_x_reach_the_file_list() {
         let _clipboard = crate::transfer::clipboard_test_lock();
         let (view, cx) = pro_window();
-        let first = cx.read(|app| view.read(app).current_entries()[0]);
-        view.update(cx, |this, cx| this.select_entry(first.id, cx));
-        let path = first.path.unwrap().to_path_buf();
+        let first = cx.read(|app| view.read(app).current_entries()[0].clone());
+        view.update(cx, |this, cx| this.select_entry(&first.id, cx));
+        let path = first.path.clone().unwrap().to_path_buf();
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-x" } else { "ctrl-x" });
         assert!(crate::transfer::is_cut(&path), "cmd-x did not cut the selection");
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-c" } else { "ctrl-c" });
@@ -3223,8 +3223,8 @@ mod tests {
             cx.run_until_parked();
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
-        let selected = cx.read(|app| view.read(app).selected_entry().map(|entry| entry.name));
-        assert_eq!(selected, Some("file-299.txt"));
+        let selected = cx.read(|app| view.read(app).selected_entry().map(|entry| entry.name.clone()));
+        assert_eq!(selected.as_deref(), Some("file-299.txt"));
         let row = cx.debug_bounds("pro-row-file-299.txt").expect("row not drawn");
         let viewport = cx.read(|app| view.read(app).list_scroll.bounds());
         assert!(row.top() >= viewport.top() && row.bottom() <= viewport.bottom(), "the revealed file is off screen");
@@ -3247,7 +3247,7 @@ mod tests {
             cx.run_until_parked();
             cx.refresh().ok();
         }
-        let name = cx.read(|app| view.read(app).selected_entry().map(|entry| entry.name)).unwrap();
+        let name = cx.read(|app| view.read(app).selected_entry().map(|entry| entry.name.clone())).unwrap();
         let row = cx.debug_bounds(Box::leak(format!("pro-row-{name}").into_boxed_str())).unwrap();
         let viewport = cx.read(|app| view.read(app).list_scroll.bounds());
         assert!(row.top() >= viewport.top() && row.bottom() <= viewport.bottom(), "{name} is off screen");
@@ -3427,7 +3427,7 @@ mod tests {
         let names = |cx: &mut VisualTestContext| {
             cx.read(|app| {
                 let this = view.read(app);
-                this.entries_for(this.current).iter().map(|entry| entry.name).collect::<Vec<_>>()
+                this.entries_for(this.current).iter().map(|entry| entry.name.clone()).collect::<Vec<_>>()
             })
         };
         assert_eq!(cx.read(|app| view.read(app).current), Location::remote(&home));
@@ -3435,8 +3435,8 @@ mod tests {
         let saved = cx.read(|app| view.read(app).appearance.read(app).sidebar.ssh.clone());
         assert_eq!(saved.first().map(String::as_str), Some("me@box:2222"));
 
-        let projects = cx.read(|app| view.read(app).entries_for(Location::remote(&home))[0]);
-        view.update_in(cx, |this, window, cx| this.open_entry(projects.id, window, cx));
+        let projects = cx.read(|app| view.read(app).entries_for(Location::remote(&home))[0].clone());
+        view.update_in(cx, |this, window, cx| this.open_entry(&projects.id, window, cx));
         cx.run_until_parked();
         assert_eq!(names(cx), ["readme.md"]);
         let crumbs = cx.read(|app| view.read(app).current.breadcrumbs());
@@ -4092,8 +4092,8 @@ mod tests {
             std::fs::write(dir.join("project").join(name), "x").unwrap();
         }
         let (view, cx) = rooted_window(&dir);
-        let folder = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == "project").unwrap().id);
-        view.update(cx, |this, cx| this.select_entry(folder, cx));
+        let folder = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == "project").unwrap().id.clone());
+        view.update(cx, |this, cx| this.select_entry(&folder, cx));
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
         assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "Quick Look did not open");
@@ -4112,9 +4112,9 @@ mod tests {
         std::fs::write(dir.join("b-notes.txt"), "text").unwrap();
         std::fs::write(dir.join("c-song.mp3"), b"not really music").unwrap();
         let (view, cx) = rooted_window(&dir);
-        let id = |cx: &mut VisualTestContext, name: &str| cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id);
+        let id = |cx: &mut VisualTestContext, name: &str| cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id.clone());
         let clip = id(cx, "a-clip.mp4");
-        view.update(cx, |this, cx| this.select_entry(clip, cx));
+        view.update(cx, |this, cx| this.select_entry(&clip, cx));
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
         let look = crate::views::quick_look::last_for_test().expect("Quick Look did not open");
@@ -4141,8 +4141,8 @@ mod tests {
         )
         .unwrap();
         let (view, cx) = rooted_window(&dir);
-        let file = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == "hello.eml").unwrap().id);
-        view.update(cx, |this, cx| this.select_entry(file, cx));
+        let file = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == "hello.eml").unwrap().id.clone());
+        view.update(cx, |this, cx| this.select_entry(&file, cx));
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -4162,8 +4162,8 @@ mod tests {
         zip.finish().unwrap();
         let (view, cx) = rooted_window(&dir);
         for name in ["docs.zip", "solid.rar"] {
-            let archive = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id);
-            view.update(cx, |this, cx| this.select_entry(archive, cx));
+            let archive = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id.clone());
+            view.update(cx, |this, cx| this.select_entry(&archive, cx));
             if !cx.update(|window, cx| window.has_active_dialog(cx)) {
                 cx.simulate_keystrokes("space");
             }
@@ -4738,7 +4738,7 @@ mod tests {
     fn the_keyboard_moves_through_music_tracks_not_the_files() {
         // A real window root: the track preview is a dialog.
         let (view, cx) = rooted_window(&std::env::temp_dir());
-        let selected_file = cx.read(|app| view.read(app).selected);
+        let selected_file = cx.read(|app| view.read(app).selected.clone());
         cx.update(|window, app| view.update(app, |this, cx| this.open_music(window, cx)));
         let music = cx.read(|app| view.read(app).active_panel().and_then(|panel| panel.downcast::<crate::views::music::MusicView>().ok())).unwrap();
         let track = |title: &str| files_ext_music::Track {
@@ -4766,7 +4766,7 @@ mod tests {
         assert!(last >= 29, "End goes to the last track, got {last}");
         cx.simulate_keystrokes("home");
         assert_eq!(cx.read(|app| music.read(app).cursor_for_test()), Some(0));
-        assert_eq!(cx.read(|app| view.read(app).tabs[0].selected), selected_file, "the file list underneath is left alone");
+        assert_eq!(cx.read(|app| view.read(app).tabs[0].selected.clone()), selected_file, "the file list underneath is left alone");
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
         assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "Space shows the track big");
@@ -4886,8 +4886,8 @@ mod tests {
         assert_eq!(cx.read(|app| view.read(app).attachment_files(notes)), [dir.join("notes.txt")]);
         // Right-click inside a selection: the whole selection.
         view.update(cx, |this, cx| {
-            this.select_entry(report.id, cx);
-            this.select_range_to(photo.id, cx);
+            this.select_entry(&report.id, cx);
+            this.select_range_to(&photo.id, cx);
         });
         let mut files = cx.read(|app| view.read(app).attachment_files(photo));
         files.sort();
@@ -4927,12 +4927,12 @@ mod tests {
         std::fs::write(dir.join("plain").join("other.txt"), "x").unwrap();
 
         crate::model::set_search_disabled(Vec::new());
-        let entries: Vec<&'static crate::model::FileEntry> = ["repo", "plain"]
+        let entries: Vec<crate::model::Entry> = ["repo", "plain"]
             .iter()
             .flat_map(|folder| crate::model::entries(Location::from_path(&dir.join(folder)), ""))
             .collect();
         let found = |query: &str| {
-            let mut names: Vec<_> = crate::model::rank_entries(entries.clone(), query).iter().map(|entry| entry.name).collect();
+            let mut names: Vec<_> = crate::model::rank_entries(entries.clone(), query).iter().map(|entry| entry.name.clone()).collect();
             names.sort();
             names
         };

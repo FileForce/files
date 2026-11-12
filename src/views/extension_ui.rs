@@ -13,7 +13,7 @@ use gpui_kit::{
 };
 
 use crate::app::FileExplorer;
-use crate::model::{FileEntry, Location};
+use crate::model::Location;
 use crate::palette::Palette;
 
 /// Every extension with code behind its manifest.
@@ -70,11 +70,11 @@ impl FileExplorer {
             .collect()
     }
 
-    fn extension_context(&self, entry: Option<&'static FileEntry>, location: Location) -> ExtContext {
-        let path_of = |entry: &FileEntry| {
-            crate::model::remote::entry_path(entry)
+    fn extension_context(&self, entry: Option<crate::model::Entry>, location: Location) -> ExtContext {
+        let path_of = |entry: crate::model::Entry| {
+            crate::model::remote::entry_path(&entry)
                 .map(str::to_string)
-                .or_else(|| entry.path.map(|path| path.display().to_string()))
+                .or_else(|| entry.path.as_deref().map(|path| path.display().to_string()))
         };
         let selection = match entry {
             Some(entry) => {
@@ -273,7 +273,7 @@ pub(crate) fn add_extension_items(
     mut menu: PopupMenu,
     view: &Entity<FileExplorer>,
     target: Targets,
-    entry: Option<&'static FileEntry>,
+    entry: Option<crate::model::Entry>,
     location: Location,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
@@ -286,10 +286,11 @@ pub(crate) fn add_extension_items(
     for (extension, item) in items {
         let manifest = extension.manifest();
         let color = crate::menu_colors::color_for(view.read(cx).appearance.read(cx), manifest.id);
+        let entry = entry.clone();
         menu = menu.item(
             crate::views::context_menu::tinted_item(item.title, icon_for(manifest, item.icon), color)
                 .on_click(window.listener_for(view, move |this, _, window, cx| {
-                    let context = this.extension_context(entry, location);
+                    let context = this.extension_context(entry.clone(), location);
                     this.run_extension_command(extension, item.command, context, window, cx);
                 })),
         );

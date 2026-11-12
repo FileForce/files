@@ -16,7 +16,7 @@ use gpui_kit::{
 };
 
 use crate::app::{AppearanceSettings, FileExplorer};
-use crate::model::{FileEntry, Location, Pane, SshConnection};
+use crate::model::{Location, Pane, SshConnection};
 use crate::palette::Palette;
 
 pub struct SshDialog {
@@ -452,8 +452,8 @@ impl FileExplorer {
     }
 
     /// Downloads a remote file into the local cache and opens it.
-    pub(crate) fn open_remote_file(&mut self, file: &'static FileEntry, cx: &mut Context<Self>) {
-        let (Some(connection), Some(remote)) = (self.ssh_connection.clone(), crate::model::remote::entry_path(file)) else {
+    pub(crate) fn open_remote_file(&mut self, file: crate::model::Entry, cx: &mut Context<Self>) {
+        let (Some(connection), Some(remote)) = (self.ssh_connection.clone(), crate::model::remote::entry_path(&file)) else {
             return;
         };
         let local = crate::ssh::cache_path(&connection, remote);
@@ -489,13 +489,13 @@ impl FileExplorer {
     }
 
     /// The dragged remote item, or the whole selection when it is part of one.
-    pub(crate) fn remote_drag_entries(&self, entry: &'static FileEntry) -> Vec<&'static FileEntry> {
+    pub(crate) fn remote_drag_entries(&self, entry: crate::model::Entry) -> Vec<crate::model::Entry> {
         let selection = self.selected_entries();
         if selection.iter().any(|selected| selected.id == entry.id) { selection } else { vec![entry] }
     }
 
     /// Remote files dropped onto a local folder are downloaded into it.
-    pub(crate) fn download_remote_into_active(&mut self, files: Vec<&'static FileEntry>, cx: &mut Context<Self>) {
+    pub(crate) fn download_remote_into_active(&mut self, files: Vec<crate::model::Entry>, cx: &mut Context<Self>) {
         match self.active_location().path() {
             Some(target) => self.download_remote(files, target, cx),
             None => {
@@ -506,7 +506,7 @@ impl FileExplorer {
     }
 
     /// Copies the selected remote files into a local folder.
-    pub(crate) fn download_remote(&mut self, files: Vec<&'static FileEntry>, target: PathBuf, cx: &mut Context<Self>) {
+    pub(crate) fn download_remote(&mut self, files: Vec<crate::model::Entry>, target: PathBuf, cx: &mut Context<Self>) {
         let Some(connection) = self.ssh_connection.clone() else {
             return;
         };

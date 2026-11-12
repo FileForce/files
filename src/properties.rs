@@ -19,7 +19,7 @@ use crate::views::files::file_thumbnail;
 actions!(properties, [CloseProperties]);
 
 pub struct PropertiesWindow {
-    entry: &'static FileEntry,
+    entry: crate::model::Entry,
     location: Location,
     ssh_connection: Option<SshConnection>,
     appearance: Entity<AppearanceSettings>,
@@ -31,7 +31,7 @@ impl PropertiesWindow {
     fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
-        entry: &'static FileEntry,
+        entry: crate::model::Entry,
         location: Location,
         ssh_connection: Option<SshConnection>,
         appearance: Entity<AppearanceSettings>,
@@ -59,9 +59,9 @@ impl Render for PropertiesWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self.appearance.read(cx).clone();
         let palette = Palette::from_settings(&settings);
-        let file = self.entry;
-        let bytes = demo_size_bytes(file);
-        let symlink = symlink_target(file);
+        let file = self.entry.clone();
+        let bytes = demo_size_bytes(&file);
+        let symlink = symlink_target(&file);
         let location = if self.location == Location::Recents {
             file.parent
         } else {
@@ -74,6 +74,7 @@ impl Render for PropertiesWindow {
             )
         } else {
             file.path
+                .as_deref()
                 .and_then(|path| path.parent())
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| location.label().to_string())
@@ -131,7 +132,7 @@ impl Render for PropertiesWindow {
                         v_flex()
                             .p_5()
                             .gap_5()
-                            .child(file_thumbnail(file, palette, 170.))
+                            .child(file_thumbnail(&file, palette, 170.))
                             .child(
                                 v_flex()
                                     .gap_1()
@@ -139,13 +140,13 @@ impl Render for PropertiesWindow {
                                         div()
                                             .text_lg()
                                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                            .child(file.name),
+                                            .child(file.name.clone()),
                                     )
                                     .child(
                                         div()
                                             .text_xs()
                                             .text_color(palette.muted)
-                                            .child(file.metadata),
+                                            .child(file.metadata.clone()),
                                     ),
                             )
                             .child(
@@ -154,14 +155,14 @@ impl Render for PropertiesWindow {
                                     .child(section(tr(settings.language, "DETAILS", "СВЕДЕНИЯ"), palette))
                                     .child(detail_row(tr(settings.language, "Type", "Тип"), file.kind.label(), palette))
                                     .child(detail_row(tr(settings.language, "Location", "Расположение"), location, palette))
-                                    .child(detail_row(tr(settings.language, "Size", "Размер"), demo_human_size(file, settings.human_sizes), palette))
+                                    .child(detail_row(tr(settings.language, "Size", "Размер"), demo_human_size(&file, settings.human_sizes), palette))
                                     .child(detail_row(
                                         tr(settings.language, "Size (bytes)", "Размер (байты)"),
                                         bytes.map_or_else(|| "…".to_string(), format_grouped),
                                         palette,
                                     ))
-                                    .child(detail_row(tr(settings.language, "Created", "Создан"), format_demo_date(&created(file), settings.date_time), palette))
-                                    .child(detail_row(tr(settings.language, "Modified", "Изменён"), format_demo_date(file.modified, settings.date_time), palette)),
+                                    .child(detail_row(tr(settings.language, "Created", "Создан"), format_demo_date(&created(&file), settings.date_time), palette))
+                                    .child(detail_row(tr(settings.language, "Modified", "Изменён"), format_demo_date(&file.modified, settings.date_time), palette)),
                             )
                             .child(
                                 v_flex()
@@ -179,10 +180,10 @@ impl Render for PropertiesWindow {
                                     ))
                                     .child(detail_row(
                                         tr(settings.language, "Permissions", "Права"),
-                                        permissions(file, symlink.is_some()),
+                                        permissions(&file, symlink.is_some()),
                                         palette,
                                     ))
-                                    .children(access_rows(file, settings.language).into_iter().map(|(label, value)| {
+                                    .children(access_rows(&file, settings.language).into_iter().map(|(label, value)| {
                                         detail_row(label, value, palette)
                                     })),
                             )
@@ -190,7 +191,7 @@ impl Render for PropertiesWindow {
                                 v_flex()
                                     .gap_3()
                                     .child(section(tr(settings.language, "METADATA & TAGS", "МЕТАДАННЫЕ И ТЕГИ"), palette))
-                                    .child(detail_row(tr(settings.language, "Metadata", "Метаданные"), file.metadata, palette))
+                                    .child(detail_row(tr(settings.language, "Metadata", "Метаданные"), file.metadata.clone(), palette))
                                     .child(detail_row(tr(settings.language, "Tags", "Теги"), tags, palette)),
                             )
                             .child(
@@ -208,7 +209,7 @@ impl Render for PropertiesWindow {
 }
 
 pub fn open_properties(
-    entry: &'static FileEntry,
+    entry: crate::model::Entry,
     location: Location,
     ssh_connection: Option<SshConnection>,
     appearance: Entity<AppearanceSettings>,
@@ -245,7 +246,7 @@ pub(crate) fn demo_human_size(
 /// Folder sizes arrive asynchronously; `None` means still calculating.
 pub(crate) fn demo_size_bytes(file: &FileEntry) -> Option<u64> {
     // A package (an app…) weighs what its folder holds, like a folder.
-    if file.path.is_some_and(|path| file.is_folder() || crate::model::is_package(path)) {
+    if file.path.as_deref().is_some_and(|path| file.is_folder() || crate::model::is_package(path)) {
         crate::model::folder_size(file)
     } else {
         Some(file.bytes)
@@ -300,7 +301,7 @@ fn format_grouped(bytes: u64) -> String {
 }
 
 fn created(file: &FileEntry) -> String {
-    file.path
+    file.path.as_deref()
         .and_then(|path| std::fs::metadata(path).ok()?.created().ok())
         .map(|time| {
             chrono::DateTime::<chrono::Local>::from(time)
@@ -311,13 +312,13 @@ fn created(file: &FileEntry) -> String {
 }
 
 fn symlink_target(file: &FileEntry) -> Option<String> {
-    let target = std::fs::read_link(file.path?).ok()?;
+    let target = std::fs::read_link(file.path.as_deref()?).ok()?;
     Some(target.display().to_string())
 }
 
 fn permissions(file: &FileEntry, symlink: bool) -> String {
     #[cfg(unix)]
-    if let Some(metadata) = file.path.and_then(|path| std::fs::metadata(path).ok()) {
+    if let Some(metadata) = file.path.as_deref().and_then(|path| std::fs::metadata(path).ok()) {
         use std::os::unix::fs::PermissionsExt as _;
         let mode = metadata.permissions().mode();
         let kind = if symlink {
@@ -346,7 +347,7 @@ fn permissions(file: &FileEntry, symlink: bool) -> String {
 /// the owner, the group's members and everyone else may do.
 fn access_rows(file: &FileEntry, language: crate::settings::Language) -> Vec<(&'static str, String)> {
     #[cfg(unix)]
-    if let Some(metadata) = file.path.and_then(|path| std::fs::metadata(path).ok()) {
+    if let Some(metadata) = file.path.as_deref().and_then(|path| std::fs::metadata(path).ok()) {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let mode = metadata.permissions().mode();
         let folder = metadata.is_dir();

@@ -45,7 +45,7 @@ impl CreateDialog {
                 let folder = self.folder;
                 let _ = self.explorer.update(cx, |explorer, cx| {
                     if let Some(entry) = entry {
-                        explorer.select_entry(entry.id, cx);
+                        explorer.select_entry(&entry.id, cx);
                     }
                     explorer.notice = Some(format!(
                         "Created {} {}",

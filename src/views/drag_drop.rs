@@ -14,7 +14,6 @@ use gpui_kit::{
 };
 
 use crate::app::FileExplorer;
-use crate::model::FileEntry;
 use crate::palette::Palette;
 use crate::transfer::Operation;
 use crate::views::files::file_icon;
@@ -22,7 +21,7 @@ use crate::views::files::file_icon;
 #[derive(Clone)]
 pub struct DraggedFile {
     /// The item under the pointer when the drag started.
-    pub entry: &'static FileEntry,
+    pub entry: crate::model::Entry,
     pub palette: Palette,
     pub source_window: EntityId,
     pub source: Entity<FileExplorer>,
@@ -38,12 +37,12 @@ impl DraggedFile {
     /// updated (a drop inside the same window) and cannot be read through `cx`.
     pub fn paths_from(&self, explorer: &FileExplorer) -> Vec<PathBuf> {
         let selection = explorer.selected_entries();
-        let items: Vec<&FileEntry> = if selection.iter().any(|entry| entry.id == self.entry.id) {
+        let items: Vec<crate::model::Entry> = if selection.iter().any(|entry| entry.id == self.entry.id) {
             selection
         } else {
-            vec![self.entry]
+            vec![self.entry.clone()]
         };
-        items.into_iter().filter_map(|entry| entry.path.map(|path| path.to_path_buf())).collect()
+        items.into_iter().filter_map(|entry| entry.path.as_deref().map(|path| path.to_path_buf())).collect()
     }
 }
 
@@ -61,7 +60,7 @@ pub fn native_payload(drag: &DraggedFile, _: &mut Window, cx: &mut App) -> Optio
     (!entries.is_empty()).then(|| gpui_kit::ExternalDragPayload::Files(gpui_kit::FileDragPaths::new(entries)))
 }
 
-pub fn dragged_file(entry: &'static FileEntry, palette: Palette, cx: &mut Context<FileExplorer>) -> DraggedFile {
+pub fn dragged_file(entry: crate::model::Entry, palette: Palette, cx: &mut Context<FileExplorer>) -> DraggedFile {
     DraggedFile {
         entry,
         palette,
@@ -71,7 +70,7 @@ pub fn dragged_file(entry: &'static FileEntry, palette: Palette, cx: &mut Contex
 }
 
 pub struct DragFilePreview {
-    pub entry: &'static FileEntry,
+    pub entry: crate::model::Entry,
     pub palette: Palette,
     pub count: usize,
 }
@@ -79,7 +78,7 @@ pub struct DragFilePreview {
 impl DragFilePreview {
     pub fn new(drag: &DraggedFile, cx: &App) -> Self {
         Self {
-            entry: drag.entry,
+            entry: drag.entry.clone(),
             palette: drag.palette,
             count: drag.paths(cx).len().max(1),
         }
@@ -105,7 +104,7 @@ impl Render for DragFilePreview {
             .bg(self.palette.elevated)
             .text_color(self.palette.text)
             .shadow_lg()
-            .child(file_icon(self.entry, self.palette, 20.))
+            .child(file_icon(&self.entry, self.palette, 20.))
             .child(
                 div()
                     .flex()
@@ -184,8 +183,8 @@ impl FileExplorer {
                     return;
                 }
                 drag.source.update(cx, |source, _| source.pending_drop = None);
-                if crate::model::remote::entry_path(drag.entry).is_some() {
-                    let files = drag.source.read(cx).remote_drag_entries(drag.entry);
+                if crate::model::remote::entry_path(&drag.entry).is_some() {
+                    let files = drag.source.read(cx).remote_drag_entries(drag.entry.clone());
                     this.download_remote_into_active(files, cx);
                     return;
                 }
@@ -412,15 +411,15 @@ impl FileExplorer {
                 }
                 this.notice = Some(notice);
                 // Select what arrived.
-                let ids: Vec<&'static str> = report
+                let ids: Vec<gpui_kit::SharedString> = report
                     .done
                     .iter()
-                    .filter_map(|path| crate::model::entry(&path.to_string_lossy()).map(|entry| entry.id))
+                    .filter_map(|path| crate::model::entry(&path.to_string_lossy()).map(|entry| entry.id.clone()))
                     .collect();
-                if let Some(last) = ids.last().copied() {
+                if let Some(last) = ids.last().cloned() {
                     this.selection = ids.clone();
-                    this.selected = Some(last);
-                    this.anchor = ids.first().copied();
+                    this.selected = Some(last.clone());
+                    this.anchor = ids.first().cloned();
                     // In a long list the new item may be far below: scroll to it.
                     this.reveal = Some(last);
                 }

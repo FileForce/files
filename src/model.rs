@@ -263,21 +263,42 @@ pub enum CloudState {
     OnlineOnly,
 }
 
+/// A shared file entry: views and caches hold clones; the last one to go
+/// frees it (and its text).
+pub type Entry = std::sync::Arc<FileEntry>;
+
 #[derive(Debug)]
 pub struct FileEntry {
-    pub id: &'static str,
-    pub name: &'static str,
+    pub id: gpui_kit::SharedString,
+    pub name: gpui_kit::SharedString,
     pub kind: FileKind,
     pub parent: Location,
     pub target: Option<Location>,
-    pub modified: &'static str,
+    pub modified: gpui_kit::SharedString,
     pub modified_at: Option<std::time::SystemTime>,
     pub bytes: u64,
-    pub metadata: &'static str,
+    pub metadata: gpui_kit::SharedString,
     pub tags: &'static [&'static str],
     pub preview: Option<&'static str>,
-    pub path: Option<&'static Path>,
+    pub path: Option<std::sync::Arc<Path>>,
     pub cloud: CloudState,
+}
+
+/// Entries alive right now (DevTools): a number that only grows is a leak.
+pub static LIVE_ENTRIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl FileEntry {
+    /// Counts the entry as alive; every entry is made through here.
+    pub fn shared(self) -> Entry {
+        LIVE_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::sync::Arc::new(self)
+    }
+}
+
+impl Drop for FileEntry {
+    fn drop(&mut self) {
+        LIVE_ENTRIES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl FileEntry {
@@ -286,21 +307,22 @@ impl FileEntry {
     }
 }
 
-static RECENTS_FOLDER: FileEntry = FileEntry {
-    id: "folder-recents",
-    name: "Recents",
+static RECENTS_FOLDER: std::sync::LazyLock<Entry> = std::sync::LazyLock::new(|| FileEntry {
+    id: "folder-recents".into(),
+    name: "Recents".into(),
     kind: FileKind::Folder,
     parent: Location::Recents,
     target: Some(Location::Recents),
-    modified: "—",
+    modified: "—".into(),
     modified_at: None,
     bytes: 0,
-    metadata: "Recently modified files",
+    metadata: "Recently modified files".into(),
     tags: &[],
     preview: None,
     path: None,
     cloud: CloudState::Local,
-};
+}
+.shared());
 
 /// Mounted volumes other than the startup disk: USB drives, network shares,
 /// disk images. On macOS these live in `/Volumes`; on Linux in `/media/$USER`
@@ -482,15 +504,15 @@ pub fn user_initial() -> String {
     user_name().chars().next().map_or_else(|| "?".to_string(), |letter| letter.to_uppercase().collect())
 }
 
-pub fn folder_entry(location: Location) -> Option<&'static FileEntry> {
+pub fn folder_entry(location: Location) -> Option<Entry> {
     match location {
-        Location::Recents | Location::Trash | Location::Tag(_) => Some(&RECENTS_FOLDER),
+        Location::Recents | Location::Trash | Location::Tag(_) => Some(RECENTS_FOLDER.clone()),
         Location::Remote(id) => remote::folder(id),
         Location::Dir(_) => fs_index::entry_for_path(&location.path()?),
     }
 }
 
-pub fn entries(location: Location, query: &str) -> Vec<&'static FileEntry> {
+pub fn entries(location: Location, query: &str) -> Vec<Entry> {
     let candidates = match location {
         Location::Remote(id) => remote::listing(id).unwrap_or_default(),
         Location::Recents => fs_index::recents(),
@@ -661,7 +683,7 @@ fn mounted_disks() -> Vec<(PathBuf, DiskUsage)> {
 /// Recursive folder size in bytes, computed on background threads.
 /// `None` while the first calculation is still running.
 pub fn folder_size(entry: &FileEntry) -> Option<u64> {
-    folder_sizes::get(entry.path?)
+    folder_sizes::get(entry.path.as_deref()?)
 }
 
 /// Bumped whenever a folder size finishes, so views know to repaint.
@@ -723,8 +745,8 @@ pub mod remote {
         ids: HashMap<&'static str, u32>,
         /// Label of the top folder: the server's address.
         host: Option<&'static str>,
-        listings: HashMap<u32, Vec<&'static FileEntry>>,
-        entries: HashMap<&'static str, &'static FileEntry>,
+        listings: HashMap<u32, Vec<crate::model::Entry>>,
+        entries: HashMap<String, crate::model::Entry>,
     }
 
     fn lock() -> std::sync::MutexGuard<'static, State> {
@@ -764,7 +786,7 @@ pub mod remote {
         super::listings_changed();
     }
 
-    pub fn listing(id: u32) -> Option<Vec<&'static FileEntry>> {
+    pub fn listing(id: u32) -> Option<Vec<crate::model::Entry>> {
         lock().listings.get(&id).cloned()
     }
 
@@ -773,16 +795,16 @@ pub mod remote {
     }
 
 
-    pub fn entry(id: &str) -> Option<&'static FileEntry> {
-        lock().entries.get(id).copied()
+    pub fn entry(id: &str) -> Option<crate::model::Entry> {
+        lock().entries.get(id).cloned()
     }
 
     /// Every entry of every folder fetched so far.
-    pub fn loaded_entries() -> Vec<&'static FileEntry> {
-        lock().listings.values().flatten().copied().collect()
+    pub fn loaded_entries() -> Vec<crate::model::Entry> {
+        lock().listings.values().flatten().cloned().collect()
     }
 
-    pub fn folder(id: u32) -> Option<&'static FileEntry> {
+    pub fn folder(id: u32) -> Option<crate::model::Entry> {
         let path = path(id);
         let key = format!("ssh:{path}");
         if let Some(entry) = entry(&key) {
@@ -800,7 +822,7 @@ pub mod remote {
 
     pub fn store(id: u32, items: Vec<RemoteItem>) {
         let folder = path(id);
-        let mut entries: Vec<&'static FileEntry> = items
+        let mut entries: Vec<crate::model::Entry> = items
             .iter()
             .map(|item| {
                 let child = crate::ssh::join(folder, &item.name);
@@ -817,7 +839,7 @@ pub mod remote {
         entry.id.strip_prefix("ssh:")
     }
 
-    fn leak_entry(parent: Location, item: &RemoteItem, path: String) -> &'static FileEntry {
+    fn leak_entry(parent: Location, item: &RemoteItem, path: String) -> crate::model::Entry {
         let key = format!("ssh:{path}");
         let kind = if item.is_dir {
             FileKind::Folder
@@ -826,26 +848,26 @@ pub mod remote {
                 .extension()
                 .map_or(FileKind::Text, |extension| FileKind::from_extension(&extension.to_string_lossy()))
         };
-        let leak = |value: String| -> &'static str { Box::leak(value.into_boxed_str()) };
         let mode: String = (0..9)
             .map(|index| if item.mode & (0o400 >> index) == 0 { '-' } else { ['r', 'w', 'x'][index % 3] })
             .collect();
-        let entry: &'static FileEntry = Box::leak(Box::new(FileEntry {
-            id: leak(key.clone()),
-            name: leak(item.name.clone()),
+        let entry = FileEntry {
+            id: key.clone().into(),
+            name: item.name.clone().into(),
             kind,
             parent,
             target: item.is_dir.then(|| Location::remote(&path)),
-            modified: leak(item.modified.clone()),
+            modified: item.modified.clone().into(),
             modified_at: None,
             bytes: item.bytes,
-            metadata: leak(format!("{} · {mode} · on server", kind.label())),
+            metadata: format!("{} · {mode} · on server", kind.label()).into(),
             tags: &[],
             preview: None,
             path: None,
             cloud: CloudState::Local,
-        }));
-        lock().entries.insert(entry.id, entry);
+        }
+        .shared();
+        lock().entries.insert(key, entry.clone());
         entry
     }
 }
@@ -902,12 +924,12 @@ pub fn clear_search_index() {
 }
 
 /// The entry for a file on disk (to reveal it).
-pub fn entry_at(path: &Path) -> Option<&'static FileEntry> {
+pub fn entry_at(path: &Path) -> Option<Entry> {
     fs_index::entry_for_path(path)
 }
 
 /// Everything under `root` (a few levels deep) for global search.
-pub fn searchable_entries(root: &Path) -> Vec<&'static FileEntry> {
+pub fn searchable_entries(root: &Path) -> Vec<Entry> {
     fs_index::search_index(root)
 }
 
@@ -954,7 +976,7 @@ impl SortOrder {
 }
 
 fn entry_bytes(entry: &FileEntry) -> u64 {
-    if entry.is_folder() || entry.path.is_some_and(is_package) {
+    if entry.is_folder() || entry.path.as_deref().is_some_and(is_package) {
         folder_size(entry).unwrap_or(0)
     } else {
         entry.bytes
@@ -971,9 +993,9 @@ pub fn cmp_ignore_case(a: &str, b: &str) -> std::cmp::Ordering {
     a.chars().flat_map(char::to_lowercase).cmp(b.chars().flat_map(char::to_lowercase))
 }
 
-pub fn sort_entries(entries: &mut [&'static FileEntry], order: SortOrder) {
+pub fn sort_entries(entries: &mut [Entry], order: SortOrder) {
     entries.sort_by(|a, b| {
-        let by_name = || cmp_ignore_case(a.name, b.name);
+        let by_name = || cmp_ignore_case(&a.name, &b.name);
         let by_key = match order.key {
             SortKey::Name => by_name(),
             SortKey::Kind => a.kind.label().cmp(b.kind.label()),
@@ -1145,7 +1167,7 @@ impl SearchQuery {
         self.filters.iter().all(|filter| match filter {
             Filter::Kind(kinds) => kinds.contains(&entry.kind),
             Filter::Extension(extensions) => {
-                let extension = Path::new(entry.name)
+                let extension = Path::new(&*entry.name)
                     .extension()
                     .map(|extension| extension.to_string_lossy().to_lowercase());
                 // Partial, like names: ext:web finds .webp and .webm, ext:j .jpg.
@@ -1170,7 +1192,7 @@ impl SearchQuery {
             Filter::Tag(tag) => entry.tags.iter().any(|candidate| candidate.to_lowercase().contains(tag.as_str())),
             Filter::Mode(mode) => entry_mode(entry) == Some(*mode),
             Filter::Contributed(extension, key, value) => {
-                entry.path.is_some_and(|path| extension.0.search_matches(key, value, path))
+                entry.path.as_deref().is_some_and(|path| extension.0.search_matches(key, value, path))
             }
         })
     }
@@ -1231,7 +1253,7 @@ fn entry_mode(entry: &FileEntry) -> Option<u32> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        Some(std::fs::symlink_metadata(entry.path?).ok()?.permissions().mode() & 0o777)
+        Some(std::fs::symlink_metadata(entry.path.as_deref()?).ok()?.permissions().mode() & 0o777)
     }
     #[cfg(not(unix))]
     {
@@ -1367,17 +1389,17 @@ fn parse_age(value: &str) -> Option<std::time::Duration> {
 }
 
 pub fn rank_entries(
-    candidates: impl IntoIterator<Item = &'static FileEntry>,
+    candidates: impl IntoIterator<Item = Entry>,
     query: &str,
-) -> Vec<&'static FileEntry> {
+) -> Vec<Entry> {
     rank_entries_in(candidates, query, SearchScope::Folder)
 }
 
 pub fn rank_entries_in(
-    candidates: impl IntoIterator<Item = &'static FileEntry>,
+    candidates: impl IntoIterator<Item = Entry>,
     query: &str,
     scope: SearchScope,
-) -> Vec<&'static FileEntry> {
+) -> Vec<Entry> {
     use nucleo::pattern::{CaseMatching, Normalization, Pattern};
     use nucleo::{Config, Matcher, Utf32Str};
 
@@ -1401,12 +1423,12 @@ pub fn rank_entries_in(
     matched.into_iter().map(|(entry, _)| entry).collect()
 }
 
-pub fn entry(id: &str) -> Option<&'static FileEntry> {
+pub fn entry(id: &str) -> Option<Entry> {
     remote::entry(id).or_else(|| fs_index::entry_for_path(Path::new(id)))
 }
 
 /// Real filesystem access. Entries are leaked into a path-keyed registry so the
-/// rest of the UI can keep holding `&'static FileEntry`; an entry is re-created
+/// rest of the UI can keep holding `Entry`; an entry is re-created
 /// only when its size or modification time changes, which bounds the growth.
 mod fs_index {
     use std::collections::{HashMap, VecDeque};
@@ -1426,9 +1448,9 @@ mod fs_index {
     struct Registry {
         dirs: Vec<(PathBuf, &'static str)>,
         dir_ids: HashMap<PathBuf, u32>,
-        entries: HashMap<PathBuf, (Option<SystemTime>, u64, &'static FileEntry)>,
-        listings: HashMap<Location, (Instant, Vec<&'static FileEntry>)>,
-        search: Option<(Instant, PathBuf, Vec<&'static FileEntry>)>,
+        entries: HashMap<PathBuf, (Option<SystemTime>, u64, crate::model::Entry)>,
+        listings: HashMap<Location, (Instant, Vec<crate::model::Entry>)>,
+        search: Option<(Instant, PathBuf, Vec<crate::model::Entry>)>,
     }
 
     /// Entries made since launch: they live until quit, so a number that
@@ -1508,32 +1530,30 @@ mod fs_index {
         lock().dirs[id as usize].1
     }
 
-    pub fn entry_for_path(path: &Path) -> Option<&'static FileEntry> {
+    pub fn entry_for_path(path: &Path) -> Option<crate::model::Entry> {
         let metadata = fs::metadata(path).ok()?;
         Some(register(path, &metadata))
     }
 
-    fn register(path: &Path, metadata: &Metadata) -> &'static FileEntry {
+    fn register(path: &Path, metadata: &Metadata) -> crate::model::Entry {
         let modified = metadata.modified().ok();
         let bytes = if metadata.is_dir() { 0 } else { metadata.len() };
-        let previous = lock().entries.get(path).copied();
-        if let Some((cached_modified, cached_bytes, entry)) = previous
-            && cached_modified == modified
-            && cached_bytes == bytes
+        if let Some((cached_modified, cached_bytes, entry)) = lock().entries.get(path)
+            && *cached_modified == modified
+            && *cached_bytes == bytes
         {
-            return entry;
+            return entry.clone();
         }
-        // A file rewritten again and again (build output, logs) leaks only what
-        // changed: the earlier entry may still be held, so it cannot be freed.
-        let entry: &'static FileEntry = Box::leak(Box::new(build_entry(path, metadata, previous.map(|(_, _, entry)| entry))));
+        // The replaced entry is freed once no view holds it any more.
+        let entry = build_entry(path, metadata).shared();
         MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         lock()
             .entries
-            .insert(path.to_path_buf(), (modified, bytes, entry));
+            .insert(path.to_path_buf(), (modified, bytes, entry.clone()));
         entry
     }
 
-    fn build_entry(path: &Path, metadata: &Metadata, previous: Option<&'static FileEntry>) -> FileEntry {
+    fn build_entry(path: &Path, metadata: &Metadata) -> FileEntry {
         // A macOS package (an app, a Keynote document…) is one file here.
         let is_dir = metadata.is_dir() && !super::is_package(path);
         let extension = path
@@ -1562,35 +1582,27 @@ mod fs_index {
         } else {
             format!("{} · {}", extension.to_uppercase(), kind.label())
         };
-        // Unchanged text is the earlier entry's, not another leaked copy.
-        let reuse = |text: String, old: Option<&'static str>| match old {
-            Some(old) if old == text => old,
-            _ => leak(text),
-        };
-        let path: &'static Path = previous.and_then(|old| old.path).unwrap_or_else(|| Box::leak(path.to_path_buf().into_boxed_path()));
         let parent = path
             .parent()
             .map(Location::from_path)
             .unwrap_or(Location::Home);
         FileEntry {
-            id: previous.map_or_else(|| leak(path.to_string_lossy().into_owned()), |old| old.id),
-            name: previous.map_or_else(|| leak(dir_name(path)), |old| old.name),
+            id: path.to_string_lossy().into_owned().into(),
+            name: dir_name(path).into(),
             kind,
             parent,
             target: is_dir.then(|| Location::from_path(path)),
-            modified: reuse(
-                metadata
-                    .modified()
-                    .map(format_time)
-                    .unwrap_or_else(|_| "—".to_string()),
-                previous.map(|old| old.modified),
-            ),
+            modified: metadata
+                .modified()
+                .map(format_time)
+                .unwrap_or_else(|_| "—".to_string())
+                .into(),
             modified_at: metadata.modified().ok(),
             bytes,
-            metadata: reuse(metadata_label, previous.map(|old| old.metadata)),
+            metadata: metadata_label.into(),
             tags: finder_tags_of(path),
             preview: None,
-            path: Some(path),
+            path: Some(path.into()),
             cloud: super::cloud_state(path),
         }
     }
@@ -1616,7 +1628,7 @@ mod fs_index {
         !entry.file_name().to_string_lossy().starts_with('.')
     }
 
-    fn read_children(path: &Path) -> Vec<&'static FileEntry> {
+    fn read_children(path: &Path) -> Vec<crate::model::Entry> {
         let Ok(children) = fs::read_dir(path) else {
             return Vec::new();
         };
@@ -1640,8 +1652,8 @@ mod fs_index {
 
     fn cached_listing(
         location: Location,
-        load: impl FnOnce() -> Vec<&'static FileEntry>,
-    ) -> Vec<&'static FileEntry> {
+        load: impl FnOnce() -> Vec<crate::model::Entry>,
+    ) -> Vec<crate::model::Entry> {
         if let Some((loaded, entries)) = lock().listings.get(&location)
             && loaded.elapsed() < LISTING_TTL
         {
@@ -1655,14 +1667,14 @@ mod fs_index {
         entries
     }
 
-    pub fn list_dir(location: Location) -> Vec<&'static FileEntry> {
+    pub fn list_dir(location: Location) -> Vec<crate::model::Entry> {
         let Some(path) = location.path() else {
             return Vec::new();
         };
         cached_listing(location, || read_children(&path))
     }
 
-    pub fn recents() -> Vec<&'static FileEntry> {
+    pub fn recents() -> Vec<crate::model::Entry> {
         cached_listing(Location::Recents, || {
             let home = Location::Home.path();
             let desktop = dirs::desktop_dir();
@@ -1679,12 +1691,13 @@ mod fs_index {
                 .flat_map(|root| read_children(&root))
                 .filter(|entry| !entry.is_folder())
                 .collect();
-            files.sort_by_key(|entry| entry.id);
-            files.dedup_by_key(|entry| entry.id);
+            files.sort_by(|a, b| a.id.cmp(&b.id));
+            files.dedup_by(|a, b| a.id == b.id);
             files.sort_by_key(|entry| {
                 std::cmp::Reverse(
                     entry
                         .path
+                        .as_deref()
                         .and_then(|path| fs::metadata(path).ok()?.modified().ok()),
                 )
             });
@@ -1700,7 +1713,7 @@ mod fs_index {
         super::listings_changed();
     }
 
-    pub fn tagged(location: Location) -> Vec<&'static FileEntry> {
+    pub fn tagged(location: Location) -> Vec<crate::model::Entry> {
         let Some(name) = location.tag_name() else {
             return Vec::new();
         };
@@ -1714,7 +1727,7 @@ mod fs_index {
         })
     }
 
-    pub fn trash() -> Vec<&'static FileEntry> {
+    pub fn trash() -> Vec<crate::model::Entry> {
         cached_listing(Location::Trash, || {
             #[cfg(windows)]
             {
@@ -1724,7 +1737,7 @@ mod fs_index {
                     .into_iter()
                     .map(|item| {
                         let name = item.name.to_string_lossy().into_owned();
-                        let entry: &'static FileEntry = Box::leak(Box::new(FileEntry {
+                        let entry: Entry = Box::leak(Box::new(FileEntry {
                             id: leak(format!("trash:{}", item.id.to_string_lossy())),
                             kind: FileKind::from_extension(
                                 Path::new(&name).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default().as_str(),
@@ -1756,7 +1769,7 @@ mod fs_index {
         lock().search = None;
     }
 
-    pub fn search_index(root: &Path) -> Vec<&'static FileEntry> {
+    pub fn search_index(root: &Path) -> Vec<crate::model::Entry> {
         if let Some((loaded, indexed, entries)) = &lock().search
             && loaded.elapsed() < SEARCH_TTL
             && indexed == root
@@ -1774,7 +1787,7 @@ mod fs_index {
                 }
                 if entry.is_folder()
                     && depth + 1 < SEARCH_DEPTH
-                    && let Some(path) = entry.path
+                    && let Some(path) = entry.path.as_deref()
                 {
                     queue.push_back((path.to_path_buf(), depth + 1));
                 }
@@ -1929,7 +1942,7 @@ mod folder_sizes {
 
 #[cfg(test)]
 mod tests {
-    /// How much one size change of a watched file leaks (each change makes a new entry).
+    /// A watched file changing over and over frees each entry it replaces.
     #[test]
     #[ignore]
     fn leak_per_changed_file() {
@@ -1939,40 +1952,44 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         let _ = fs_index::entry_for_path(&file);
         let before = crate::alloc_stats::counts();
+        let live = LIVE_ENTRIES.load(std::sync::atomic::Ordering::Relaxed);
         for size in 2..10_002u64 {
             std::fs::File::options().write(true).open(&file).unwrap().set_len(size).unwrap();
             let _ = fs_index::entry_for_path(&file);
         }
         let after = crate::alloc_stats::counts() - before;
         println!("10,000 changes: {} allocations never freed, {} bytes allocated in all ({} per change)", after.allocs.saturating_sub(after.frees), after.bytes, after.bytes / 10_000);
+        // Each replaced entry is freed: the one file is still one entry.
+        assert_eq!(LIVE_ENTRIES.load(std::sync::atomic::Ordering::Relaxed), live, "entries alive after 10,000 changes");
     }
 
     use super::*;
     use std::time::{Duration, SystemTime};
 
-    fn file(name: &'static str, kind: FileKind, bytes: u64, age_days: u64) -> &'static FileEntry {
-        Box::leak(Box::new(FileEntry {
-            id: name,
-            name,
+    fn file(name: &'static str, kind: FileKind, bytes: u64, age_days: u64) -> Entry {
+        FileEntry {
+            id: name.into(),
+            name: name.into(),
             kind,
             parent: Location::Home,
             target: None,
-            modified: "—",
+            modified: "—".into(),
             modified_at: Some(SystemTime::now() - Duration::from_secs(age_days * 86_400)),
             bytes,
-            metadata: "",
+            metadata: "".into(),
             tags: &["Work"],
             preview: None,
             path: None,
             cloud: CloudState::Local,
-        }))
+        }
+        .shared()
     }
 
-    fn names(entries: &[&'static FileEntry]) -> Vec<&'static str> {
-        entries.iter().map(|entry| entry.name).collect()
+    fn names(entries: &[Entry]) -> Vec<gpui_kit::SharedString> {
+        entries.iter().map(|entry| entry.name.clone()).collect()
     }
 
-    fn fixtures() -> Vec<&'static FileEntry> {
+    fn fixtures() -> Vec<Entry> {
         vec![
             file("big.mov", FileKind::Video, 500 * 1024 * 1024, 40),
             file("photo.png", FileKind::Image, 3 * 1024 * 1024, 1),
@@ -2054,7 +2071,7 @@ mod tests {
         let entry = fs_index::entry_for_path(&root).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let size = loop {
-            if let Some(size) = folder_size(entry) {
+            if let Some(size) = folder_size(&entry) {
                 break size;
             }
             assert!(std::time::Instant::now() < deadline, "folder size never finished");
@@ -2092,7 +2109,7 @@ mod tests {
         assert_eq!(entry.tags, ["Client", "Зеленый"]);
         for query in ["tag:client", "tag:зеленый", "tag:ЗЕЛ", "tag:лен"] {
             let found = entries(Location::from_path(&dir), query);
-            assert_eq!(found.iter().map(|entry| entry.name).collect::<Vec<_>>(), ["tagged.md"], "{query}");
+            assert_eq!(found.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), ["tagged.md"], "{query}");
         }
         assert_eq!(Location::tag("Client").label(), "Client");
         assert_eq!(Location::tag("Client"), Location::tag("Client"), "tags intern to one id");
@@ -2189,7 +2206,7 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
         }
         let names = |query: &str| {
-            entries(Location::from_path(&dir), query).iter().map(|entry| entry.name).collect::<Vec<_>>()
+            entries(Location::from_path(&dir), query).iter().map(|entry| entry.name.clone()).collect::<Vec<_>>()
         };
         assert_eq!(names("mode:0o666"), ["shared.txt"]);
         assert_eq!(names("mode:rx-rx-rx"), ["script.sh"]);

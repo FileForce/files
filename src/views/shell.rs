@@ -562,7 +562,7 @@ impl FileExplorer {
         let (open, reveal) = (path.clone(), path.clone());
         let name = path.file_name().map_or_else(|| location.label().to_string(), |name| name.to_string_lossy().into_owned());
         let icon = match crate::model::entry_at(&path).filter(|_| file) {
-            Some(entry) => crate::views::files::file_icon_or_app(entry, palette, 14.),
+            Some(entry) => crate::views::files::file_icon_or_app(&entry, palette, 14.),
             None => Icon::new(IconName::Folder).small().text_color(if selected { palette.accent } else { palette.folder }).into_any_element(),
         };
         let item = div();
@@ -597,7 +597,7 @@ impl FileExplorer {
                 }
                 if file {
                     if let Some(entry) = crate::model::entry_at(&open) {
-                        this.open_entry(entry.id, window, cx);
+                        this.open_entry(&entry.id, window, cx);
                     }
                 } else {
                     this.navigate(location, window, cx);
@@ -1239,7 +1239,7 @@ impl FileExplorer {
         self.journal_notice();
         let (console, bell) = self.footer_buttons(palette, cx);
         let language = self.appearance.read(cx).language;
-        let selected = self.active_selection().and_then(crate::model::entry);
+        let selected = self.active_selection().and_then(|id| crate::model::entry(&id));
         let count = if self.mode == ViewMode::Dual {
             self.entries_for(self.left.location).len() + self.entries_for(self.right.location).len()
         } else {

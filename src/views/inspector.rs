@@ -10,7 +10,7 @@ use gpui_kit::{
 };
 
 use crate::app::FileExplorer;
-use crate::model::{FileEntry, FileKind};
+use crate::model::FileKind;
 use crate::palette::Palette;
 use crate::views::files::file_thumbnail;
 
@@ -75,7 +75,7 @@ impl FileExplorer {
                     // Freed when another file is selected (the global cache never lets go).
                     gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(format!("inspector-{:?}", file.path).into())))
                         .w_full()
-                        .child(if look_inside { preview_block(file, palette, settings.image_fit) } else { file_thumbnail(file, palette, 184.) }),
+                        .child(if look_inside { preview_block(file.clone(), palette, settings.image_fit) } else { file_thumbnail(&file, palette, 184.) }),
                 )
                 .when(file.kind == crate::model::FileKind::Image, |this| {
                     this.child(h_flex().justify_end().child(crate::views::quick_look::fit_button("inspector-fit", settings.image_fit, self.appearance.clone())))
@@ -87,13 +87,13 @@ impl FileExplorer {
                             div()
                                 .text_base()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(file.name),
+                                .child(file.name.clone()),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(palette.muted)
-                                .child(file.metadata),
+                                .child(file.metadata.clone()),
                         ),
                 )
                 .child(
@@ -118,9 +118,12 @@ impl FileExplorer {
                                 .small()
                                 .icon(IconName::FolderOpen)
                                 .label("Reveal")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.navigate(file.parent, window, cx);
-                                })),
+                                .on_click({
+                                    let parent = file.parent;
+                                    cx.listener(move |this, _, window, cx| {
+                                    this.navigate(parent, window, cx);
+                                })
+                                }),
                         )
                         .child(
                             Button::new("file-properties")
@@ -144,12 +147,12 @@ impl FileExplorer {
                         .child(detail_row("Kind", file.kind.label(), palette))
                         .child(detail_row(
                             "Size",
-                            crate::properties::demo_human_size(file, settings.human_sizes),
+                            crate::properties::demo_human_size(&file, settings.human_sizes),
                             palette,
                         ))
                         .child(detail_row(
                             "Modified",
-                            crate::settings::format_demo_date(file.modified, settings.date_time),
+                            crate::settings::format_demo_date(&file.modified, settings.date_time),
                             palette,
                         ))
                         .child(detail_row("Location", location, palette))
@@ -165,14 +168,14 @@ impl FileExplorer {
                             crate::model::CloudState::Local => None,
                         })
                         .children(
-                            (file.is_folder() && file.path.is_some_and(crate::forks::has_forks))
+                            (file.is_folder() && file.path.as_deref().is_some_and(crate::forks::has_forks))
                                 .then(|| detail_row("Forks", "This folder has forks", palette)),
                         ),
                 );
 
             // Everything the file itself says: EXIF, streams, compression.
-            if let Some(path) = file.path.filter(|path| look_inside && crate::media_info::applies(path)) {
-                match crate::media_info::sections(path) {
+            if let Some(path) = file.path.clone().filter(|path| look_inside && crate::media_info::applies(path)) {
+                match crate::media_info::sections(&path) {
                     Some(sections) => {
                         for section in sections {
                             details = details.child(
@@ -281,7 +284,7 @@ impl FileExplorer {
     /// a per-kind summary and the combined size.
     fn render_multi_preview(
         &self,
-        entries: &[&'static FileEntry],
+        entries: &[crate::model::Entry],
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -362,7 +365,7 @@ impl FileExplorer {
                 .items_center()
                 .text_xs()
                 .child(crate::views::files::file_icon(entry, palette, 14.))
-                .child(div().flex_1().min_w_0().truncate().child(entry.name))
+                .child(div().flex_1().min_w_0().truncate().child(entry.name.clone()))
         });
         let more = entries.len().saturating_sub(SHOWN_NAMES);
 
@@ -416,11 +419,11 @@ impl FileExplorer {
 
 /// The top of the preview: the beginning of a text or code file (as
 /// Quick Look shows it), a PDF's first page, else the thumbnail.
-fn preview_block(file: &'static crate::model::FileEntry, palette: Palette, fit: crate::settings::ImageFit) -> AnyElement {
+fn preview_block(file: crate::model::Entry, palette: Palette, fit: crate::settings::ImageFit) -> AnyElement {
     use crate::model::FileKind;
-    if let Some(path) = file.path {
+    if let Some(path) = file.path.clone() {
         if matches!(file.kind, FileKind::Text | FileKind::Code)
-            && let Some(text) = cached_text(path, file.kind)
+            && let Some(text) = cached_text(&path, file.kind)
         {
             return div()
                 .id("inspector-text")
@@ -434,8 +437,8 @@ fn preview_block(file: &'static crate::model::FileEntry, palette: Palette, fit: 
                 .child(div().text_size(px(11.)).font_family(crate::palette::terminal_font()).text_color(palette.text).whitespace_normal().child(text))
                 .into_any_element();
         }
-        if crate::office_text::applies(path)
-            && let Some(text) = crate::office_text::cached(path)
+        if crate::office_text::applies(&path)
+            && let Some(text) = crate::office_text::cached(&path)
         {
             let excerpt: String = text.lines().take(80).collect::<Vec<_>>().join("\n");
             return div()
@@ -450,8 +453,8 @@ fn preview_block(file: &'static crate::model::FileEntry, palette: Palette, fit: 
                 .child(div().text_xs().text_color(palette.text).whitespace_normal().child(excerpt))
                 .into_any_element();
         }
-        if crate::pdf_pages::is_pdf(path)
-            && let Some(Some(first)) = crate::pdf_pages::pages(path).rendered.first().cloned()
+        if crate::pdf_pages::is_pdf(&path)
+            && let Some(Some(first)) = crate::pdf_pages::pages(&path).rendered.first().cloned()
         {
             return div()
                 .w_full()
@@ -466,7 +469,7 @@ fn preview_block(file: &'static crate::model::FileEntry, palette: Palette, fit: 
                 .into_any_element();
         }
     }
-    crate::views::files::file_thumbnail_fit(file, palette, 184., fit.object_fit())
+    crate::views::files::file_thumbnail_fit(&file, palette, 184., fit.object_fit())
 }
 
 /// The start of a text file, kept for the file shown (the preview redraws

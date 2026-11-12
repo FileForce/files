@@ -14,7 +14,7 @@ use gpui_kit::{
 };
 
 use crate::app::{AppearanceSettings, FileExplorer};
-use crate::model::{FileEntry, Location};
+use crate::model::Location;
 use crate::palette::Palette;
 
 enum DeleteState {
@@ -22,12 +22,12 @@ enum DeleteState {
     Working,
     Failed { message: String, retryable: bool },
     /// Protected items as (name, blacklist pattern); nothing is deleted.
-    Protected(Vec<(&'static str, String)>),
+    Protected(Vec<(gpui_kit::SharedString, String)>),
 }
 
 pub struct DeleteDialog {
     explorer: WeakEntity<FileExplorer>,
-    entries: Vec<&'static FileEntry>,
+    entries: Vec<crate::model::Entry>,
     /// How many of `entries` are already gone; a retry continues from here.
     done: usize,
     /// Items already in the trash can only be deleted permanently.
@@ -62,7 +62,7 @@ impl DeleteDialog {
         let use_trash = !self.permanent && !self.in_trash;
         let pending: Vec<_> = self.entries[self.done..]
             .iter()
-            .filter_map(|entry| entry.path)
+            .filter_map(|entry| entry.path.clone())
             .collect();
         self.state = DeleteState::Working;
         cx.notify();
@@ -71,7 +71,7 @@ impl DeleteDialog {
             let (deleted, failure) = cx
                 .background_executor()
                 .spawn(async move {
-                    match crate::delete::delete_many(&pending, use_trash) {
+                    match crate::delete::delete_many(&pending.iter().map(|path| &**path).collect::<Vec<_>>(), use_trash) {
                         Ok(()) => (pending.len(), None),
                         Err((gone, error)) => (gone, Some(error)),
                     }
@@ -85,7 +85,7 @@ impl DeleteDialog {
                 }
                 let _ = this.explorer.update(cx, |explorer, cx| {
                     for entry in &removed {
-                        explorer.forget_selection(entry.id);
+                        explorer.forget_selection(&entry.id);
                     }
                     cx.notify();
                 });
@@ -109,7 +109,7 @@ impl DeleteDialog {
                     }
                     Some(error) => {
                         let failure = crate::delete::describe(&error);
-                        let name = this.entries[this.done].name;
+                        let name = this.entries[this.done].name.clone();
                         let progress = if this.entries.len() > 1 {
                             format!(" ({} of {} done)", this.done, this.entries.len())
                         } else {
@@ -131,23 +131,24 @@ impl DeleteDialog {
 impl DeleteDialog {
     fn single_details(
         &self,
-        entry: &'static FileEntry,
+        entry: crate::model::Entry,
         palette: Palette,
         settings: &crate::settings::AppSettings,
     ) -> gpui_kit::AnyElement {
         let location = entry
             .path
+            .as_deref()
             .and_then(Path::parent)
             .map(|parent| parent.display().to_string())
             .unwrap_or_default();
-        let size = crate::properties::demo_human_size(entry, settings.human_sizes);
+        let size = crate::properties::demo_human_size(&entry, settings.human_sizes);
         v_flex()
             .gap_1()
             .p_3()
             .rounded_md()
             .bg(palette.surface)
             .text_xs()
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(entry.name))
+            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(entry.name.clone()))
             .child(div().text_color(palette.muted).child(location))
             .child(div().text_color(palette.muted).child(if entry.is_folder() {
                 format!("Folder · {} · {size} · everything inside is deleted too", entry.metadata)
@@ -210,7 +211,7 @@ impl Render for DeleteDialog {
         let settings = self.appearance.read(cx).clone();
         let palette = Palette::from_settings(&settings);
         let details = if let [entry] = self.entries.as_slice() {
-            self.single_details(entry, palette, &settings)
+            self.single_details(entry.clone(), palette, &settings)
         } else {
             self.many_details(palette, &settings)
         };
@@ -480,14 +481,14 @@ impl FileExplorer {
         let trash = crate::model::trash_dir();
         let in_trash = self.active_location() == Location::Trash
             || entries.iter().all(|entry| {
-                trash.as_ref().zip(entry.path).is_some_and(|(trash, path)| path.starts_with(trash))
+                trash.as_ref().zip(entry.path.as_deref()).is_some_and(|(trash, path)| path.starts_with(trash))
             });
         // One protected item blocks the whole batch: partial deletes surprise people.
         let protected: Vec<_> = entries
             .iter()
             .filter_map(|entry| {
-                let rule = crate::delete::protection(entry.path?, &settings.deletion.protected, &home)?;
-                Some((entry.name, rule.to_string()))
+                let rule = crate::delete::protection(entry.path.as_deref()?, &settings.deletion.protected, &home)?;
+                Some((entry.name.clone(), rule.to_string()))
             })
             .collect();
         let state = if protected.is_empty() {
@@ -553,18 +554,18 @@ impl FileExplorer {
     /// Clears selections pointing at an entry that was just deleted.
     pub(crate) fn forget_selection(&mut self, id: &str) {
         self.selection.retain(|selected| *selected != id);
-        let matches = |selected: Option<&'static str>| selected == Some(id);
-        if matches(self.selected) {
+        let matches = |selected: Option<&str>| selected == Some(&*id);
+        if matches(self.selected.as_deref()) {
             // Keep the rest of a multi-selection alive after a partial delete.
-            self.selected = self.selection.last().copied();
+            self.selected = self.selection.last().cloned();
         }
-        if matches(self.selected) {
+        if matches(self.selected.as_deref()) {
             self.selected = None;
         }
-        if matches(self.left.selected) {
+        if matches(self.left.selected.as_deref()) {
             self.left.selected = None;
         }
-        if matches(self.right.selected) {
+        if matches(self.right.selected.as_deref()) {
             self.right.selected = None;
         }
     }

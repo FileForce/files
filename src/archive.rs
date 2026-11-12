@@ -58,7 +58,7 @@ pub enum ArchivePage {
 }
 
 pub struct ArchiveWindow {
-    archive: &'static FileEntry,
+    archive: crate::model::Entry,
     entries: &'static [ArchiveEntry],
     page: ArchivePage,
     destination: Entity<InputState>,
@@ -84,7 +84,7 @@ impl ArchiveWindow {
     fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
-        archive: &'static FileEntry,
+        archive: crate::model::Entry,
         page: ArchivePage,
         appearance: Entity<AppearanceSettings>,
     ) -> Self {
@@ -93,17 +93,18 @@ impl ArchiveWindow {
         window.focus(&focus_handle, cx);
         // Reading can block for a long time (cloud placeholders, network
         // volumes), so the listing is loaded off the UI thread.
-        let online_only = archive.path.is_some_and(crate::model::is_online_only);
-        let loading = archive.path.is_some() && is_supported(archive) && !online_only;
-        if let Some(path) = archive.path.filter(|_| loading) {
+        let online_only = archive.path.as_deref().is_some_and(crate::model::is_online_only);
+        let loading = archive.path.is_some() && is_supported(&archive) && !online_only;
+        if let Some(path) = archive.path.clone().filter(|_| loading) {
             cx.spawn(async move |this, cx| {
-                let result = cx.background_executor().spawn(async move { read_archive(path) }).await;
+                let job_path = path.clone();
+                let result = cx.background_executor().spawn(async move { read_archive(&job_path) }).await;
                 let _ = this.update(cx, |this, cx| {
                     this.loading = false;
                     match result {
                         Ok(entries) => this.entries = Box::leak(entries.into_boxed_slice()),
                         Err(error) => {
-                            this.notice = Some(format!("Cannot read archive: {}", describe_error(path, &error)));
+                            this.notice = Some(format!("Cannot read archive: {}", describe_error(&path, &error)));
                         }
                     }
                     cx.notify();
@@ -123,16 +124,17 @@ impl ArchiveWindow {
         };
         let default_destination = archive
             .path
+            .as_deref()
             .and_then(Path::parent)
             .map(|parent| parent.display().to_string())
             .unwrap_or_default();
         let destination = cx.new(|cx| InputState::new(window, cx).default_value(default_destination));
         Self {
-            archive,
+            archive: archive.clone(),
             // Leaked once per opened archive window, like model entries.
             entries: &[],
             loading,
-            page: if is_supported(archive) { page } else { ArchivePage::Browse },
+            page: if is_supported(&archive) { page } else { ArchivePage::Browse },
             destination,
             create_folder: appearance.read(cx).extensions.archives_create_folder,
             overwrite_existing: appearance.read(cx).extensions.archives_overwrite,
@@ -182,7 +184,7 @@ impl ArchiveWindow {
     fn extract_target(&self, cx: &App) -> PathBuf {
         let base = self.destination_base(cx);
         if self.create_folder {
-            let folder = base.join(archive_stem(self.archive));
+            let folder = base.join(archive_stem(&self.archive));
             // A file already named like the new folder: create "name (1)" instead.
             if folder.is_file() { unique_path(&folder) } else { folder }
         } else {
@@ -197,6 +199,7 @@ impl ArchiveWindow {
         } else {
             self.archive
                 .path
+                .as_deref()
                 .and_then(Path::parent)
                 .map(Path::to_path_buf)
                 .unwrap_or_default()
@@ -213,7 +216,7 @@ impl ArchiveWindow {
     }
 
     fn start_extract(&mut self, cx: &mut Context<Self>) {
-        let Some(archive) = self.archive.path else {
+        let Some(archive) = self.archive.path.clone() else {
             return;
         };
         let base = self.destination_base(cx);
@@ -233,9 +236,10 @@ impl ArchiveWindow {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let job_target = target.clone();
+            let job_archive = archive.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { find_conflicts(archive, &job_target) })
+                .spawn(async move { find_conflicts(&job_archive, &job_target) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.extracting = false;
@@ -249,7 +253,7 @@ impl ArchiveWindow {
                     Ok(_) => this.run_extract(ConflictPolicy::Skip, cx),
                     Err(error) => {
                         this.extract_error =
-                            Some(format!("Cannot read archive: {}", describe_error(archive, &error)));
+                            Some(format!("Cannot read archive: {}", describe_error(&archive, &error)));
                     }
                 }
                 cx.notify();
@@ -259,7 +263,7 @@ impl ArchiveWindow {
     }
 
     fn run_extract(&mut self, policy: ConflictPolicy, cx: &mut Context<Self>) {
-        let Some(archive) = self.archive.path else {
+        let Some(archive) = self.archive.path.clone() else {
             return;
         };
         let target = self.extract_target(cx);
@@ -269,9 +273,10 @@ impl ArchiveWindow {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let job_target = target.clone();
+            let job_archive = archive.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { extract_archive(archive, &job_target, policy) })
+                .spawn(async move { extract_archive(&job_archive, &job_target, policy) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.extracting = false;
@@ -296,7 +301,7 @@ impl ArchiveWindow {
                     }
                     Err(error) => {
                         this.extract_error =
-                            Some(format!("Extract failed: {}", describe_error(archive, &error)));
+                            Some(format!("Extract failed: {}", describe_error(&archive, &error)));
                     }
                 }
                 cx.notify();
@@ -390,7 +395,7 @@ impl ArchiveWindow {
                         ),
                 )
         });
-        let folder_name = archive_stem(self.archive);
+        let folder_name = archive_stem(&self.archive);
         v_flex()
             .flex_1()
             .min_h_0()
@@ -670,7 +675,7 @@ impl Render for ArchiveWindow {
         let status = self.notice.clone().unwrap_or_else(|| {
             if self.loading {
                 "Reading archive…".to_string()
-            } else if is_supported(self.archive) {
+            } else if is_supported(&self.archive) {
                 format!("{} entries", self.entries.len())
             } else {
                 "Supported archives: .zip, .tar, .tar.gz, .tgz, .gz".to_string()
@@ -713,7 +718,7 @@ impl Render for ArchiveWindow {
                             .icon(IconName::PackageOpen)
                             .label("Extract all")
                             .disabled(
-                                !is_supported(self.archive)
+                                !is_supported(&self.archive)
                                     || self.loading
                                     || self.entries.is_empty()
                                     || self.page == ArchivePage::Extract,
@@ -783,7 +788,7 @@ impl Render for ArchiveWindow {
                                         let empty = rows.is_empty() && parent.is_none();
                                         let message = if self.loading {
                                             "Reading archive…".to_string()
-                                        } else if !is_supported(self.archive) {
+                                        } else if !is_supported(&self.archive) {
                                             "This archive format is not supported yet · supported: .zip, .tar, .tar.gz, .tgz, .gz".to_string()
                                         } else {
                                             self.notice.clone().unwrap_or_else(|| "Archive is empty".to_string())
@@ -822,7 +827,7 @@ impl Render for ArchiveWindow {
 }
 
 pub fn open_archive(
-    archive: &'static FileEntry,
+    archive: crate::model::Entry,
     appearance: Entity<AppearanceSettings>,
     cx: &mut App,
 ) {
@@ -830,7 +835,7 @@ pub fn open_archive(
 }
 
 pub fn open_archive_page(
-    archive: &'static FileEntry,
+    archive: crate::model::Entry,
     page: ArchivePage,
     appearance: Entity<AppearanceSettings>,
     cx: &mut App,
@@ -865,7 +870,7 @@ fn leak(value: String) -> &'static str {
 
 
 pub(crate) fn is_supported(archive: &FileEntry) -> bool {
-    archive.path.and_then(ArchiveKind::of).is_some()
+    archive.path.as_deref().and_then(ArchiveKind::of).is_some()
 }
 
 /// The archive's name without its archive suffix (`a.tar.gz` → `a`).

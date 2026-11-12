@@ -35,7 +35,7 @@ impl FileExplorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(file) = self.active_selection().and_then(entry) else {
+        let Some(file) = self.active_selection().and_then(|id| entry(&id)) else {
             return;
         };
         match command {
@@ -58,8 +58,8 @@ impl FileExplorer {
             DemoCommand::OpenWithDefault => {
                 self.open_file(file, cx);
             }
-            DemoCommand::OpenWithChooser => match file.path {
-                Some(path) => self.open_with_chooser(path, file.name, cx),
+            DemoCommand::OpenWithChooser => match file.path.clone() {
+                Some(path) => self.open_with_chooser(&path, &file.name, cx),
                 None => {
                     self.notice =
                         Some(format!("Open With · Choose Application · {} (demo)", file.name));
@@ -67,13 +67,13 @@ impl FileExplorer {
             },
             DemoCommand::Compress => {
                 if file.path.is_some() {
-                    crate::compress::open_compress(file, self.appearance.clone(), cx);
+                    crate::compress::open_compress(&file, self.appearance.clone(), cx);
                 } else {
                     self.notice = Some(format!("{} is not on the local disk", file.name));
                 }
             }
             DemoCommand::Extract => {
-                if crate::archive::is_supported(file) {
+                if crate::archive::is_supported(&file) {
                     crate::archive::open_archive_page(
                         file,
                         crate::archive::ArchivePage::Extract,
@@ -92,7 +92,7 @@ impl FileExplorer {
                 self.copy_demo_path(cx);
             }
             DemoCommand::CopyReference => {
-                let reference = file.path.map_or_else(
+                let reference = file.path.as_deref().map_or_else(
                     || format!("{}/{}", self.active_location().label(), file.name),
                     |path| format!("file://{}", path.display()),
                 );
@@ -146,17 +146,18 @@ impl FileExplorer {
     }
 
     /// Lets the user pick an application, then opens `path` with it.
-    pub(crate) fn open_with_chooser(&mut self, path: &'static Path, name: &'static str, cx: &mut Context<Self>) {
+    pub(crate) fn open_with_chooser(&mut self, path: &Path, name: &str, cx: &mut Context<Self>) {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             self.notice = Some(format!("Choose an application for {name}…"));
+            let (path, name) = (path.to_path_buf(), name.to_string());
             cx.spawn(async move |this, cx| {
                 let result = cx
                     .background_executor()
-                    .spawn(async move { choose_and_open(path) })
+                    .spawn(async move { choose_and_open(&path) })
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    this.notice = open_with_notice(name, result);
+                    this.notice = open_with_notice(&name, result);
                     cx.notify();
                 });
             })

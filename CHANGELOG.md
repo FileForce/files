@@ -8,7 +8,7 @@ version's notes under "Unreleased", then rename it when you tag.
 ## Unreleased
 
 - Memory: pictures shown in Quick Look, the Inspector and Music covers were kept for good (GPUI's global image cache never lets go) — after days of use that grew to gigabytes. Each now lives in its own cache, freed when you move on.
-- Memory: a file rewritten over and over (build output, logs) leaked ~700 bytes per change; now ~170.
+- Memory: file entries are shared and freed. Before, every change to a file (build output, logs, downloads) left its old entry in memory for good — ~700 bytes each, every time. Now a replaced entry is freed once nothing shows it: 10,000 changes leave nothing behind. DevTools → Indexes shows how many entries are alive.
 
 - Music → Space on a track: the track already playing shows Pause (and Play again) instead of restarting it.
 - Music → Space again closes the track preview, like Quick Look.

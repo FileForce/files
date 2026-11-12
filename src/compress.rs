@@ -549,7 +549,7 @@ fn section(title: &'static str, palette: Palette) -> AnyElement {
 }
 
 pub fn open_compress(entry: &FileEntry, appearance: Entity<AppearanceSettings>, cx: &mut App) {
-    let Some(source) = entry.path.map(Path::to_path_buf) else {
+    let Some(source) = entry.path.as_deref().map(Path::to_path_buf) else {
         return;
     };
     let options = WindowOptions {

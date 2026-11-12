@@ -5,10 +5,10 @@ use gpui_kit::{Context, Entity, Window, px};
 
 use crate::app::FileExplorer;
 use crate::commands::{DemoCommand, FolderCommand};
-use crate::model::{FileEntry, FileKind, Location};
+use crate::model::{FileKind, Location};
 
 pub(crate) fn file_context_menu(
-    entry: &'static FileEntry,
+    entry: crate::model::Entry,
     view: Entity<FileExplorer>,
 ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
     move |menu, window, cx| {
@@ -35,19 +35,20 @@ pub(crate) fn file_context_menu(
         // Only real folders can be forked (not items already inside a fork).
         let forkable = extensions.forks
             && entry.is_folder()
-            && entry.path.is_some_and(|path| crate::forks::fork_of(path).is_none());
+            && entry.path.as_deref().is_some_and(|path| crate::forks::fork_of(path).is_none());
         let archive_view = view.clone();
         let git_view = view.clone();
         let copy_view = view.clone();
 
         let remote_view = view.clone();
         let menu = menu.min_w(px(228.))
-            .when(crate::model::remote::entry_path(entry).is_some() && !entry.is_folder(), |menu| {
+            .when(crate::model::remote::entry_path(&entry).is_some() && !entry.is_folder(), |menu| {
+                let entry = entry.clone();
                 menu.item(
                     PopupMenuItem::new("Download to Downloads")
                         .icon(IconName::Download)
                         .on_click(window.listener_for(&remote_view, move |this, _, _, cx| {
-                            let files = this.remote_drag_entries(entry);
+                            let files = this.remote_drag_entries(entry.clone());
                             if let Some(downloads) = Location::Downloads.path() {
                                 this.download_remote(files, downloads, cx);
                             }
@@ -64,16 +65,18 @@ pub(crate) fn file_context_menu(
                 &view,
             ))
             .when(entry.is_folder() && entry.target.is_some(), |menu| {
+                let entry = entry.clone();
                 let tab_view = view.clone();
                 menu.item(
                     tinted_item("Open in New Tab", IconName::PanelTop, tint("open"))
-                        .on_click(window.listener_for(&tab_view, move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx))),
+                        .on_click(window.listener_for(&tab_view, move |this, _, window, cx| this.open_entry_in_new_tab(entry.clone(), window, cx))),
                 )
             })
-            .when(entry.path.is_some_and(crate::model::mountable), |menu| {
+            .when(entry.path.as_deref().is_some_and(crate::model::mountable), |menu| {
+                let entry = entry.clone();
                 let mount_view = view.clone();
                 menu.item(tinted_item("Mount", IconName::HardDrive, tint("open")).on_click(window.listener_for(&mount_view, move |this, _, _, cx| {
-                    if let Some(path) = entry.path {
+                    if let Some(path) = entry.path.clone() {
                         this.mount_image(path.to_path_buf(), cx);
                     }
                 })))
@@ -90,7 +93,8 @@ pub(crate) fn file_context_menu(
             })
             // Files too: a document used every day sits in the sidebar.
             .when(entry.path.is_some(), |menu| {
-                let path = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
+                let entry = entry.clone();
+                let path = entry.path.as_deref().map(std::path::Path::to_path_buf).unwrap_or_default();
                 let favorite = view.read(cx).is_favorite(&path, cx);
                 let favorite_view = view.clone();
                 menu.item(
@@ -109,10 +113,12 @@ pub(crate) fn file_context_menu(
                 )
             })
             .when(extensions.agents && entry.is_folder() && entry.path.is_some(), |menu| {
-                let folder = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
+                let entry = entry.clone();
+                let folder = entry.path.as_deref().map(std::path::Path::to_path_buf).unwrap_or_default();
                 crate::views::agents::agents_submenu(menu, view.clone(), folder, tint("agents"), window, cx)
             })
             .when(forkable, |menu| {
+                let entry = entry.clone();
                 menu.item(
                     tinted_item("Fork folder", crate::extensions::icon("Forks"), tint("forks"))
                         .action(Box::new(crate::app::ForkHere))
@@ -123,9 +129,10 @@ pub(crate) fn file_context_menu(
                         })),
                 )
             })
-            .when(extensions.music && entry.path.is_some_and(files_ext_music::local::is_audio), |menu| {
+            .when(extensions.music && entry.path.as_deref().is_some_and(files_ext_music::local::is_audio), |menu| {
+                let entry = entry.clone();
                 let (play_view, queue_view) = (view.clone(), view.clone());
-                let path = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
+                let path = entry.path.as_deref().map(std::path::Path::to_path_buf).unwrap_or_default();
                 menu.item(
                     tinted_item("Play in Music", IconName::Play, tint("music"))
                         .on_click(window.listener_for(&play_view, move |this, _, _, cx| this.play_in_music(&path, cx))),
@@ -133,20 +140,22 @@ pub(crate) fn file_context_menu(
                 .item(tinted_item("Add to Queue", IconName::ListMusic, tint("music")).on_click(window.listener_for(
                     &queue_view,
                     move |this, _, _, cx| {
-                        let mut paths = this.attachment_files(entry);
+                        let mut paths = this.attachment_files(entry.clone());
                         paths.retain(|path| files_ext_music::local::is_audio(path));
                         this.add_to_queue(paths, cx);
                     },
                 )))
             })
             .when(extensions.mail && !entry.is_folder() && entry.path.is_some(), |menu| {
+                let entry = entry.clone();
                 let mail_view = view.clone();
                 menu.item(
                     tinted_item("Send as Attachment…", IconName::Mail, tint("mail"))
-                        .on_click(window.listener_for(&mail_view, move |this, _, window, cx| this.send_as_attachment(entry, window, cx))),
+                        .on_click(window.listener_for(&mail_view, move |this, _, window, cx| this.send_as_attachment(entry.clone(), window, cx))),
                 )
             })
             .when(extensions.open_with, |menu| {
+                let entry = entry.clone();
                 menu.submenu_with_icon(
                     Some(tinted_icon(crate::extensions::icon("Open With"), tint("open-with"))),
                     "Open With",
@@ -155,7 +164,7 @@ pub(crate) fn file_context_menu(
                     move |submenu, window, _| {
                         // Like Finder: the default, every app that can open
                         // this kind of file, then any other app.
-                        let extension = entry.path.and_then(crate::default_apps::extension_of).unwrap_or_default();
+                        let extension = entry.path.as_deref().and_then(crate::default_apps::extension_of).unwrap_or_default();
                         let default = crate::default_apps::system_default(&extension);
                         let others: Vec<_> = crate::default_apps::candidates(&extension)
                             .into_iter()
@@ -174,7 +183,7 @@ pub(crate) fn file_context_menu(
                         }
                         for app in others {
                             let view = open_with_view.clone();
-                            let file = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
+                            let file = entry.path.as_deref().map(std::path::Path::to_path_buf).unwrap_or_default();
                             submenu = submenu.item(PopupMenuItem::new(app.name.clone()).icon(IconName::AppWindow).on_click(window.listener_for(&view, move |this, _, _, cx| {
                                 this.notice = Some(match crate::default_apps::open_in(&app.path, &file) {
                                     Ok(()) => format!("Opened in {}", app.name),
@@ -195,6 +204,7 @@ pub(crate) fn file_context_menu(
             })
             .separator()
             .when(extensions.archives, |menu| {
+                let entry = entry.clone();
                 menu.submenu_with_icon(
                     Some(tinted_icon(crate::extensions::icon("Archives"), tint("archives"))),
                     "ZIP",
@@ -223,7 +233,8 @@ pub(crate) fn file_context_menu(
                 )
             })
             .when(extensions.git && entry.path.is_some(), |menu| {
-                let path = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
+                let entry = entry.clone();
+                let path = entry.path.as_deref().map(std::path::Path::to_path_buf).unwrap_or_default();
                 crate::views::git::git_submenu(menu, git_view.clone(), path, tint("git"), window, cx)
             })
             .when(extensions.copy, |menu| {
@@ -260,11 +271,12 @@ pub(crate) fn file_context_menu(
             })
             // Quick Actions: what fits the selection, then Customize….
             .when(extensions.quick_actions && entry.path.is_some(), |menu| {
+                let entry = entry.clone();
                 let qa_view = view.clone();
                 let selection = {
                     let explorer = view.read(cx);
                     let selected = explorer.selected_paths();
-                    let own = entry.path.map(std::path::Path::to_path_buf).unwrap_or_default();
+                    let own = entry.path.as_deref().map(std::path::Path::to_path_buf).unwrap_or_default();
                     if selected.contains(&own) { selected } else { vec![own] }
                 };
                 menu.submenu_with_icon(
@@ -310,7 +322,7 @@ pub(crate) fn file_context_menu(
                 &view,
             ));
         let target = if entry.is_folder() { files_sdk::Targets::FOLDER } else { files_sdk::Targets::FILE };
-        crate::views::extension_ui::add_extension_items(menu, &view, target, Some(entry), entry.parent, window, cx)
+        crate::views::extension_ui::add_extension_items(menu, &view, target, Some(entry.clone()), entry.parent, window, cx)
     }
 }
 

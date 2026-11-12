@@ -72,8 +72,8 @@ impl FileExplorer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (location, selected) = match pane {
-            Pane::Left => (self.left.location, self.left.selected),
-            Pane::Right => (self.right.location, self.right.selected),
+            Pane::Left => (self.left.location, self.left.selected.clone()),
+            Pane::Right => (self.right.location, self.right.selected.clone()),
         };
         let active = self.active_pane == pane;
         let header = self.dual_pane_header(pane, location, active, palette, cx);
@@ -88,15 +88,15 @@ impl FileExplorer {
         ]
         .map(|key| self.sort_header(key, scope, palette, cx));
         let rows = files.into_iter().map(|entry| {
-            let id = entry.id;
-            let is_selected = selected == Some(id);
+            let id = entry.id.clone();
+            let is_selected = selected == Some(id.clone());
             h_flex()
-                .id(entry.id)
+                .id(entry.id.clone())
                 // Middle click on a folder: open it in a new tab, like a browser.
                 .when(entry.is_folder(), |this| {
-                    this.on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry, window, cx)))
+                    this.on_mouse_up(MouseButton::Middle, { let entry = entry.clone(); cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry.clone(), window, cx)) })
                 })
-                .when(entry.path.is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
+                .when(entry.path.as_deref().is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
                 .h(px(34.))
                 .px_3()
                 .items_center()
@@ -109,19 +109,19 @@ impl FileExplorer {
                     transparent_black()
                 })
                 .hover(|style| style.bg(palette.hover))
-                .on_click(cx.listener(move |this, _, window, cx| {
+                .on_click({ let id = id.clone(); cx.listener(move |this, _, window, cx| {
                     this.focus_main(window, cx);
-                    this.select_in_pane(pane, id, cx);
-                }))
-                .on_double_click(cx.listener(move |this, _, window, cx| {
+                    this.select_in_pane(pane, &id, cx);
+                }) })
+                .on_double_click({ let id = id.clone(); cx.listener(move |this, _, window, cx| {
                     this.focus_main(window, cx);
                     this.active_pane = pane;
-                    this.open_entry(id, window, cx);
-                }))
+                    this.open_entry(&id, window, cx);
+                }) })
                 .when(entry.path.is_some(), |this| {
                     this.on_drag(
                         crate::views::drag_drop::DraggedFile {
-                            entry,
+                            entry: entry.clone(),
                             palette,
                             source_window,
                             source: cx.entity(),
@@ -135,21 +135,21 @@ impl FileExplorer {
                 })
                 .on_mouse_down(
                     MouseButton::Right,
-                    cx.listener(move |this, _, window, cx| {
+                    { let id = id.clone(); cx.listener(move |this, _, window, cx| {
                         this.focus_main(window, cx);
-                        this.select_in_pane(pane, id, cx);
-                    }),
+                        this.select_in_pane(pane, &id, cx);
+                    }) },
                 )
-                .context_menu(file_context_menu(entry, cx.entity()))
+                .context_menu(file_context_menu(entry.clone(), cx.entity()))
                 .child(
                     h_flex()
                         .flex_1()
                         .min_w_0()
                         .items_center()
                         .gap_2()
-                        .child(file_icon(entry, palette, 15.))
+                        .child(file_icon(&entry, palette, 15.))
                         .child(div().text_xs().min_w_0().child(
-                            crate::views::files::name_with_badges(entry, 36, palette),
+                            crate::views::files::name_with_badges(&entry, 36, palette),
                         )),
                 )
                 .child(
@@ -158,7 +158,7 @@ impl FileExplorer {
                         .text_size(px(10.))
                         .text_color(palette.muted)
                         .child(crate::settings::format_demo_date(
-                            entry.modified,
+                            &entry.modified,
                             settings.date_time,
                         )),
                 )
@@ -169,7 +169,7 @@ impl FileExplorer {
                         .text_size(px(10.))
                         .text_color(palette.muted)
                         .child(crate::properties::demo_human_size(
-                            entry,
+                            &entry,
                             settings.human_sizes,
                         )),
                 )
@@ -311,12 +311,12 @@ impl FileExplorer {
     ) {
         self.drop_active = false;
         self.pending_drop = None;
-        if crate::model::remote::entry_path(drag.entry).is_some() {
+        if crate::model::remote::entry_path(&drag.entry).is_some() {
             let files = if drag.source.entity_id() == cx.entity_id() {
-                self.remote_drag_entries(drag.entry)
+                self.remote_drag_entries(drag.entry.clone())
             } else {
                 drag.source.update(cx, |source, _| source.pending_drop = None);
-                drag.source.read(cx).remote_drag_entries(drag.entry)
+                drag.source.read(cx).remote_drag_entries(drag.entry.clone())
             };
             self.active_pane = pane;
             self.download_remote_into_active(files, cx);
