@@ -84,6 +84,14 @@ pub struct SystemNotificationSettings {
     pub min_level: NotifyLevel,
 }
 
+/// Settings → Music → Spatial audio, for the players and head tracking.
+pub fn apply_spatial(settings: &AppSettings) {
+    let extensions = &settings.extensions;
+    let tracking = extensions.music_spatial != crate::spatial_player::SpatialMode::Off && extensions.music_head_tracking && cfg!(target_os = "macos");
+    crate::spatial_player::set_mode(extensions.music_spatial, tracking, settings.sound.layout);
+    if tracking { crate::head_tracking::start() } else { crate::head_tracking::stop() }
+}
+
 /// Settings → Music: how streamed Yandex tracks (MP3) are enhanced.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -867,6 +875,10 @@ pub struct ExtensionSettings {
     pub music: bool,
     /// Enhance streamed Yandex Music tracks as they play.
     pub music_enhance: MusicEnhance,
+    /// Spatial audio for headphones: Off, Auto (when headphones are on), On.
+    pub music_spatial: crate::spatial_player::SpatialMode,
+    /// The scene stays put when the head turns (macOS, AirPods and Beats).
+    pub music_head_tracking: bool,
     /// Quick Look and the preview panel's look inside files.
     pub preview: bool,
     /// The context menu's Quick Actions (Convert Image, scripts…).
@@ -967,6 +979,8 @@ impl Default for ExtensionSettings {
             mail: true,
             music: true,
             music_enhance: MusicEnhance::Off,
+            music_spatial: crate::spatial_player::SpatialMode::Off,
+            music_head_tracking: true,
             preview: true,
             quick_actions: true,
             archives_create_folder: true,

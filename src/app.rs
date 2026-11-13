@@ -271,6 +271,7 @@ impl FileExplorer {
         let appearance_subscription = cx.observe(&appearance, |this, appearance, cx| {
             let settings = appearance.read(cx).clone();
             update_search_extensions(&settings);
+            crate::settings::apply_spatial(&settings);
             // Every switch and slider shows up in the developer console.
             crate::settings::log_changes(&settings);
             this.scheme = settings.scheme;
@@ -735,6 +736,16 @@ impl FileExplorer {
         self.new_tab(window, cx);
         self.navigate(location, window, cx);
         files_sdk::log::record("files", files_sdk::log::Kind::Info, format!("New tab: {}", location.label()), None);
+    }
+
+    /// Shows `location`: here in a folder tab, in a new tab when the tab in
+    /// front is an extension's view (Music, Mail…), which has no folder.
+    pub(crate) fn show_location(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_panel().is_some() {
+            self.open_in_new_tab(location, window, cx);
+        } else {
+            self.navigate(location, window, cx);
+        }
     }
 
     pub(crate) fn open_entry_in_new_tab(&mut self, entry: crate::model::Entry, window: &mut Window, cx: &mut Context<Self>) {
@@ -3408,6 +3419,32 @@ mod tests {
         assert_eq!(right_now, Location::from_path(&root));
         assert_eq!(left_now, Location::from_path(&left), "the other pane stays put");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn connecting_from_an_extension_tab_opens_the_server_in_a_new_tab() {
+        let dir = std::env::temp_dir().join(format!("file-force-ssh-panel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let server = dir.join("home");
+        std::fs::create_dir_all(server.join("projects")).unwrap();
+        crate::ssh::use_fake_ssh(&dir);
+        let (view, cx) = pro_window();
+        // An extension's view in front (Music, Mail… — Settings is one too).
+        view.update_in(cx, |this, window, cx| this.open_settings_tab(window, cx));
+        cx.run_until_parked();
+        let tabs = cx.read(|app| view.read(app).tabs.len());
+        let connection = crate::model::SshConnection { host: "box".into(), user: "me".into(), port: 2222 };
+        let home = server.to_string_lossy().into_owned();
+        view.update_in(cx, |this, window, cx| this.start_ssh_session(connection, &home, window, cx));
+        cx.run_until_parked();
+        cx.read(|app| {
+            let this = view.read(app);
+            assert_eq!(this.tabs.len(), tabs + 1, "a new tab for the server");
+            assert!(this.active_panel().is_none(), "the new tab shows files");
+            assert_eq!(this.current, Location::remote(&home));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

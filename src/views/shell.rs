@@ -817,7 +817,7 @@ impl FileExplorer {
                 .text_color(if active { palette.text } else { palette.muted })
                 .hover(|style| style.bg(palette.hover))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.navigate(home, window, cx);
+                    this.show_location(home, window, cx);
                 }))
                 .child(
                     Icon::new(IconName::Cloud)
@@ -852,7 +852,7 @@ impl FileExplorer {
                     move |menu, window, _| {
                         let copy = copy.clone();
                         menu.item(PopupMenuItem::new("Open Home Folder").icon(IconName::House).on_click(window.listener_for(&view, move |this, _, window, cx| {
-                            this.navigate(home, window, cx);
+                            this.open_in_new_tab(home, window, cx);
                         })))
                         .item(PopupMenuItem::new("Open in Terminal").icon(IconName::SquareTerminal).on_click(window.listener_for(&view, move |this, _, _, cx| {
                             this.run_folder_command(crate::commands::FolderCommand::OpenTerminal, home, cx);

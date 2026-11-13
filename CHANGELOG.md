@@ -7,6 +7,15 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.30
+
+- Music → **Spatial audio** for headphones (Settings → Extensions → Music): stereo is spread over a virtual 5.1 room around your head — a head model per ear (the delay between the ears and the shadow of the head) and a few early reflections, made in Files, so it works the same on macOS, Windows and Linux. Off, **With headphones** (turns on when the sound goes to headphones) or Always. Turn off Spatialize Stereo in Control Center while it is on, or the sound is spatialized twice.
+- macOS: **Follow my head** with AirPods or Beats — the scene stays put when you turn your head.
+- Music → **Speakers**: Headphones, 2.1, 3.1, 5.1 or 7.1, with a test tone per speaker and *Play all in turn*. With surround speakers and a sound device that has the channels, Music spreads stereo over them itself: voice to the centre, lows to the subwoofer, ambience behind. The test plays through that same output, in its channel order.
+- Music → **Equalizer** in the Music settings too, heard in every mode — VLC, spatial audio and surround.
+- SSH: **sign in with a key** instead of a password. Type the path, **Choose…** it, or pick one of the keys found in `~/.ssh` (ed25519 first). The password field doubles as the key's passphrase, kept in the keychain. Each server remembers its key.
+- SSH: connecting while Music, Mail or Settings is in front opens the server in a new tab (before, nothing seemed to happen). **Open Home Folder** opens a new tab.
+
 ## 0.1.29
 
 - Music → Quick Actions on audio files: **Enhance to FLAC…** turns MP3 (and M4A, AAC, Ogg) into 24-bit FLAC with a harmonic exciter — it rebuilds the highs MP3 cuts off — and lifts quiet tracks towards −14 LUFS without clipping. Strength: Low, Medium or High; stereo or 5.1. **Upmix to 5.1 Surround** spreads stereo over six channels: voice in the centre, lows in the LFE, ambience behind. Built into Files — no ffmpeg needed. About a second per 4-minute track; tags and covers come along.

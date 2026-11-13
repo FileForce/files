@@ -548,6 +548,7 @@ fn info_plist(config: &Config, version: &str) -> String {
     <key>LSMinimumSystemVersion</key><string>{minimum}</string>
     <key>LSApplicationCategoryType</key><string>{category}</string>
     <key>NSHumanReadableCopyright</key><string>{copyright}</string>
+    <key>NSMotionUsageDescription</key><string>Music's spatial audio follows your head with AirPods or Beats, so the sound stays put when you turn.</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <!-- Folders: lets Settings make Files the folder viewer instead of Finder. -->

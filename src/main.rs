@@ -21,6 +21,8 @@ mod plugins;
 mod power;
 mod resources;
 mod sound;
+mod spatial_player;
+mod head_tracking;
 mod storage;
 mod session;
 mod quick_actions;
@@ -108,6 +110,7 @@ fn main() {
         files_ext_music::spotify::set_client_id(env!("FILES_SPOTIFY_CLIENT_ID"));
         power::set_mode(loaded.power_saving, loaded.power_saving_below);
         files_ext_music::set_streaming_enhance(loaded.extensions.music_enhance.strength());
+        settings::apply_spatial(&loaded);
         power::refresh();
         cx.set_reduce_motion(loaded.accessibility.reduce_motion() || power::power_saving());
         palette::apply_motion(cx, loaded.look.motion);

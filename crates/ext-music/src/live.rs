@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+pub use symphonia::core::io::MediaSource;
+
 use crate::enhance::{Exciter, Strength};
 use crate::yandex::{self, Progress};
 
@@ -109,7 +111,7 @@ fn wav_header(rate: u32, channels: u16) -> Vec<u8> {
 
 /// Over 0.9 the peaks are rounded off instead of clipped: the loudness of
 /// a stream is not known until its end, so the exciter's extra is caught here.
-fn soft_limit(sample: f32) -> f32 {
+pub fn soft_limit(sample: f32) -> f32 {
     const KNEE: f32 = 0.9;
     let level = sample.abs();
     if level <= KNEE { sample } else { sample.signum() * (KNEE + (1.0 - KNEE) * ((level - KNEE) / (1.0 - KNEE)).tanh()) }
@@ -170,24 +172,35 @@ fn serve(mut stream: TcpStream, wav: &Growing) -> io::Result<()> {
     }
 }
 
+/// Downloads track `id` from `url` in the background: its MP3 as it
+/// arrives (into the cache too). With `enhance`, the full enhancement is
+/// cached as FLAC once the whole track is in, for later plays.
+pub fn download(id: &str, url: &str, enhance: Option<Strength>, progress: Arc<Progress>) -> Arc<Growing> {
+    let mp3 = Arc::new(Growing::default());
+    let (id, url, arriving) = (id.to_string(), url.to_string(), mp3.clone());
+    std::thread::spawn(move || {
+        let fetched = yandex::fetch_with(&id, &url, &progress, |piece| arriving.push(piece));
+        arriving.finish();
+        if let (Ok(_), Some(strength)) = (fetched, enhance) {
+            let _ = yandex::enhanced(&id, strength);
+        }
+    });
+    mp3
+}
+
+/// What is arriving in `source`, for [`crate::enhance::decode_stream`].
+pub fn reader(source: Arc<Growing>) -> Box<dyn MediaSource> {
+    Box::new(Reader { source, at: 0 })
+}
+
 /// Starts enhanced streaming of track `id` from `url` at `strength`: the
 /// local address to play, at once. Downloading, enhancing and serving go
 /// on in the background; `progress` fills as the MP3 arrives.
 pub fn start(id: &str, url: &str, strength: Strength, progress: Arc<Progress>) -> io::Result<String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let address = format!("http://127.0.0.1:{}/{id}.wav", listener.local_addr()?.port());
-    let mp3 = Arc::new(Growing::default());
+    let mp3 = download(id, url, Some(strength), progress);
     let wav = Arc::new(Growing::default());
-
-    let (download_id, download_url, download_mp3) = (id.to_string(), url.to_string(), mp3.clone());
-    std::thread::spawn(move || {
-        let fetched = yandex::fetch_with(&download_id, &download_url, &progress, |piece| download_mp3.push(piece));
-        download_mp3.finish();
-        // The whole track is here: cache the full enhancement for later plays.
-        if fetched.is_ok() {
-            let _ = yandex::enhanced(&download_id, strength);
-        }
-    });
 
     let made = wav.clone();
     std::thread::spawn(move || {

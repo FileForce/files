@@ -127,8 +127,98 @@ pub(crate) fn sound_changed(cx: &mut App) {
     }
 }
 
+/// What plays a track: VLC, or the spatial audio player for headphones.
+pub(crate) enum Output {
+    Vlc(Player),
+    Spatial(crate::spatial_player::SpatialPlayer),
+}
+
+impl Output {
+    pub(crate) fn play(&self) {
+        match self {
+            Output::Vlc(player) => player.play(),
+            Output::Spatial(player) => player.play(),
+        }
+    }
+
+    pub(crate) fn pause(&self) {
+        match self {
+            Output::Vlc(player) => player.pause(),
+            Output::Spatial(player) => player.pause(),
+        }
+    }
+
+    pub(crate) fn progress(&self) -> (i64, i64) {
+        match self {
+            Output::Vlc(player) => player.progress(),
+            Output::Spatial(player) => player.progress(),
+        }
+    }
+
+    pub(crate) fn seek(&self, fraction: f32) {
+        match self {
+            Output::Vlc(player) => player.seek(fraction),
+            Output::Spatial(player) => player.seek(fraction),
+        }
+    }
+
+    pub(crate) fn set_volume(&self, volume: u8) {
+        match self {
+            Output::Vlc(player) => player.set_volume(volume),
+            Output::Spatial(player) => player.set_volume(volume),
+        }
+    }
+
+    pub(crate) fn set_equalizer(&self, equalizer: Option<&crate::video::Equalizer>) {
+        match self {
+            Output::Vlc(player) => player.set_equalizer(equalizer),
+            Output::Spatial(player) => player.set_equalizer(equalizer),
+        }
+    }
+
+    pub(crate) fn ended(&self) -> bool {
+        match self {
+            Output::Vlc(player) => player.ended(),
+            Output::Spatial(player) => player.ended(),
+        }
+    }
+
+    /// Why the spatial player's decoding stopped early, if it did.
+    fn error(&self) -> Option<String> {
+        match self {
+            Output::Vlc(_) => None,
+            Output::Spatial(player) => player.error(),
+        }
+    }
+}
+
 /// The saved sound (volume, equalizer), applied to every player.
 pub(crate) fn apply_sound(player: &Player) {
+    apply_output_sound(&OutputRef::Vlc(player));
+}
+
+enum OutputRef<'a> {
+    Vlc(&'a Player),
+    Any(&'a Output),
+}
+
+impl OutputRef<'_> {
+    fn set_volume(&self, volume: u8) {
+        match self {
+            OutputRef::Vlc(player) => player.set_volume(volume),
+            OutputRef::Any(output) => output.set_volume(volume),
+        }
+    }
+
+    fn set_equalizer(&self, equalizer: Option<&crate::video::Equalizer>) {
+        match self {
+            OutputRef::Vlc(player) => player.set_equalizer(equalizer),
+            OutputRef::Any(output) => output.set_equalizer(equalizer),
+        }
+    }
+}
+
+fn apply_output_sound(player: &OutputRef<'_>) {
     let config = files_ext_music::config();
     player.set_volume(config.volume);
     let equalizer = config.equalizer.map(|equalizer| crate::video::Equalizer { preamp: equalizer.preamp, bands: equalizer.bands });
@@ -139,7 +229,7 @@ pub(crate) fn apply_sound(player: &Player) {
 pub(crate) struct Jukebox {
     pub(crate) queue: Vec<Track>,
     pub(crate) index: Option<usize>,
-    player: Option<Player>,
+    player: Option<Output>,
     pub(crate) playing: bool,
     pub(crate) position: i64,
     pub(crate) length: i64,
@@ -320,6 +410,11 @@ impl Jukebox {
         self.radio_feedback("trackStarted", cx);
         self.top_up_radio(cx);
         self.length = track.duration_ms as i64;
+        if let Some(target) = crate::spatial_player::target()
+            && self.start_spatial(index, &track, target, cx)
+        {
+            return;
+        }
         match track.source.clone() {
             Source::Local(path) => self.open_file(&path, cx),
             // From an extension: streamed as it comes.
@@ -462,10 +557,81 @@ impl Jukebox {
         }
     }
 
+    /// Settings → Music → Spatial audio: the track through the spatial
+    /// player (files, and Yandex tracks as they download). False: not for
+    /// this track (a web stream), VLC plays it.
+    fn start_spatial(&mut self, index: usize, track: &Track, target: files_ext_music::spatial::Target, cx: &mut Context<Self>) -> bool {
+        use crate::spatial_player::Source as Spatial;
+        crate::head_tracking::recenter();
+        let enhance = files_ext_music::streaming_enhance();
+        let expected = track.duration_ms as i64;
+        match track.source.clone() {
+            Source::Local(path) => self.open_spatial(Spatial::File(path), None, expected, target, cx),
+            Source::Yandex(id) => {
+                let enhanced = enhance.map(|strength| yandex::enhanced_file(&id, strength)).filter(|file| file.is_file());
+                let cached = yandex::cached_file(&id);
+                if let Some(file) = enhanced {
+                    crate::storage::touch(&file);
+                    self.open_spatial(Spatial::File(file), None, expected, target, cx);
+                } else if cached.is_file() {
+                    crate::storage::touch(&cached);
+                    self.open_spatial(Spatial::File(cached), enhance, expected, target, cx);
+                } else {
+                    self.loading = true;
+                    cx.spawn(async move |this, cx| {
+                        let asked = id.clone();
+                        let url = cx.background_executor().spawn(async move { yandex::stream(&asked) }).await;
+                        let _ = this.update(cx, |this, cx| {
+                            if this.index != Some(index) {
+                                return;
+                            }
+                            this.loading = false;
+                            match url {
+                                Ok(url) => {
+                                    let progress = std::sync::Arc::new(yandex::Progress::default());
+                                    let mp3 = files_ext_music::live::download(&id, &url, enhance, progress.clone());
+                                    this.buffer = Some(progress);
+                                    this.open_spatial(Spatial::Arriving(mp3), enhance, expected, target, cx);
+                                }
+                                Err(error) => this.fail(error.to_string(), cx),
+                            }
+                        });
+                    })
+                    .detach();
+                }
+                self.prefetch_next(index);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn open_spatial(
+        &mut self,
+        source: crate::spatial_player::Source,
+        enhance: Option<files_ext_music::enhance::Strength>,
+        expected_ms: i64,
+        target: files_ext_music::spatial::Target,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::spatial_player::SpatialPlayer::open(source, enhance, expected_ms, target) {
+            Ok(player) => {
+                let player = Output::Spatial(player);
+                apply_output_sound(&OutputRef::Any(&player));
+                player.play();
+                self.player = Some(player);
+                self.playing = true;
+            }
+            Err(error) => self.fail(error, cx),
+        }
+        cx.notify();
+    }
+
     fn open_stream(&mut self, url: &str, cx: &mut Context<Self>) {
         match Player::open_url(url) {
             Ok(player) => {
-                apply_sound(&player);
+                let player = Output::Vlc(player);
+                apply_output_sound(&OutputRef::Any(&player));
                 player.play();
                 self.player = Some(player);
                 self.playing = true;
@@ -511,7 +677,8 @@ impl Jukebox {
     fn open_file(&mut self, path: &Path, cx: &mut Context<Self>) {
         match Player::open(path) {
             Ok(player) => {
-                apply_sound(&player);
+                let player = Output::Vlc(player);
+                apply_output_sound(&OutputRef::Any(&player));
                 player.play();
                 self.player = Some(player);
                 self.playing = true;
@@ -585,7 +752,7 @@ impl Jukebox {
     /// Volume or equalizer changed: the current track hears it at once.
     pub(crate) fn sound_changed(&self) {
         if let Some(player) = &self.player {
-            apply_sound(player);
+            apply_output_sound(&OutputRef::Any(player));
         }
     }
 
@@ -628,6 +795,11 @@ impl Jukebox {
             if position != self.position || filling {
                 self.position = position;
                 cx.notify();
+            }
+            if let Some(error) = player.error().filter(|_| self.position == 0) {
+                self.player = None;
+                self.fail(error, cx);
+                return;
             }
             if player.ended() {
                 self.radio_feedback("trackFinished", cx);

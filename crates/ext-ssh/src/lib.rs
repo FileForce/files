@@ -84,6 +84,84 @@ pub fn forget_password(endpoint: &SshConnection) -> io::Result<()> {
     secrets::delete(MANIFEST.id, &endpoint.address())
 }
 
+/// Private keys chosen per server, one `address<TAB>path` a line: a path is
+/// not a secret, so it lives beside the settings, not in the keychain.
+fn keys_file() -> Option<PathBuf> {
+    Some(files_sdk::host().config_dir()?.join("ssh-keys"))
+}
+
+fn read_keys() -> Vec<(String, PathBuf)> {
+    let Some(text) = keys_file().and_then(|file| std::fs::read_to_string(file).ok()) else { return Vec::new() };
+    text.lines().filter_map(|line| line.split_once('\t')).map(|(address, path)| (address.to_string(), PathBuf::from(path))).collect()
+}
+
+/// The private key `ssh` signs in with for this server, if one was chosen.
+pub fn identity(endpoint: &SshConnection) -> Option<PathBuf> {
+    let address = endpoint.address();
+    read_keys().into_iter().find(|(known, _)| *known == address).map(|(_, path)| path)
+}
+
+/// Signs in to this server with `key` from now on (`None`: ssh's own choice
+/// again — ~/.ssh/config, the agent, the default keys).
+pub fn save_identity(endpoint: &SshConnection, key: Option<&Path>) -> io::Result<()> {
+    let file = keys_file().ok_or_else(|| io::Error::other("no settings folder"))?;
+    let address = endpoint.address();
+    let mut keys: Vec<(String, PathBuf)> = read_keys().into_iter().filter(|(known, _)| *known != address).collect();
+    if let Some(key) = key {
+        keys.push((address, expand_home(key)));
+    }
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let text: String = keys.iter().map(|(address, path)| format!("{address}\t{}\n", path.display())).collect();
+    std::fs::write(file, text)
+}
+
+/// `~/.ssh/id_ed25519` → the home folder's.
+pub fn expand_home(path: &Path) -> PathBuf {
+    match (path.strip_prefix("~"), std::env::home_dir()) {
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// The private keys in `~/.ssh`, the usual ones first: files with a `.pub`
+/// beside them, or named like `id_*` (not the `.pub` halves, config…).
+pub fn standard_keys() -> Vec<PathBuf> {
+    let Some(dir) = std::env::home_dir().map(|home| home.join(".ssh")) else { return Vec::new() };
+    keys_in(&dir)
+}
+
+fn keys_in(dir: &Path) -> Vec<PathBuf> {
+    const USUAL: [&str; 4] = ["id_ed25519", "id_ecdsa", "id_rsa", "id_ed25519_sk"];
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut keys: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            let skip = name.ends_with(".pub") || name.starts_with('.') || matches!(name.as_str(), "config" | "known_hosts" | "known_hosts.old" | "authorized_keys" | "environment");
+            !skip && (name.starts_with("id_") || path.with_file_name(format!("{name}.pub")).is_file())
+        })
+        .collect();
+    keys.sort_by_key(|path| {
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        (USUAL.iter().position(|usual| *usual == name).unwrap_or(USUAL.len()), name)
+    });
+    keys
+}
+
+/// The `ssh` options that sign in with the chosen key, and only with it
+/// (an agent full of other keys would hit the server's attempt limit first).
+pub fn identity_args(endpoint: &SshConnection) -> io::Result<Vec<String>> {
+    let Some(key) = identity(endpoint) else { return Ok(Vec::new()) };
+    if !key.is_file() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, format!("The key {} is not there any more · choose it again in the connection dialog", key.display())));
+    }
+    Ok(vec!["-i".into(), key.display().to_string(), "-o".into(), "IdentitiesOnly=yes".into()])
+}
+
 fn has_password(endpoint: &SshConnection) -> bool {
     secrets::get(MANIFEST.id, &endpoint.address()).ok().flatten().is_some()
 }
@@ -116,7 +194,7 @@ impl RemoteProvider for Ssh {
 
     fn list(&self, endpoint: &SshConnection, path: &str) -> io::Result<Vec<RemoteItem>> {
         // `-L` shows what symlinks point to, so linked folders open as folders.
-        let output = files_sdk::log::run(MANIFEST.id, &mut command(endpoint, &format!("cd -- {} && LC_ALL=C ls -lanL", quote(path))))?;
+        let output = files_sdk::log::run(MANIFEST.id, &mut command(endpoint, &format!("cd -- {} && LC_ALL=C ls -lanL", quote(path)))?)?;
         // Broken links make `ls` exit non-zero but the rest is still listed.
         if !output.status.success() && output.stdout.is_empty() {
             return Err(ssh_error(&output.stderr));
@@ -125,7 +203,7 @@ impl RemoteProvider for Ssh {
     }
 
     fn download(&self, endpoint: &SshConnection, remote: &str, local: &Path) -> io::Result<()> {
-        let mut download = command(endpoint, &format!("cat -- {}", quote(remote)));
+        let mut download = command(endpoint, &format!("cat -- {}", quote(remote)))?;
         files_sdk::log::spawned(MANIFEST.id, &download);
         let mut child = download.spawn()?;
         let mut stdout = child.stdout.take().expect("piped");
@@ -151,7 +229,7 @@ impl RemoteProvider for Ssh {
         let taken: Vec<String> = self.list(endpoint, folder)?.into_iter().map(|item| item.name).collect();
         let name = free_name(&name, &taken);
         let target = join(folder, &name);
-        let mut command = command(endpoint, &format!("cat > {}", quote(&target)));
+        let mut command = command(endpoint, &format!("cat > {}", quote(&target)))?;
         command.stdin(Stdio::piped());
         files_sdk::log::spawned(MANIFEST.id, &command);
         let mut child = command.spawn()?;
@@ -193,11 +271,12 @@ fn control_dir() -> PathBuf {
     dir
 }
 
-fn command(endpoint: &SshConnection, remote: &str) -> Command {
+fn command(endpoint: &SshConnection, remote: &str) -> io::Result<Command> {
     let mut command = files_sdk::log::command(program());
     let control = control_dir().join("%C");
     command.args(["-p", &endpoint.port.to_string()]);
-    // A saved password is answered by the keychain helper; otherwise never
+    command.args(identity_args(endpoint)?);
+    // A saved password (or a key's passphrase) is answered by the keychain helper; otherwise never
     // hang on a prompt: there is no terminal.
     match has_password(endpoint).then(|| askpass_script(endpoint)).transpose() {
         Ok(Some(askpass)) => {
@@ -225,11 +304,11 @@ fn command(endpoint: &SshConnection, remote: &str) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    command
+    Ok(command)
 }
 
 fn run(endpoint: &SshConnection, remote: &str) -> io::Result<Vec<u8>> {
-    let output = files_sdk::log::run(MANIFEST.id, &mut command(endpoint, remote))?;
+    let output = files_sdk::log::run(MANIFEST.id, &mut command(endpoint, remote)?)?;
     if output.status.success() {
         return Ok(output.stdout);
     }
@@ -295,7 +374,7 @@ pub fn auth_url(line: &str) -> Option<String> {
 pub fn connect_with_prompts(endpoint: &SshConnection, mut prompt: impl FnMut(AuthPrompt)) -> io::Result<String> {
     use std::io::BufRead as _;
     files_sdk::permissions::check(MANIFEST.id, Permission::Network)?;
-    let mut ssh = command(endpoint, "pwd");
+    let mut ssh = command(endpoint, "pwd")?;
     // The server's banner and prompts arrive on stderr; a login can take a
     // while, so the connect timeout only covers reaching the server.
     files_sdk::log::spawned(MANIFEST.id, &ssh);
@@ -579,7 +658,7 @@ mod tests {
         let path = control_dir().join("0".repeat(40));
         assert!(path.as_os_str().len() < 100, "{} is too long", path.display());
         let endpoint = SshConnection { host: "terminal.shop".into(), user: String::new(), port: 22 };
-        let line = files_sdk::log::shell_line(&command(&endpoint, "pwd"));
+        let line = files_sdk::log::shell_line(&command(&endpoint, "pwd").unwrap());
         assert!(line.contains("ControlPath=/tmp/fe-ssh-"), "{line}");
     }
 
@@ -632,6 +711,38 @@ mod tests {
         let error = home_from_pwd("terminal.shop", "Requires an active PTY").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert!(error.to_string().contains("interactive app") && error.to_string().contains("Requires an active PTY"));
+    }
+
+    #[test]
+    fn private_keys_are_found_the_usual_ones_first() {
+        let dir = std::env::temp_dir().join(format!("files-ext-ssh-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["id_rsa", "id_rsa.pub", "id_ed25519", "id_ed25519.pub", "work", "work.pub", "config", "known_hosts", "notes.txt"] {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        let names: Vec<String> = keys_in(&dir).iter().map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["id_ed25519", "id_rsa", "work"], "a key is a file with its .pub, or id_*; ed25519 first");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_chosen_key_is_the_only_one_ssh_tries() {
+        let dir = std::env::temp_dir().join(format!("files-ext-ssh-identity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("deploy");
+        std::fs::write(&key, "x").unwrap();
+        let endpoint = SshConnection { host: format!("key-host-{}", std::process::id()), user: "me".into(), port: 22 };
+        assert!(identity_args(&endpoint).unwrap().is_empty(), "no key chosen: ssh decides");
+        save_identity(&endpoint, Some(&key)).unwrap();
+        assert_eq!(identity_args(&endpoint).unwrap(), ["-i".to_string(), key.display().to_string(), "-o".into(), "IdentitiesOnly=yes".into()]);
+        std::fs::remove_file(&key).unwrap();
+        let missing = identity_args(&endpoint).unwrap_err();
+        assert!(missing.to_string().contains("not there any more"), "{missing}");
+        save_identity(&endpoint, None).unwrap();
+        assert_eq!(identity(&endpoint), None);
+        assert_eq!(expand_home(Path::new("~/.ssh/id_rsa")), std::env::home_dir().unwrap().join(".ssh/id_rsa"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

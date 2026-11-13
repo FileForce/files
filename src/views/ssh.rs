@@ -9,6 +9,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Input, InputState};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
@@ -26,7 +27,11 @@ pub struct SshDialog {
     host: Entity<InputState>,
     user: Entity<InputState>,
     port: Entity<InputState>,
-    /// Optional; saved in the keychain, never in settings.
+    /// A private key to sign in with (empty: ssh's own choice).
+    key: Entity<InputState>,
+    /// Private keys found in ~/.ssh, offered with one click.
+    found_keys: Vec<PathBuf>,
+    /// Optional; saved in the keychain, never in settings. With a key, its passphrase.
     password: Entity<InputState>,
     error: Option<String>,
     /// The server is an interactive app (no shell): offer a terminal instead.
@@ -55,7 +60,12 @@ impl SshDialog {
         let host = input_with_value(window, cx, last.as_ref().map_or("", |last| &last.host));
         let user = input_with_value(window, cx, last.as_ref().map_or("", |last| &last.user));
         let port = input_with_value(window, cx, &last.as_ref().map_or(22, |last| last.port).to_string());
-        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Only if the server has no key for you"));
+        let found_keys = crate::ssh::standard_keys();
+        let saved_key = last.as_ref().and_then(crate::ssh::identity).map(|key| key.display().to_string()).unwrap_or_default();
+        let key = input_with_value(window, cx, &saved_key);
+        let hint = found_keys.first().map_or_else(|| "~/.ssh/id_ed25519 · empty: your ssh setup decides".to_string(), |first| format!("{} · empty: your ssh setup decides", tilde(first)));
+        key.update(cx, |input, cx| input.set_placeholder(hint, window, cx));
+        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Only if the server has no key for you, or the key has a passphrase"));
         let appearance_subscription = cx.observe(&appearance, |_, _, cx| cx.notify());
         Self {
             explorer,
@@ -64,6 +74,8 @@ impl SshDialog {
             host,
             user,
             port,
+            key,
+            found_keys,
             password,
             error: None,
             interactive_only: false,
@@ -91,6 +103,20 @@ impl SshDialog {
             return;
         };
         let connection = SshConnection { host, user, port };
+        let key = self.key.read(cx).value().trim().to_string();
+        let key = (!key.is_empty()).then(|| crate::ssh::expand_home(std::path::Path::new(&key)));
+        if let Some(key) = &key
+            && !key.is_file()
+        {
+            self.error = Some(format!("No key at {}", key.display()));
+            cx.notify();
+            return;
+        }
+        if let Err(error) = crate::ssh::save_identity(&connection, key.as_deref()) {
+            self.error = Some(format!("Key not saved: {error}"));
+            cx.notify();
+            return;
+        }
         let password = self.password.read(cx).value().to_string();
         if !password.is_empty() {
             if let Err(error) = crate::ssh::save_password(&connection, &password) {
@@ -157,6 +183,8 @@ impl SshDialog {
         self.host.update(cx, |input, cx| input.set_value(connection.host.clone(), window, cx));
         self.user.update(cx, |input, cx| input.set_value(connection.user.clone(), window, cx));
         self.port.update(cx, |input, cx| input.set_value(connection.port.to_string(), window, cx));
+        let key = crate::ssh::identity(connection).map(|key| key.display().to_string()).unwrap_or_default();
+        self.key.update(cx, |input, cx| input.set_value(key, window, cx));
         self.connect(window, cx);
     }
 
@@ -167,8 +195,9 @@ impl SshDialog {
         let port = self.port.read(cx).value().trim().parse::<u16>().unwrap_or(22);
         let endpoint = SshConnection { host, user, port };
         let app = self.appearance.read(cx).extensions.terminal_app.effective();
+        let key = crate::ssh::identity_args(&endpoint).unwrap_or_default().iter().map(|arg| files_sdk::log::shell_quote(arg)).collect::<Vec<_>>().join(" ");
         let command = format!(
-            "exec ssh -t -p {} {}",
+            "exec ssh -t -p {} {key} {}",
             endpoint.port,
             files_sdk::log::shell_quote(&endpoint.destination())
         );
@@ -182,6 +211,24 @@ impl SshDialog {
                 cx.notify();
             }
         }
+    }
+
+    /// The system's file picker for the key.
+    fn choose_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this key".into()) });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    // The public half was picked: the private one is beside it.
+                    let path = if path.extension().is_some_and(|extension| extension == "pub") { path.with_extension("") } else { path };
+                    this.key.update(cx, |input, cx| input.set_value(tilde(&path), window, cx));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn close(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -229,7 +276,35 @@ impl Render for SshDialog {
             .child(input_row("Host", &self.host, palette))
             .child(input_row("User", &self.user, palette))
             .child(input_row("Port", &self.port, palette))
-            .child(input_row("Password (saved in Passwords / Keychain)", &self.password, palette))
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(div().text_xs().text_color(palette.muted).child("Private key"))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().flex_1().child(Input::new(&self.key).w_full()))
+                            .when(!self.found_keys.is_empty(), |row| {
+                                // One button, the keys in its menu: a ~/.ssh with dozens of keys
+                                // must not push Connect off the dialog.
+                                let entity = cx.entity();
+                                let keys = self.found_keys.clone();
+                                row.child(Button::new("ssh-key-found").small().icon(gpui_kit::assets::IconName::Key).label(format!("~/.ssh ({})", keys.len())).tooltip("Keys found in ~/.ssh").dropdown_menu(
+                                    move |menu, window, _| {
+                                        keys.iter().fold(menu, |menu, path| {
+                                            let value = tilde(path);
+                                            menu.item(gpui_kit::component::menu::PopupMenuItem::new(value.clone()).on_click(window.listener_for(&entity, move |this: &mut SshDialog, _, window, cx| {
+                                                this.key.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+                                                cx.notify();
+                                            })))
+                                        })
+                                    },
+                                ))
+                            })
+                            .child(Button::new("ssh-key-browse").small().icon(gpui_kit::assets::IconName::FolderOpen).label("Choose…").on_click(cx.listener(|this, _, window, cx| this.choose_key(window, cx)))),
+                    )
+            )
+            .child(input_row("Password or key passphrase (saved in Passwords / Keychain)", &self.password, palette))
             .children(self.auth.clone().map(|auth| {
                 let url = auth.url.clone();
                 let copy = auth.url.clone();
@@ -406,7 +481,7 @@ impl FileExplorer {
             sidebar.ssh.truncate(8);
         });
         let home = self.ssh_home;
-        self.navigate(home, window, cx);
+        self.show_location(home, window, cx);
         self.notice = Some(format!("Connected · {address}"));
         cx.notify();
     }
@@ -415,6 +490,7 @@ impl FileExplorer {
         // Forgetting a server also removes its saved password.
         if let Some(connection) = SshConnection::parse(address) {
             let _ = crate::ssh::forget_password(&connection);
+            let _ = crate::ssh::save_identity(&connection, None);
         }
         self.update_sidebar(cx, |sidebar| sidebar.ssh.retain(|known| known != address));
     }
@@ -646,6 +722,14 @@ fn input_with_value(
         input.set_value(value.to_string(), window, cx);
         input
     })
+}
+
+/// `/Users/me/.ssh/id_ed25519` → `~/.ssh/id_ed25519`.
+fn tilde(path: &std::path::Path) -> String {
+    match std::env::home_dir().and_then(|home| path.strip_prefix(home).ok().map(std::path::Path::to_path_buf)) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 fn input_row(label: &'static str, input: &Entity<InputState>, palette: Palette) -> AnyElement {

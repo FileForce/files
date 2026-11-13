@@ -11,6 +11,7 @@ use files_sdk::{Icon, Manifest, Permission, host};
 pub mod enhance;
 pub mod live;
 pub mod local;
+pub mod spatial;
 pub mod spotify;
 pub mod yandex;
 

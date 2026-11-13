@@ -1583,6 +1583,91 @@ impl SettingsWindow {
                 "Yandex streams MP3. When on, the track is enhanced while it downloads: it may start a little later and use more processor time, for better sound. A new track can't be scrubbed until it has fully arrived; played again, it comes from the cache in FLAC.",
                 "Яндекс отдаёт MP3. Если включено, трек улучшается прямо во время загрузки: старт может быть чуть позже и нагрузка на процессор выше, зато звук лучше. Новый трек нельзя перематывать, пока он не загрузится целиком; при повторе играет из кеша во FLAC.",
             )))
+            .child(div().pt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child(tr(language, "Speakers", "Динамики")))
+            .child(setting_row(
+                tr(language, "Your speakers", "Ваши динамики"),
+                h_flex().gap_2().flex_wrap().children(crate::settings::SpeakerLayout::ALL.map(|layout| {
+                    use crate::settings::SpeakerLayout;
+                    option_button(gpui_kit::ElementId::Name(format!("music-layout-{}", layout.label()).into()), layout.label(), self.draft.sound.layout == layout)
+                        .icon(if layout == SpeakerLayout::Headphones { IconName::Headphones } else { IconName::Speaker })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.draft.sound.layout = layout;
+                            cx.notify();
+                        }))
+                })),
+                palette,
+            ))
+            .child(h_flex().gap_2().flex_wrap().children(crate::sound::speakers(self.draft.sound.layout).iter().enumerate().map(|(index, speaker)| {
+                let layout = self.draft.sound.layout;
+                div().debug_selector(move || format!("music-speaker-{index}")).child(
+                    Button::new(("music-speaker", index))
+                        .small()
+                        .icon(if speaker.short == "LFE" { IconName::AudioWaveform } else { IconName::Volume2 })
+                        .label(format!("{} · {}", speaker.short, speaker.name))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::spatial_player::test_speaker(layout, index, files_ext_music::config().volume);
+                            cx.notify();
+                        })),
+                )
+            })))
+            .child(h_flex().child(Button::new("music-play-all").small().icon(IconName::Play).label(tr(language, "Play all in turn", "Все по очереди")).on_click(cx.listener(
+                |this, _, _, _| {
+                    let layout = this.draft.sound.layout;
+                    let count = crate::sound::speakers(layout).len();
+                    std::thread::spawn(move || {
+                        for index in 0..count {
+                            crate::spatial_player::test_speaker(layout, index, files_ext_music::config().volume);
+                            std::thread::sleep(std::time::Duration::from_millis(1500));
+                        }
+                    });
+                },
+            ))))
+            .child(div().text_xs().text_color(palette.faint).child(tr(
+                language,
+                "Shared with Settings → Sound. With 2.1, 3.1, 5.1 or 7.1 and a sound device that has those channels, Music spreads stereo over them itself: voice to the centre, lows to the subwoofer, ambience behind. The test plays through that same output, in its channel order.",
+                "Общая настройка с Settings → Sound. При 2.1, 3.1, 5.1 или 7.1 и звуковом устройстве с таким числом каналов Music сам раскладывает стерео: голос в центр, низы в сабвуфер, атмосферу назад. Проверка играет через тот же вывод и в том же порядке каналов.",
+            )))
+            .child(div().pt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child(tr(language, "Spatial audio", "Пространственный звук")))
+            .child(setting_row(
+                tr(language, "For headphones", "Для наушников"),
+                h_flex().gap_2().flex_wrap().children(crate::spatial_player::SpatialMode::ALL.map(|mode| {
+                    use crate::spatial_player::SpatialMode;
+                    let label = match mode {
+                        SpatialMode::Off => tr(language, "Off", "Выкл."),
+                        SpatialMode::Auto => tr(language, "With headphones", "С наушниками"),
+                        SpatialMode::On => tr(language, "Always", "Всегда"),
+                    };
+                    option_button(gpui_kit::ElementId::Name(format!("music-spatial-{mode:?}").into()), label, self.draft.extensions.music_spatial == mode).on_click(cx.listener(move |this, _, _, cx| {
+                        this.draft.extensions.music_spatial = mode;
+                        cx.notify();
+                    }))
+                })),
+                palette,
+            ))
+            .when(cfg!(target_os = "macos"), |this| {
+                this.child(
+                    Switch::new("music-head-tracking")
+                        .label(tr(language, "Follow my head (AirPods, Beats)", "Следить за поворотом головы (AirPods, Beats)"))
+                        .checked(self.draft.extensions.music_head_tracking)
+                        .disabled(self.draft.extensions.music_spatial == crate::spatial_player::SpatialMode::Off)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.draft.extensions.music_head_tracking = *checked;
+                            cx.notify();
+                        })),
+                )
+            })
+            .child(div().text_xs().text_color(palette.faint).child(tr(
+                language,
+                "Stereo is spread over a virtual 5.1 room around your head. \"With headphones\" turns it on when the sound goes to headphones. Turn off Spatialize Stereo in Control Center while it is on, or the sound is spatialized twice. Applies from the next track.",
+                "Стерео раскладывается по виртуальной комнате 5.1 вокруг головы. «С наушниками» включает его, когда звук идёт в наушники. Пока он включён, выключите «Пространственное стерео» в Пункте управления, иначе звук обработается дважды. Действует со следующего трека.",
+            )))
+            .child(div().pt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child(tr(language, "Equalizer", "Эквалайзер")))
+            .child(self.equalizer.clone())
+            .child(div().text_xs().text_color(palette.faint).child(tr(
+                language,
+                "The same as in Settings → Sound; heard at once, on every speaker and in spatial audio.",
+                "Тот же, что в Settings → Sound; слышно сразу, на всех динамиках и в пространственном звуке.",
+            )))
             .child(div().text_xs().text_color(palette.faint).child(tr(
                 language,
                 "Spotify plays in the Spotify app (Premium); Files controls it. Yandex Music uses an unofficial API.",

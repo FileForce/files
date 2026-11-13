@@ -141,7 +141,7 @@ pub fn decode_stream(
 
 /// RBJ biquad, one per channel and stage.
 #[derive(Clone, Copy)]
-struct Biquad {
+pub struct Biquad {
     b0: f32,
     b1: f32,
     b2: f32,
@@ -163,15 +163,35 @@ impl Biquad {
         Self { b0: b0 / a0, b1: b1 / a0, b2: b0 / a0, a1: -2.0 * cos / a0, a2: (1.0 - alpha) / a0, x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0 }
     }
 
-    fn highpass(rate: u32, cutoff: f32) -> Self {
+    pub fn highpass(rate: u32, cutoff: f32) -> Self {
         Self::new(rate, cutoff, true)
     }
 
-    fn lowpass(rate: u32, cutoff: f32) -> Self {
+    pub fn lowpass(rate: u32, cutoff: f32) -> Self {
         Self::new(rate, cutoff, false)
     }
 
-    fn run(&mut self, x: f32) -> f32 {
+    /// RBJ peaking filter: `gain_db` around `centre`, `q` wide.
+    pub fn peaking(rate: u32, centre: f32, q: f32, gain_db: f32) -> Self {
+        let a = 10f32.powf(gain_db / 40.0);
+        let w = std::f32::consts::TAU * centre.min(rate as f32 * 0.45) / rate as f32;
+        let (sin, cos) = w.sin_cos();
+        let alpha = sin / (2.0 * q);
+        let a0 = 1.0 + alpha / a;
+        Self {
+            b0: (1.0 + alpha * a) / a0,
+            b1: -2.0 * cos / a0,
+            b2: (1.0 - alpha * a) / a0,
+            a1: -2.0 * cos / a0,
+            a2: (1.0 - alpha / a) / a0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+        }
+    }
+
+    pub fn run(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2;
         (self.x2, self.x1, self.y2, self.y1) = (self.x1, x, self.y1, y);
         y
