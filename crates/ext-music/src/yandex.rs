@@ -304,6 +304,28 @@ pub fn cached_file(id: &str) -> PathBuf {
     cache_dir().join(format!("yandex-{}.mp3", id.replace(|c: char| !c.is_ascii_alphanumeric(), "_")))
 }
 
+/// Where the enhanced FLAC of a cached track is kept, one per strength.
+pub fn enhanced_file(id: &str, strength: crate::enhance::Strength) -> PathBuf {
+    cached_file(id).with_extension(format!("enhanced-{}.flac", strength.name()))
+}
+
+/// The enhanced FLAC of track `id`, made from its cached MP3 (downloaded
+/// first if needed) once; later plays use it straight away.
+pub fn enhanced(id: &str, strength: crate::enhance::Strength) -> io::Result<PathBuf> {
+    let file = enhanced_file(id, strength);
+    if file.is_file() {
+        return Ok(file);
+    }
+    let mp3 = download(id)?;
+    let mut audio = crate::enhance::decode(&mp3)?;
+    crate::enhance::enhance(&mut audio, strength);
+    let partial = file.with_extension(format!("partial-{}", std::process::id()));
+    crate::enhance::encode_flac(&audio, &partial)?;
+    std::fs::rename(&partial, &file)?;
+    log("Yandex Music", format!("enhanced track {id}"));
+    Ok(file)
+}
+
 /// The address the best MP3 of a track streams from (valid for a while).
 pub fn stream(id: &str) -> io::Result<String> {
     let options = get(&format!("/tracks/{id}/download-info"))?;
@@ -338,6 +360,12 @@ impl Progress {
 
 /// Downloads `url` into the cache of track `id`, reporting as it goes.
 pub fn fetch(id: &str, url: &str, progress: &Progress) -> io::Result<PathBuf> {
+    fetch_with(id, url, progress, |_| {})
+}
+
+/// [`fetch`], handing each piece to `piece` as it arrives (the whole file
+/// at once when it is cached already).
+pub fn fetch_with(id: &str, url: &str, progress: &Progress, mut piece: impl FnMut(&[u8])) -> io::Result<PathBuf> {
     use std::io::{Read as _, Write as _};
     use std::sync::atomic::Ordering;
     let file = cached_file(id);
@@ -345,6 +373,7 @@ pub fn fetch(id: &str, url: &str, progress: &Progress) -> io::Result<PathBuf> {
         let size = std::fs::metadata(&file)?.len();
         progress.total.store(size, Ordering::Relaxed);
         progress.received.store(size, Ordering::Relaxed);
+        piece(&std::fs::read(&file)?);
         return Ok(file);
     }
     let response = check(agent().get(url).call().map_err(http_error)?, "Yandex Music")?;
@@ -362,6 +391,7 @@ pub fn fetch(id: &str, url: &str, progress: &Progress) -> io::Result<PathBuf> {
             break;
         }
         output.write_all(&buffer[..read])?;
+        piece(&buffer[..read]);
         progress.received.fetch_add(read as u64, Ordering::Relaxed);
     }
     drop(output);

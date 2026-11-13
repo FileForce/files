@@ -276,8 +276,10 @@ pub(crate) fn watch_folder_sizes<T: 'static>(cx: &mut Context<T>) {
                     std::time::Duration::from_secs(1),
                 ))
                 .await;
+            // Files made by other programs (an agent, a terminal) show up too.
+            let changed = cx.background_executor().spawn(async { crate::model::forget_changed_listings() }).await;
             let current = generation();
-            if current != seen {
+            if changed || current != seen {
                 seen = current;
                 if this.update(cx, |_, cx| cx.notify()).is_err() {
                     return;

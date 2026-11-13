@@ -324,6 +324,38 @@ impl Jukebox {
             Source::Local(path) => self.open_file(&path, cx),
             // From an extension: streamed as it comes.
             Source::Url(url) => self.open_stream(&url, cx),
+            Source::Yandex(id) if let Some(strength) = files_ext_music::streaming_enhance() => {
+                // Settings → Music → Enhance streaming: enhanced while it
+                // downloads (served locally as WAV), cached as FLAC after.
+                let ready = yandex::enhanced_file(&id, strength);
+                if ready.is_file() {
+                    self.buffer = None;
+                    crate::storage::touch(&ready);
+                    self.open_file(&ready, cx);
+                } else {
+                    self.loading = true;
+                    cx.spawn(async move |this, cx| {
+                        let asked = id.clone();
+                        let url = cx.background_executor().spawn(async move { yandex::stream(&asked) }).await;
+                        let _ = this.update(cx, |this, cx| {
+                            if this.index != Some(index) {
+                                return;
+                            }
+                            this.loading = false;
+                            let progress = std::sync::Arc::new(yandex::Progress::default());
+                            match url.and_then(|url| files_ext_music::live::start(&id, &url, strength, progress.clone())) {
+                                Ok(local) => {
+                                    this.buffer = Some(progress);
+                                    this.open_stream(&local, cx);
+                                }
+                                Err(error) => this.fail(error.to_string(), cx),
+                            }
+                        });
+                    })
+                    .detach();
+                }
+                self.prefetch_next(index);
+            }
             Source::Yandex(id) => {
                 let cached = yandex::cached_file(&id);
                 if cached.is_file() {
@@ -447,11 +479,20 @@ impl Jukebox {
     fn prefetch_next(&self, index: usize) {
         static FETCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let Some(Source::Yandex(id)) = self.queue.get(index + 1).map(|track| track.source.clone()) else { return };
-        if yandex::cached_file(&id).is_file() || FETCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let enhance = files_ext_music::streaming_enhance();
+        let ready = match enhance {
+            Some(strength) => yandex::enhanced_file(&id, strength),
+            None => yandex::cached_file(&id),
+        };
+        if ready.is_file() || FETCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
         std::thread::spawn(move || {
-            let _ = yandex::stream(&id).and_then(|url| yandex::fetch(&id, &url, &yandex::Progress::default()));
+            // The next one ahead is made whole: it then plays from the cache.
+            let _ = match enhance {
+                Some(strength) => yandex::enhanced(&id, strength),
+                None => yandex::stream(&id).and_then(|url| yandex::fetch(&id, &url, &yandex::Progress::default())),
+            };
             FETCHING.store(false, std::sync::atomic::Ordering::SeqCst);
         });
     }

@@ -1561,6 +1561,28 @@ impl SettingsWindow {
             .child(div().pt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child(tr(language, "Services", "Сервисы")))
             .child(service("music-spotify-sign-out", "Spotify", files_ext_music::spotify::connected(), files_ext_music::spotify::disconnect, cx))
             .child(service("music-yandex-sign-out", "Yandex Music", files_ext_music::yandex::connected(), files_ext_music::yandex::disconnect, cx))
+            .child(setting_row(
+                tr(language, "Enhance streaming (Yandex Music)", "Улучшать стриминг (Яндекс Музыка)"),
+                h_flex().gap_2().flex_wrap().children(crate::settings::MusicEnhance::ALL.map(|level| {
+                    use crate::settings::MusicEnhance;
+                    let label = match level {
+                        MusicEnhance::Off => tr(language, "Off", "Выкл."),
+                        MusicEnhance::Low => tr(language, "Low", "Слабо"),
+                        MusicEnhance::Medium => tr(language, "Medium", "Средне"),
+                        MusicEnhance::High => tr(language, "High", "Сильно"),
+                    };
+                    option_button(gpui_kit::ElementId::Name(format!("music-enhance-{level:?}").into()), label, self.draft.extensions.music_enhance == level).on_click(cx.listener(move |this, _, _, cx| {
+                        this.draft.extensions.music_enhance = level;
+                        cx.notify();
+                    }))
+                })),
+                palette,
+            ))
+            .child(div().text_xs().text_color(palette.faint).child(tr(
+                language,
+                "Yandex streams MP3. When on, the track is enhanced while it downloads: it may start a little later and use more processor time, for better sound. A new track can't be scrubbed until it has fully arrived; played again, it comes from the cache in FLAC.",
+                "Яндекс отдаёт MP3. Если включено, трек улучшается прямо во время загрузки: старт может быть чуть позже и нагрузка на процессор выше, зато звук лучше. Новый трек нельзя перематывать, пока он не загрузится целиком; при повторе играет из кеша во FLAC.",
+            )))
             .child(div().text_xs().text_color(palette.faint).child(tr(
                 language,
                 "Spotify plays in the Spotify app (Premium); Files controls it. Yandex Music uses an unofficial API.",

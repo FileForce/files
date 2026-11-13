@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 use files_sdk::{Icon, Manifest, Permission, host};
 
+pub mod enhance;
+pub mod live;
 pub mod local;
 pub mod spotify;
 pub mod yandex;
@@ -23,8 +25,9 @@ pub static MANIFEST: Manifest = Manifest {
         "Sidebar → Music: the library, Spotify and Yandex Music",
         "Context menu on audio files → Play in Music, Add to Queue",
         "Music tab: tracks, playlists, search and the player",
+        "Quick Actions on audio files → Enhance to FLAC, Upmix to 5.1 Surround",
     ],
-    permissions: &[Permission::Network, Permission::Secrets, Permission::ReadFiles],
+    permissions: &[Permission::Network, Permission::Secrets, Permission::ReadFiles, Permission::WriteFiles],
     commands: &[],
     menu: &[],
     sidebar: &[],
@@ -39,6 +42,10 @@ pub static EXTENSION: Music = Music;
 impl files_sdk::Extension for Music {
     fn manifest(&self) -> &'static Manifest {
         &MANIFEST
+    }
+
+    fn quick_actions(&self) -> Option<&dyn files_sdk::quick_actions::QuickActionProvider> {
+        Some(&enhance::ACTIONS)
     }
 
     fn search_keys(&self) -> &'static [files_sdk::SearchKey] {
@@ -260,6 +267,28 @@ pub fn save_config(config: &Config) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, toml::to_string_pretty(config).map_err(io::Error::other)?)
+}
+
+/// How streamed Yandex tracks are enhanced (Settings → Music); 0: not at all.
+static STREAMING_ENHANCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_streaming_enhance(strength: Option<enhance::Strength>) {
+    let value = match strength {
+        None => 0,
+        Some(enhance::Strength::Low) => 1,
+        Some(enhance::Strength::Medium) => 2,
+        Some(enhance::Strength::High) => 3,
+    };
+    STREAMING_ENHANCE.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn streaming_enhance() -> Option<enhance::Strength> {
+    match STREAMING_ENHANCE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(enhance::Strength::Low),
+        2 => Some(enhance::Strength::Medium),
+        3 => Some(enhance::Strength::High),
+        _ => None,
+    }
 }
 
 /// Which services have a token in the keychain: asked once per run (the

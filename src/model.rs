@@ -894,6 +894,11 @@ mod tag_names {
     }
 }
 
+/// Drops listings of folders changed outside the app since they were read.
+pub fn forget_changed_listings() -> bool {
+    fs_index::forget_changed()
+}
+
 /// Drops cached listings after the filesystem was changed by the app.
 pub fn invalidate_listings() {
     fs_index::invalidate();
@@ -1449,7 +1454,8 @@ mod fs_index {
         dirs: Vec<(PathBuf, &'static str)>,
         dir_ids: HashMap<PathBuf, u32>,
         entries: HashMap<PathBuf, (Option<SystemTime>, u64, crate::model::Entry)>,
-        listings: HashMap<Location, (Instant, Vec<crate::model::Entry>)>,
+        /// Read at, the folder's modified time then (folders only), entries.
+        listings: HashMap<Location, (Instant, Option<SystemTime>, Vec<crate::model::Entry>)>,
         search: Option<(Instant, PathBuf, Vec<crate::model::Entry>)>,
     }
 
@@ -1654,15 +1660,17 @@ mod fs_index {
         location: Location,
         load: impl FnOnce() -> Vec<crate::model::Entry>,
     ) -> Vec<crate::model::Entry> {
-        if let Some((loaded, entries)) = lock().listings.get(&location)
+        if let Some((loaded, _, entries)) = lock().listings.get(&location)
             && loaded.elapsed() < LISTING_TTL
         {
             return entries.clone();
         }
+        // Taken before reading, so a change made during the read is seen next time.
+        let stamp = location.path().and_then(|path| folder_stamp(&path));
         let entries = load();
         lock()
             .listings
-            .insert(location, (Instant::now(), entries.clone()));
+            .insert(location, (Instant::now(), stamp, entries.clone()));
         super::listings_changed();
         entries
     }
@@ -1704,6 +1712,35 @@ mod fs_index {
             files.truncate(RECENTS_LIMIT);
             files
         })
+    }
+
+    fn folder_stamp(path: &Path) -> Option<SystemTime> {
+        fs::metadata(path).ok()?.modified().ok()
+    }
+
+    /// Forgets folder listings whose folder changed since it was read (a file
+    /// made, removed or renamed by another program); true if any did.
+    pub fn forget_changed() -> bool {
+        // `Location::path` takes the lock too: read the stamps first.
+        let folders: Vec<(Location, SystemTime)> = lock()
+            .listings
+            .iter()
+            .filter_map(|(location, (_, stamp, _))| Some((*location, (*stamp)?)))
+            .collect();
+        let changed: Vec<Location> = folders
+            .into_iter()
+            .filter(|(location, stamp)| location.path().is_none_or(|path| folder_stamp(&path) != Some(*stamp)))
+            .map(|(location, _)| location)
+            .collect();
+        if changed.is_empty() {
+            return false;
+        }
+        let mut registry = lock();
+        for location in &changed {
+            registry.listings.remove(location);
+        }
+        super::listings_changed();
+        true
     }
 
     pub fn invalidate() {
@@ -1942,6 +1979,22 @@ mod folder_sizes {
 
 #[cfg(test)]
 mod tests {
+    /// A file made by another program shows up without waiting for the app
+    /// to touch the filesystem itself.
+    #[test]
+    fn a_file_made_elsewhere_is_listed() {
+        let dir = std::env::temp_dir().join(format!("file-force-made-elsewhere-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let location = Location::from_path(&dir);
+        assert!(fs_index::list_dir(location).is_empty());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("made-by-agent.md"), b"x").unwrap();
+        assert!(fs_index::forget_changed(), "the folder changed");
+        let names: Vec<_> = fs_index::list_dir(location).iter().map(|entry| entry.name.to_string()).collect();
+        assert_eq!(names, ["made-by-agent.md"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A watched file changing over and over frees each entry it replaces.
     #[test]
     #[ignore]

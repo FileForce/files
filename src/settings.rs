@@ -84,6 +84,31 @@ pub struct SystemNotificationSettings {
     pub min_level: NotifyLevel,
 }
 
+/// Settings → Music: how streamed Yandex tracks (MP3) are enhanced.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MusicEnhance {
+    #[default]
+    Off,
+    Low,
+    Medium,
+    High,
+}
+
+impl MusicEnhance {
+    pub const ALL: [MusicEnhance; 4] = [MusicEnhance::Off, MusicEnhance::Low, MusicEnhance::Medium, MusicEnhance::High];
+
+    pub fn strength(self) -> Option<files_ext_music::enhance::Strength> {
+        use files_ext_music::enhance::Strength;
+        match self {
+            MusicEnhance::Off => None,
+            MusicEnhance::Low => Some(Strength::Low),
+            MusicEnhance::Medium => Some(Strength::Medium),
+            MusicEnhance::High => Some(Strength::High),
+        }
+    }
+}
+
 /// When a notification also goes to the system.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -840,6 +865,8 @@ pub struct ExtensionSettings {
     pub mail: bool,
     /// The music library, Spotify and Yandex Music.
     pub music: bool,
+    /// Enhance streamed Yandex Music tracks as they play.
+    pub music_enhance: MusicEnhance,
     /// Quick Look and the preview panel's look inside files.
     pub preview: bool,
     /// The context menu's Quick Actions (Convert Image, scripts…).
@@ -939,6 +966,7 @@ impl Default for ExtensionSettings {
             agents: true,
             mail: true,
             music: true,
+            music_enhance: MusicEnhance::Off,
             preview: true,
             quick_actions: true,
             archives_create_folder: true,

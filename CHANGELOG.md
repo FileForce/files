@@ -7,6 +7,12 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.29
+
+- Music → Quick Actions on audio files: **Enhance to FLAC…** turns MP3 (and M4A, AAC, Ogg) into 24-bit FLAC with a harmonic exciter — it rebuilds the highs MP3 cuts off — and lifts quiet tracks towards −14 LUFS without clipping. Strength: Low, Medium or High; stereo or 5.1. **Upmix to 5.1 Surround** spreads stereo over six channels: voice in the centre, lows in the LFE, ambience behind. Built into Files — no ffmpeg needed. About a second per 4-minute track; tags and covers come along.
+- Settings → Extensions → Music → **Enhance streaming** (Off, Low, Medium, High): Yandex Music streams MP3, and now each track is enhanced *while it downloads* — the first sound arrives in about 0.1 s. Once the whole track is in, the full enhancement is cached as FLAC, and later plays use it. While a new track is still arriving it can't be scrubbed.
+- Files made by other programs (an agent, a terminal, a download) show up in the open folder within a second. Before, they appeared only after Files itself changed something on disk.
+
 ## 0.1.28
 
 - Memory: pictures shown in Quick Look, the Inspector and Music covers were kept for good (GPUI's global image cache never lets go) — after days of use that grew to gigabytes. Each now lives in its own cache, freed when you move on.

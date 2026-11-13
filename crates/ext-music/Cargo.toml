@@ -7,7 +7,9 @@ license = "FSL-1.1-MIT"
 
 [dependencies]
 base64 = "0.22"
+ebur128 = "0.1.11"
 files-sdk = { path = "../sdk" }
+flacenc = "0.5.1"
 getrandom = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 lofty = "0.22"
@@ -15,6 +17,7 @@ md-5 = "0.10"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "flac", "wav", "pcm", "isomp4", "aac", "vorbis", "ogg"] }
 toml = "0.8.23"
 ureq = { version = "3", features = ["json"] }
 url = "2"

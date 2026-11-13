@@ -278,6 +278,7 @@ impl FileExplorer {
             this.look = settings.look;
             this.accessibility = settings.accessibility;
             crate::power::set_mode(settings.power_saving, settings.power_saving_below);
+            files_ext_music::set_streaming_enhance(settings.extensions.music_enhance.strength());
             this.power_saving = crate::power::power_saving();
             cx.set_reduce_motion(settings.accessibility.reduce_motion() || this.power_saving);
             crate::palette::apply_motion(cx, this.look.motion);
