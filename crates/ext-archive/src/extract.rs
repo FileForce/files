@@ -31,12 +31,53 @@ impl ArchiveKind {
         (".gz", Self::Gz),
     ];
 
+    /// The kind by name, corrected by the file's first bytes: a name can lie
+    /// (Docker Desktop's `.dockerbuild.zip` is a tar.gz).
     pub fn of(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().to_lowercase();
-        Self::SUFFIXES
-            .iter()
-            .find(|(suffix, _)| name.ends_with(suffix))
-            .map(|(_, kind)| *kind)
+        let named = Self::SUFFIXES.iter().find(|(suffix, _)| name.ends_with(suffix)).map(|(_, kind)| *kind)?;
+        // A disc image's mark is 32 KiB in; its name is trusted.
+        if named == Self::Iso {
+            return Some(named);
+        }
+        Some(Self::sniff(path).unwrap_or(named))
+    }
+
+    /// What the content says it is, if it says (unreadable or unknown: `None`).
+    pub fn sniff(path: &Path) -> Option<Self> {
+        use std::io::Read as _;
+        let mut head = [0u8; 512];
+        let mut file = std::fs::File::open(path).ok()?;
+        let mut read = 0;
+        while read < head.len() {
+            match file.read(&mut head[read..]) {
+                Ok(0) => break,
+                Ok(count) => read += count,
+                Err(_) => return None,
+            }
+        }
+        Self::from_head(&head[..read], || {
+            // Gzip: a tarball inside, or one compressed file.
+            let mut inner = [0u8; 512];
+            let mut decoder = flate2::read::GzDecoder::new(std::fs::File::open(path).ok()?);
+            decoder.read_exact(&mut inner).ok()?;
+            Some(inner)
+        })
+    }
+
+    fn from_head(head: &[u8], gunzipped: impl FnOnce() -> Option<[u8; 512]>) -> Option<Self> {
+        let is_tar = |block: &[u8]| block.len() >= 262 && &block[257..262] == b"ustar";
+        if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") || head.starts_with(b"PK\x07\x08") {
+            Some(Self::Zip)
+        } else if head.starts_with(b"Rar!\x1a\x07") {
+            Some(Self::Rar)
+        } else if head.starts_with(&[0x1f, 0x8b]) {
+            Some(if gunzipped().is_some_and(|inner| is_tar(&inner)) { Self::TarGz } else { Self::Gz })
+        } else if is_tar(head) {
+            Some(Self::Tar)
+        } else {
+            None
+        }
     }
 }
 /// Opens a zip, keeping the underlying I/O error instead of zip's bare "i/o error".
@@ -477,6 +518,41 @@ pub fn parent_path(path: &str) -> &str {
 #[cfg(test)]
 mod rar_tests {
     use super::*;
+
+    #[test]
+    fn a_misnamed_archive_is_read_as_what_it_is() {
+        let dir = std::env::temp_dir().join(format!("files-archive-misnamed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/blobs")).unwrap();
+        std::fs::write(dir.join("src/blobs/layer"), "data").unwrap();
+        std::fs::write(dir.join("src/index.json"), "{}").unwrap();
+        // Like Docker Desktop's build export: a tar.gz named .dockerbuild.zip.
+        let misnamed = dir.join("app.dockerbuild.zip");
+        let file = std::fs::File::create(&misnamed).unwrap();
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(file, flate2::Compression::default()));
+        tar.append_dir_all(".", dir.join("src")).unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+        assert_eq!(ArchiveKind::of(&misnamed), Some(ArchiveKind::TarGz));
+        let names: Vec<String> = list_items(&misnamed).unwrap().into_iter().map(|item| item.name).collect();
+        assert!(names.iter().any(|name| name.ends_with("index.json")) && names.iter().any(|name| name.ends_with("blobs/layer")), "{names:?}");
+        // One gzipped file named .zip is a .gz; a real zip stays a zip.
+        let single = dir.join("notes.zip");
+        let mut gz = flate2::write::GzEncoder::new(std::fs::File::create(&single).unwrap(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gz, b"just text").unwrap();
+        gz.finish().unwrap();
+        assert_eq!(ArchiveKind::of(&single), Some(ArchiveKind::Gz));
+        assert_eq!(ArchiveKind::from_head(b"PK\x03\x04rest", || None), Some(ArchiveKind::Zip));
+        assert_eq!(ArchiveKind::of(Path::new("/nowhere/missing.zip")), Some(ArchiveKind::Zip), "unreadable: the name decides");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore]
+    fn reads_a_given_archive() {
+        let path = std::env::var("FILES_ARCHIVE_TEST").unwrap();
+        let items = list_items(Path::new(&path)).unwrap();
+        println!("{:?}: {} items, first {:?}", ArchiveKind::of(Path::new(&path)), items.len(), items.first().map(|item| &item.name));
+    }
 
     /// `solid.rar` comes from the unrar crate's own test data.
     fn fixture() -> PathBuf {

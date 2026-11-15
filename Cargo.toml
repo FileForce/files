@@ -3,7 +3,7 @@ members = ["crates/*"]
 
 [package]
 name = "file-force"
-version = "0.1.30"
+version = "0.1.31"
 edition = "2024"
 description = "Files: a fast file explorer for macOS and Linux with Git, SSH, AI agents and extensions."
 license = "FSL-1.1-MIT"
@@ -81,3 +81,8 @@ gpui-pre = { version = "=0.3.10", features = ["test-support"] }
 strip = true
 lto = "thin"
 codegen-units = 1
+
+# Windows: drags out of the window into other apps (OLE DoDragDrop), which
+# the published crate leaves unimplemented — see vendor/gpui-pre-windows.
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

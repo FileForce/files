@@ -92,7 +92,7 @@ impl FileExplorer {
                 .or_else(|| location.path().map(|path| path.display().to_string())),
             remote: location.is_remote(),
             sidebar_item: None,
-            server: self.ssh_connection.as_ref().filter(|_| location.is_remote()).map(|connection| connection.address()),
+            server: location.remote_server().map(str::to_string),
         }
     }
 

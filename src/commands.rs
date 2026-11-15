@@ -111,7 +111,7 @@ impl FileExplorer {
                 crate::properties::open_properties(
                     file,
                     self.active_location(),
-                    self.ssh_connection.clone(),
+                    self.ssh_for(self.active_location()),
                     self.appearance.clone(),
                     cx,
                 );
@@ -134,7 +134,7 @@ impl FileExplorer {
                     crate::properties::open_properties(
                         folder,
                         location,
-                        self.ssh_connection.clone(),
+                        self.ssh_for(location),
                         self.appearance.clone(),
                         cx,
                     );
@@ -205,7 +205,8 @@ impl FileExplorer {
         }
         if let Some(folder) = location.remote_path() {
             let app = self.appearance.read(cx).extensions.terminal_app;
-            self.notice = Some(match (&self.ssh_connection, crate::views::ssh::open_remote_terminal(self.ssh_connection.as_ref(), folder, app)) {
+            let connection = self.ssh_for(location);
+            self.notice = Some(match (&connection, crate::views::ssh::open_remote_terminal(connection.as_ref(), folder, app)) {
                 (Some(connection), Ok(())) => format!("Terminal · ssh {} · {folder}", connection.address()),
                 (_, Err(error)) => format!("Terminal failed: {error}"),
                 (None, Ok(())) => "Not connected".to_string(),

@@ -7,6 +7,12 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.31
+
+- SSH: **several servers at once**. Each connected server has its own row in the sidebar (its menu, its ×), and **SSH · Another…** connects one more. Tabs and panes show folders of any of them — `/home/me` on two servers is two folders — and disconnecting one leaves the others. Drop a file from one server into a folder on another to copy it across.
+- Archives are read as what they are, not what they are named: Docker Desktop's `.dockerbuild.zip` is a tar.gz, and opened with "cannot read archive". The first bytes now decide (ZIP, RAR, TAR, TAR.GZ, GZ); the name is the fallback.
+- Windows: drag files out of Files into other apps — Telegram, Explorer, mail. It never worked on Windows before.
+
 ## 0.1.30
 
 - Music → **Spatial audio** for headphones (Settings → Extensions → Music): stereo is spread over a virtual 5.1 room around your head — a head model per ear (the delay between the ears and the shadow of the head) and a few early reflections, made in Files, so it works the same on macOS, Windows and Linux. Off, **With headphones** (turns on when the sound goes to headphones) or Always. Turn off Spatialize Stereo in Control Center while it is on, or the sound is spatialized twice.

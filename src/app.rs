@@ -79,6 +79,13 @@ pub struct PaneState {
     pub selected: Option<gpui_kit::SharedString>,
 }
 
+/// A connected SSH server and its home folder.
+#[derive(Clone, Debug)]
+pub struct SshSession {
+    pub connection: crate::model::SshConnection,
+    pub home: Location,
+}
+
 /// What a built file list depends on (see `entries_for`).
 #[derive(Clone, PartialEq)]
 pub(crate) struct EntriesKey {
@@ -178,9 +185,9 @@ pub struct FileExplorer {
     pub drop_active: bool,
     pub pending_drop: Option<(Entity<FileExplorer>, crate::model::Entry)>,
     pub appearance: Entity<AppearanceSettings>,
-    pub ssh_connection: Option<crate::model::SshConnection>,
-    /// The remote home folder of `ssh_connection`.
-    pub(crate) ssh_home: Location,
+    /// Every connected SSH server, each with its home folder; tabs and panes
+    /// show folders of any of them.
+    pub ssh_sessions: Vec<SshSession>,
     /// Remote folders being fetched right now.
     pub(crate) remote_loading: std::collections::HashSet<Location>,
     /// When set, this window is a folder picker; the callback receives the choice.
@@ -365,8 +372,7 @@ impl FileExplorer {
             drop_active: false,
             pending_drop: None,
             appearance,
-            ssh_connection: None,
-            ssh_home: Location::Home,
+            ssh_sessions: Vec::new(),
             remote_loading: Default::default(),
             folder_picker: None,
             tabs: vec![initial_tab],
@@ -431,7 +437,7 @@ impl FileExplorer {
     }
 
     pub fn entries_for(&self, location: Location) -> Vec<crate::model::Entry> {
-        if location.is_remote() && self.ssh_connection.is_none() {
+        if location.is_remote() && self.ssh_for(location).is_none() {
             return Vec::new();
         }
         // The same list is asked for several times a frame (rows, counts,
@@ -877,7 +883,7 @@ impl FileExplorer {
                 explorer.clone(),
                 previous_focus.clone(),
                 appearance,
-                self.ssh_connection.is_some() && self.appearance.read(cx).extensions.ssh,
+                !self.ssh_sessions.is_empty() && self.appearance.read(cx).extensions.ssh,
             )
         });
         self.global_search = Some(search.clone());
@@ -3423,6 +3429,70 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn two_servers_stay_connected_side_by_side() {
+        let dir = std::env::temp_dir().join(format!("file-force-ssh-two-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let server = dir.join("home");
+        std::fs::create_dir_all(server.join("projects")).unwrap();
+        crate::ssh::use_fake_ssh(&dir);
+        let (view, cx) = pro_window();
+        let home = server.to_string_lossy().into_owned();
+        let prod = crate::model::SshConnection { host: "prod".into(), user: "me".into(), port: 22 };
+        let staging = crate::model::SshConnection { host: "staging".into(), user: "me".into(), port: 22 };
+        view.update_in(cx, |this, window, cx| this.start_ssh_session(prod, &home, window, cx));
+        cx.run_until_parked();
+        view.update_in(cx, |this, window, cx| this.start_ssh_session(staging, &home, window, cx));
+        cx.run_until_parked();
+
+        let (on_prod, on_staging) = (Location::remote("me@prod", &home), Location::remote("me@staging", &home));
+        assert_ne!(on_prod, on_staging, "the same path on two servers is two folders");
+        cx.read(|app| {
+            let this = view.read(app);
+            assert_eq!(this.ssh_sessions.len(), 2);
+            assert_eq!(this.ssh_for(on_prod).map(|connection| connection.host), Some("prod".to_string()));
+            assert_eq!(this.ssh_for(on_staging).map(|connection| connection.host), Some("staging".to_string()));
+            assert_eq!(this.current, on_staging);
+        });
+        // Each server's folder is fetched and listed on its own.
+        view.update_in(cx, |this, window, cx| this.navigate(on_prod, window, cx));
+        cx.run_until_parked();
+        let names = |cx: &mut VisualTestContext, location| cx.read(|app| view.read(app).entries_for(location).iter().map(|entry| entry.name.to_string()).collect::<Vec<_>>());
+        assert_eq!(names(cx, on_prod), ["projects"]);
+        assert_eq!(names(cx, on_staging), ["projects"]);
+        let parent = cx.read(|app| view.read(app).entries_for(on_prod)[0].parent);
+        assert_eq!(parent.remote_server(), Some("me@prod"), "an entry knows its server");
+
+        // A file from prod dropped into a folder on staging: down, then up.
+        std::fs::write(server.join("report.txt"), "from prod").unwrap();
+        std::fs::create_dir_all(server.join("inbox")).unwrap();
+        view.update_in(cx, |this, _, cx| this.load_remote(on_prod, true, cx));
+        cx.run_until_parked();
+        let report = cx.read(|app| view.read(app).entries_for(on_prod).into_iter().find(|entry| &*entry.name == "report.txt")).unwrap();
+        let inbox = Location::remote("me@staging", &format!("{home}/inbox"));
+        view.update_in(cx, |this, _, cx| this.copy_between_servers(vec![report], inbox, cx));
+        cx.run_until_parked();
+        for _ in 0..50 {
+            if server.join("inbox/report.txt").exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            cx.run_until_parked();
+        }
+        assert_eq!(std::fs::read_to_string(server.join("inbox/report.txt")).unwrap(), "from prod");
+
+        view.update_in(cx, |this, window, cx| this.disconnect_ssh("me@prod", window, cx));
+        cx.run_until_parked();
+        cx.read(|app| {
+            let this = view.read(app);
+            assert_eq!(this.ssh_sessions.iter().map(|session| session.connection.host.as_str()).collect::<Vec<_>>(), ["staging"], "the other server stays");
+            assert_eq!(this.current, Location::Home, "the pane on the gone server went home");
+            assert!(this.ssh_for(on_staging).is_some());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn connecting_from_an_extension_tab_opens_the_server_in_a_new_tab() {
         let dir = std::env::temp_dir().join(format!("file-force-ssh-panel-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3442,7 +3512,7 @@ mod tests {
             let this = view.read(app);
             assert_eq!(this.tabs.len(), tabs + 1, "a new tab for the server");
             assert!(this.active_panel().is_none(), "the new tab shows files");
-            assert_eq!(this.current, Location::remote(&home));
+            assert_eq!(this.current, Location::remote("me@box:2222", &home));
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3468,19 +3538,19 @@ mod tests {
                 this.entries_for(this.current).iter().map(|entry| entry.name.clone()).collect::<Vec<_>>()
             })
         };
-        assert_eq!(cx.read(|app| view.read(app).current), Location::remote(&home));
+        assert_eq!(cx.read(|app| view.read(app).current), Location::remote("me@box:2222", &home));
         assert_eq!(names(cx), ["projects"]);
         let saved = cx.read(|app| view.read(app).appearance.read(app).sidebar.ssh.clone());
         assert_eq!(saved.first().map(String::as_str), Some("me@box:2222"));
 
-        let projects = cx.read(|app| view.read(app).entries_for(Location::remote(&home))[0].clone());
+        let projects = cx.read(|app| view.read(app).entries_for(Location::remote("me@box:2222", &home))[0].clone());
         view.update_in(cx, |this, window, cx| this.open_entry(&projects.id, window, cx));
         cx.run_until_parked();
         assert_eq!(names(cx), ["readme.md"]);
         let crumbs = cx.read(|app| view.read(app).current.breadcrumbs());
         assert_eq!(crumbs.last().copied(), Some("projects"));
 
-        view.update_in(cx, |this, window, cx| this.disconnect_ssh(window, cx));
+        view.update_in(cx, |this, window, cx| this.disconnect_ssh("me@box:2222", window, cx));
         assert_eq!(cx.read(|app| view.read(app).current), Location::Home);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3604,7 +3674,7 @@ mod tests {
             assert_eq!(titles(cx, Targets::FILE, Location::Home), ["Probe: copy name"]);
             assert!(titles(cx, Targets::FOLDER, Location::Home).is_empty());
             assert_eq!(titles(cx, Targets::BACKGROUND, Location::Home), ["Probe: here"]);
-            assert!(titles(cx, Targets::FILE, Location::remote("/srv")).is_empty(), "local-only item on a server");
+            assert!(titles(cx, Targets::FILE, Location::remote("box", "/srv")).is_empty(), "local-only item on a server");
 
             // Running a command: the clipboard needs the permission.
             let run = |cx: &mut VisualTestContext| {
@@ -5111,13 +5181,13 @@ mod tests {
             if saw_link.is_none() {
                 saw_link = cx.read(|app| dialog.read(app).auth_for_test()).map(|auth| auth.url);
             }
-            if cx.read(|app| view.read(app).ssh_connection.is_some()) {
+            if cx.read(|app| !view.read(app).ssh_sessions.is_empty()) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert_eq!(saw_link.as_deref(), Some("https://login.tailscale.com/a/test123"), "the sign-in link was not shown");
-        assert!(cx.read(|app| view.read(app).ssh_connection.is_some()), "it did not connect after the sign-in");
+        assert!(cx.read(|app| !view.read(app).ssh_sessions.is_empty()), "it did not connect after the sign-in");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

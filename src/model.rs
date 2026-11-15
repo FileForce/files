@@ -108,14 +108,22 @@ impl Location {
         }
     }
 
-    /// A folder on the connected SSH server.
-    pub fn remote(path: &str) -> Self {
-        Self::Remote(remote::intern(path))
+    /// A folder on the SSH server `server` (its address, `me@host:22`).
+    pub fn remote(server: &str, path: &str) -> Self {
+        Self::Remote(remote::intern(server, path))
     }
 
     pub fn remote_path(self) -> Option<&'static str> {
         match self {
             Self::Remote(id) => Some(remote::path(id)),
+            _ => None,
+        }
+    }
+
+    /// The address of the server a remote folder is on.
+    pub fn remote_server(self) -> Option<&'static str> {
+        match self {
+            Self::Remote(id) => Some(remote::server(id)),
             _ => None,
         }
     }
@@ -180,8 +188,8 @@ impl Location {
     }
 
     pub fn parent(self) -> Option<Self> {
-        if let Some(path) = self.remote_path() {
-            return crate::ssh::parent(path).map(|parent| Self::remote(&parent));
+        if let (Some(path), Some(server)) = (self.remote_path(), self.remote_server()) {
+            return crate::ssh::parent(path).map(|parent| Self::remote(server, &parent));
         }
         let path = self.path()?;
         // Going up stops at a fork's top folder: its parent is app storage.
@@ -739,12 +747,12 @@ pub mod remote {
     use super::{CloudState, FileEntry, FileKind, Location};
     use crate::ssh::RemoteItem;
 
+    /// Folders of every connected server: an id is a (server, path) pair, so
+    /// `/home/me` on two servers are two folders, listed apart.
     #[derive(Default)]
     struct State {
-        paths: Vec<&'static str>,
-        ids: HashMap<&'static str, u32>,
-        /// Label of the top folder: the server's address.
-        host: Option<&'static str>,
+        paths: Vec<(&'static str, &'static str)>,
+        ids: HashMap<(&'static str, &'static str), u32>,
         listings: HashMap<u32, Vec<crate::model::Entry>>,
         entries: HashMap<String, crate::model::Entry>,
     }
@@ -754,35 +762,46 @@ pub mod remote {
         STATE.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn intern(path: &str) -> u32 {
+    pub fn intern(server: &str, path: &str) -> u32 {
         let mut state = lock();
-        if let Some(id) = state.ids.get(path) {
+        if let Some(id) = state.ids.get(&(server, path)) {
             return *id;
         }
+        // Kept until quit: one pair per remote folder visited.
+        let known = state.paths.iter().find(|(known, _)| *known == server).map(|(known, _)| *known);
+        let server: &'static str = known.unwrap_or_else(|| Box::leak(server.to_string().into_boxed_str()));
         let path: &'static str = Box::leak(path.to_string().into_boxed_str());
         let id = state.paths.len() as u32;
-        state.paths.push(path);
-        state.ids.insert(path, id);
+        state.paths.push((server, path));
+        state.ids.insert((server, path), id);
         id
     }
 
     pub fn path(id: u32) -> &'static str {
-        lock().paths[id as usize]
+        lock().paths[id as usize].1
+    }
+
+    pub fn server(id: u32) -> &'static str {
+        lock().paths[id as usize].0
     }
 
     pub fn label(id: u32) -> &'static str {
-        let path = path(id);
+        let (server, path) = lock().paths[id as usize];
         if path == "/" {
-            return lock().host.unwrap_or("/");
+            return server;
         }
         crate::ssh::file_name(path)
     }
 
-    /// A new connection: forget the previous server's listings.
-    pub fn reset(host: Option<String>) {
+    /// `server` (dis)connected: forget its listings, keep the others'.
+    pub fn forget(server: &str) {
         let mut state = lock();
-        state.listings.clear();
-        state.host = host.map(|host| &*Box::leak(host.into_boxed_str()));
+        let ids: Vec<u32> = state.paths.iter().enumerate().filter(|(_, (known, _))| *known == server).map(|(id, _)| id as u32).collect();
+        for id in ids {
+            state.listings.remove(&id);
+        }
+        let prefix = format!("ssh:{server}|");
+        state.entries.retain(|key, _| !key.starts_with(&prefix));
         super::listings_changed();
     }
 
@@ -805,8 +824,8 @@ pub mod remote {
     }
 
     pub fn folder(id: u32) -> Option<crate::model::Entry> {
-        let path = path(id);
-        let key = format!("ssh:{path}");
+        let (server, path) = lock().paths[id as usize];
+        let key = format!("ssh:{server}|{path}");
         if let Some(entry) = entry(&key) {
             return Some(entry);
         }
@@ -836,11 +855,12 @@ pub mod remote {
 
     /// The remote path behind an entry.
     pub fn entry_path(entry: &FileEntry) -> Option<&str> {
-        entry.id.strip_prefix("ssh:")
+        entry.id.strip_prefix("ssh:")?.split_once('|').map(|(_, path)| path)
     }
 
     fn leak_entry(parent: Location, item: &RemoteItem, path: String) -> crate::model::Entry {
-        let key = format!("ssh:{path}");
+        let server = parent.remote_server().unwrap_or_default();
+        let key = format!("ssh:{server}|{path}");
         let kind = if item.is_dir {
             FileKind::Folder
         } else {
@@ -856,7 +876,7 @@ pub mod remote {
             name: item.name.clone().into(),
             kind,
             parent,
-            target: item.is_dir.then(|| Location::remote(&path)),
+            target: item.is_dir.then(|| Location::remote(server, &path)),
             modified: item.modified.clone().into(),
             modified_at: None,
             bytes: item.bytes,

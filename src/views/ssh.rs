@@ -427,26 +427,41 @@ impl FileExplorer {
         });
     }
 
-    pub fn disconnect_ssh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(connection) = self.ssh_connection.take() else {
+    /// The connection a folder's server is reached through, if it is connected.
+    pub(crate) fn ssh_for(&self, location: Location) -> Option<SshConnection> {
+        let server = location.remote_server()?;
+        self.ssh_sessions.iter().find(|session| session.connection.address() == server).map(|session| session.connection.clone())
+    }
+
+    /// Disconnects one server; the others stay. Panes and tabs on it go home.
+    pub fn disconnect_ssh(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.ssh_sessions.iter().position(|session| session.connection.address() == address) else {
             return;
         };
-        crate::model::remote::reset(None);
-        self.remote_loading.clear();
+        self.ssh_sessions.remove(index);
+        crate::model::remote::forget(address);
+        self.remote_loading.retain(|location| location.remote_server() != Some(address));
+        let on_it = |location: Location| location.remote_server() == Some(address);
         for pane in [Pane::Left, Pane::Right] {
             let location = match pane {
                 Pane::Left => self.left.location,
                 Pane::Right => self.right.location,
             };
-            if location.is_remote() {
+            if on_it(location) {
                 self.active_pane = pane;
                 self.navigate(Location::Home, window, cx);
             }
         }
-        if self.current.is_remote() {
+        if on_it(self.current) {
             self.navigate(Location::Home, window, cx);
         }
-        self.notice = Some(format!("Disconnected · {}", connection.address()));
+        // Background tabs on it reopen at home when chosen.
+        for tab in &mut self.tabs {
+            if on_it(tab.current) {
+                tab.current = Location::Home;
+            }
+        }
+        self.notice = Some(format!("Disconnected · {address}"));
         cx.notify();
     }
 
@@ -471,16 +486,17 @@ impl FileExplorer {
         cx: &mut Context<Self>,
     ) {
         let address = connection.address();
-        crate::model::remote::reset(Some(address.clone()));
-        self.remote_loading.clear();
-        self.ssh_home = Location::remote(home);
-        self.ssh_connection = Some(connection);
+        // Connected again: its folders are read afresh; other servers stay.
+        crate::model::remote::forget(&address);
+        self.remote_loading.retain(|location| location.remote_server() != Some(address.as_str()));
+        let home = Location::remote(&address, home);
+        self.ssh_sessions.retain(|session| session.connection.address() != address);
+        self.ssh_sessions.push(crate::app::SshSession { connection, home });
         self.update_sidebar(cx, |sidebar| {
             sidebar.ssh.retain(|known| *known != address);
             sidebar.ssh.insert(0, address.clone());
             sidebar.ssh.truncate(8);
         });
-        let home = self.ssh_home;
         self.show_location(home, window, cx);
         self.notice = Some(format!("Connected · {address}"));
         cx.notify();
@@ -498,7 +514,7 @@ impl FileExplorer {
     /// Fetches a remote folder in the background (unless cached and `force`
     /// is off) and redraws when it arrives.
     pub(crate) fn load_remote(&mut self, location: Location, force: bool, cx: &mut Context<Self>) {
-        let (Some(connection), Some(path)) = (self.ssh_connection.clone(), location.remote_path()) else {
+        let (Some(connection), Some(path)) = (self.ssh_for(location), location.remote_path()) else {
             return;
         };
         if (!force && crate::model::remote::is_loaded(location)) || !self.remote_loading.insert(location) {
@@ -529,7 +545,7 @@ impl FileExplorer {
 
     /// Downloads a remote file into the local cache and opens it.
     pub(crate) fn open_remote_file(&mut self, file: crate::model::Entry, cx: &mut Context<Self>) {
-        let (Some(connection), Some(remote)) = (self.ssh_connection.clone(), crate::model::remote::entry_path(&file)) else {
+        let (Some(connection), Some(remote)) = (self.ssh_for(file.parent), crate::model::remote::entry_path(&file)) else {
             return;
         };
         let local = crate::ssh::cache_path(&connection, remote);
@@ -572,7 +588,12 @@ impl FileExplorer {
 
     /// Remote files dropped onto a local folder are downloaded into it.
     pub(crate) fn download_remote_into_active(&mut self, files: Vec<crate::model::Entry>, cx: &mut Context<Self>) {
-        match self.active_location().path() {
+        let target = self.active_location();
+        if target.is_remote() {
+            self.copy_between_servers(files, target, cx);
+            return;
+        }
+        match target.path() {
             Some(target) => self.download_remote(files, target, cx),
             None => {
                 self.notice = Some(format!("Cannot download into {}", self.active_location().label()));
@@ -583,7 +604,8 @@ impl FileExplorer {
 
     /// Copies the selected remote files into a local folder.
     pub(crate) fn download_remote(&mut self, files: Vec<crate::model::Entry>, target: PathBuf, cx: &mut Context<Self>) {
-        let Some(connection) = self.ssh_connection.clone() else {
+        // One server at a time: the first file's (a selection is in one folder).
+        let Some(connection) = files.first().and_then(|file| self.ssh_for(file.parent)) else {
             return;
         };
         let jobs: Vec<(String, String)> = files
@@ -629,9 +651,65 @@ impl FileExplorer {
         .detach();
     }
 
+    /// Copies remote files into a folder on another (or the same) server:
+    /// each comes down into a private temporary folder, then goes up.
+    pub(crate) fn copy_between_servers(&mut self, files: Vec<crate::model::Entry>, target: Location, cx: &mut Context<Self>) {
+        let source = files.first().and_then(|file| self.ssh_for(file.parent));
+        let (Some(source), Some(destination), Some(folder)) = (source, self.ssh_for(target), target.remote_path()) else {
+            self.notice = Some("Connect to both servers first".to_string());
+            cx.notify();
+            return;
+        };
+        let jobs: Vec<(String, String)> = files
+            .iter()
+            .filter(|file| !file.is_folder())
+            .filter_map(|file| Some((crate::model::remote::entry_path(file)?.to_string(), file.name.to_string())))
+            .collect();
+        if jobs.is_empty() {
+            self.notice = Some("Only files can be copied between servers".to_string());
+            cx.notify();
+            return;
+        }
+        let route = format!("{} → {}", source.address(), destination.address());
+        self.notice = Some(format!("Copying {} file(s) {route}…", jobs.len()));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let staging = std::env::temp_dir().join(format!("file-force-ssh-copy-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos())));
+                    std::fs::create_dir_all(&staging)?;
+                    let copied = (|| {
+                        for (remote, name) in &jobs {
+                            let local = staging.join(name);
+                            crate::ssh::EXTENSION.download(&source, remote, &local)?;
+                            crate::ssh::EXTENSION.upload(&destination, &local, folder)?;
+                            std::fs::remove_file(&local)?;
+                        }
+                        std::io::Result::Ok(jobs.len())
+                    })();
+                    let _ = std::fs::remove_dir_all(&staging);
+                    copied
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let message = match result {
+                    Ok(count) => format!("Copied {count} file(s) {route}"),
+                    Err(error) => format!("Copy failed: {error}"),
+                };
+                let level = if message.starts_with("Copy failed") { files_sdk::log::Level::Error } else { files_sdk::log::Level::Success };
+                files_sdk::log::notify(crate::ssh::MANIFEST.id, level, message.clone(), None);
+                this.notice = Some(message);
+                this.load_remote(target, true, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Uploads local files into the remote folder `location`.
     pub(crate) fn upload_remote(&mut self, paths: Vec<PathBuf>, location: Location, cx: &mut Context<Self>) {
-        let (Some(connection), Some(folder)) = (self.ssh_connection.clone(), location.remote_path()) else {
+        let (Some(connection), Some(folder)) = (self.ssh_for(location), location.remote_path()) else {
             return;
         };
         let files: Vec<PathBuf> = paths.into_iter().filter(|path| path.is_file()).collect();

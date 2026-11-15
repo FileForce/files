@@ -343,7 +343,7 @@ impl FileExplorer {
                             .when(!self.section_collapsed("connected", cx), |this| this
                             .children(self.volume_items(active, palette, cx))
                             .when(settings.extensions.ssh, |this| {
-                                this.child(self.ssh_item(palette, cx))
+                                this.children(self.ssh_items(palette, cx))
                                     .children(self.saved_ssh_items(palette, cx))
                             })),
                     ),
@@ -742,11 +742,11 @@ impl FileExplorer {
 
     /// Servers connected before: one click reconnects.
     fn saved_ssh_items(&self, palette: Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let current = self.ssh_connection.as_ref().map(|connection| connection.address());
+        let connected: Vec<String> = self.ssh_sessions.iter().map(|session| session.connection.address()).collect();
         let saved = self.appearance.read(cx).sidebar.ssh.clone();
         saved
             .into_iter()
-            .filter(|address| Some(address) != current.as_ref())
+            .filter(|address| !connected.contains(address))
             .enumerate()
             .map(|(index, address)| {
                 let connect = address.clone();
@@ -797,13 +797,19 @@ impl FileExplorer {
             .collect()
     }
 
-    fn ssh_item(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.active_location().is_remote();
-        if let Some(connection) = &self.ssh_connection {
-            let address = connection.address();
-            let home = self.ssh_home;
+    /// Every connected server, then "SSH · New…" to connect one more.
+    fn ssh_items(&self, palette: Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let in_front = self.active_location().remote_server();
+        let mut items: Vec<AnyElement> = self
+            .ssh_sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| {
+            let address = session.connection.address();
+            let active = in_front == Some(address.as_str());
+            let home = session.home;
             h_flex()
-                .id("ssh-connection")
+                .id(("ssh-connection", index))
                 .min_h(px(40.))
                 .px_2()
                 .items_center()
@@ -837,20 +843,23 @@ impl FileExplorer {
                 )
                 .child(div().flex_1())
                 .child(
-                    Button::new("disconnect-ssh")
+                    Button::new(("disconnect-ssh", index))
                         .ghost()
                         .xsmall()
                         .icon(IconName::X)
                         .tooltip("Disconnect")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.disconnect_ssh(window, cx);
+                        .on_click(cx.listener({
+                            let address = address.clone();
+                            move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.disconnect_ssh(&address, window, cx);
+                            }
                         })),
                 )
                 .context_menu({
-                    let (view, copy) = (cx.entity(), address.clone());
+                    let (view, copy, gone) = (cx.entity(), address.clone(), address.clone());
                     move |menu, window, _| {
-                        let copy = copy.clone();
+                        let (copy, gone) = (copy.clone(), gone.clone());
                         menu.item(PopupMenuItem::new("Open Home Folder").icon(IconName::House).on_click(window.listener_for(&view, move |this, _, window, cx| {
                             this.open_in_new_tab(home, window, cx);
                         })))
@@ -861,15 +870,17 @@ impl FileExplorer {
                             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
                         }))
                         .separator()
-                        .item(PopupMenuItem::new("Disconnect").icon(IconName::Unplug).on_click(window.listener_for(&view, |this, _, window, cx| {
-                            this.disconnect_ssh(window, cx);
+                        .item(PopupMenuItem::new("Disconnect").icon(IconName::Unplug).on_click(window.listener_for(&view, move |this, _, window, cx| {
+                            this.disconnect_ssh(&gone, window, cx);
                         })))
                     }
                 })
                 .into_any_element()
-        } else {
+            })
+            .collect();
+        items.push(
             h_flex()
-                .id("ssh-connection")
+                .id("ssh-new")
                 .h(px(31.))
                 .px_2()
                 .items_center()
@@ -884,9 +895,10 @@ impl FileExplorer {
                 .child(Icon::new(IconName::Cloud).small())
                 .child("SSH")
                 .child(div().flex_1())
-                .child(div().text_xs().text_color(palette.faint).child("New…"))
-                .into_any_element()
-        }
+                .child(div().text_xs().text_color(palette.faint).child(if self.ssh_sessions.is_empty() { "New…" } else { "Another…" }))
+                .into_any_element(),
+        );
+        items
     }
 
     fn sidebar_item(
