@@ -7,6 +7,12 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.32
+
+- **Lock** (Settings → General, off by default): every Files window hides behind a lock screen — when Files starts, after a while without use (1–60 min), or when the computer locks its screen or sleeps — and opens again with the system's own check: Touch ID or the Mac's password, Windows Hello, your account's password through polkit on Linux. Files keeps no password of its own; where the system has no such check, the lock cannot be turned on.
+- Video: **frame rate** in the MEDIA section of the preview, next to the resolution (`60 fps`, `29.94 fps`). Fragmented MP4s — OBS and screen recordings — had none: their rate is now read from the file itself.
+- Sidebar: a favorite, disk, tag or Trash clicked while Music, Mail or Settings is in front opens in the tab that shows it already, or a new one. Before, nothing happened.
+
 ## 0.1.31
 
 - SSH: **several servers at once**. Each connected server has its own row in the sidebar (its menu, its ×), and **SSH · Another…** connects one more. Tabs and panes show folders of any of them — `/home/me` on two servers is two folders — and disconnecting one leaves the others. Drop a file from one server into a folder on another to copy it across.

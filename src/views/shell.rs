@@ -461,7 +461,7 @@ impl FileExplorer {
             .overflow_hidden()
             .aria_label(format!("Disk {} of {}: {}", index + 1, disks.len(), disk.name))
             .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
-            .on_click(cx.listener(move |this, _, window, cx| this.navigate(location, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.show_location(location, window, cx)))
             // Two-finger swipes (or shift + wheel): one disk per ~60 px.
             .on_scroll(cx.listener(|this, event: &gpui_kit::ScrollEvent, _, cx| {
                 let delta = event.delta.pixel_delta(px(16.));
@@ -600,7 +600,7 @@ impl FileExplorer {
                         this.open_entry(&entry.id, window, cx);
                     }
                 } else {
-                    this.navigate(location, window, cx);
+                    this.show_location(location, window, cx);
                 }
             }))
             .child(icon)
@@ -651,7 +651,7 @@ impl FileExplorer {
                     .text_color(if selected { palette.text } else { palette.muted })
                     .hover(|style| style.bg(palette.hover).text_color(palette.text))
                     .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
-                    .on_click(cx.listener(move |this, _, window, cx| this.navigate(location, window, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| this.show_location(location, window, cx)))
                     .child(Icon::new(IconName::HardDrive).small())
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     // ⏏ on hover, like Finder.
@@ -668,11 +668,11 @@ impl FileExplorer {
                     .context_menu(move |menu, window, _| {
                         let (open, tab, copy, info, eject) = (menu_path.clone(), menu_path.clone(), menu_path.clone(), menu_path.clone(), menu_path.clone());
                         menu.item(PopupMenuItem::new("Open").icon(IconName::FolderOpen).on_click(window.listener_for(&view, move |this, _, window, cx| {
-                            this.navigate(Location::from_path(&open), window, cx);
+                            this.show_location(Location::from_path(&open), window, cx);
                         })))
                         .item(PopupMenuItem::new("Open in New Tab").icon(IconName::PanelTop).on_click(window.listener_for(&view, move |this, _, window, cx| {
                             this.new_tab(window, cx);
-                            this.navigate(Location::from_path(&tab), window, cx);
+                            this.show_location(Location::from_path(&tab), window, cx);
                         })))
                         .item(PopupMenuItem::new("Copy Path").icon(IconName::Copy).on_click(move |_, _, cx| {
                             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.display().to_string()));
@@ -933,7 +933,7 @@ impl FileExplorer {
             .hover(|style| style.bg(palette.hover).text_color(palette.text))
             .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.navigate(location, window, cx);
+                this.show_location(location, window, cx);
             }))
             .child(Icon::new(icon).small().text_color(if selected {
                 palette.accent
@@ -955,7 +955,7 @@ impl FileExplorer {
                             PopupMenuItem::new("Open")
                                 .icon(IconName::FolderOpen)
                                 .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                    this.navigate(Location::Trash, window, cx);
+                                    this.show_location(Location::Trash, window, cx);
                                 })),
                         )
                         .separator()
@@ -1056,7 +1056,7 @@ impl FileExplorer {
                     .hover(|style| style.bg(palette.hover).text_color(palette.text))
                     .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.navigate(location, window, cx);
+                        this.show_location(location, window, cx);
                     }))
                     .child(match color {
                         Some(color) => div().size(px(8.)).rounded_full().bg(color),
@@ -1196,7 +1196,7 @@ impl FileExplorer {
                         .cursor_pointer()
                         .hover(|style| style.bg(palette.hover).text_color(palette.text))
                         .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
-                        .on_click(cx.listener(move |this, _, window, cx| this.navigate(location, window, cx)))
+                        .on_click(cx.listener(move |this, _, window, cx| this.show_location(location, window, cx)))
                         .child(crate::views::text_fx::outlined(label, palette))
                         .into_any_element()
                 });

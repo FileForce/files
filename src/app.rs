@@ -188,6 +188,10 @@ pub struct FileExplorer {
     /// Every connected SSH server, each with its home folder; tabs and panes
     /// show folders of any of them.
     pub ssh_sessions: Vec<SshSession>,
+    /// The lock screen asked the system already (once per lock).
+    pub(crate) lock_asked: bool,
+    /// Why the last unlock failed (not a cancel).
+    pub(crate) lock_error: Option<String>,
     /// Remote folders being fetched right now.
     pub(crate) remote_loading: std::collections::HashSet<Location>,
     /// When set, this window is a folder picker; the callback receives the choice.
@@ -279,6 +283,7 @@ impl FileExplorer {
             let settings = appearance.read(cx).clone();
             update_search_extensions(&settings);
             crate::settings::apply_spatial(&settings);
+            crate::app_lock::configure(&settings.lock, false);
             // Every switch and slider shows up in the developer console.
             crate::settings::log_changes(&settings);
             this.scheme = settings.scheme;
@@ -315,6 +320,21 @@ impl FileExplorer {
             }
         });
         crate::properties::watch_folder_sizes(cx);
+        // The lock screen comes and goes from a background check: redraw then.
+        cx.spawn(async move |this, cx| {
+            let mut seen = crate::app_lock::generation();
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+                let now = crate::app_lock::generation();
+                if now != seen {
+                    seen = now;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
         let focus_handle = cx.focus_handle().tab_stop(true);
         window.focus(&focus_handle, cx);
         // "System" theme: follow macOS light/dark switches while running.
@@ -373,6 +393,8 @@ impl FileExplorer {
             pending_drop: None,
             appearance,
             ssh_sessions: Vec::new(),
+            lock_asked: false,
+            lock_error: None,
             remote_loading: Default::default(),
             folder_picker: None,
             tabs: vec![initial_tab],
@@ -744,11 +766,16 @@ impl FileExplorer {
         files_sdk::log::record("files", files_sdk::log::Kind::Info, format!("New tab: {}", location.label()), None);
     }
 
-    /// Shows `location`: here in a folder tab, in a new tab when the tab in
-    /// front is an extension's view (Music, Mail…), which has no folder.
+    /// Shows `location`: here in a folder tab; when the tab in front is an
+    /// extension's view (Music, Mail…), which has no folder, in the tab that
+    /// shows it already, or a new one.
     pub(crate) fn show_location(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_panel().is_some() {
-            self.open_in_new_tab(location, window, cx);
+            // A tab showing it already: go there; else a new one.
+            match self.tabs.iter().position(|tab| tab.panel.is_none() && tab.current == location) {
+                Some(index) => self.select_tab(index, window, cx),
+                None => self.open_in_new_tab(location, window, cx),
+            }
         } else {
             self.navigate(location, window, cx);
         }
@@ -1787,6 +1814,27 @@ impl FileExplorer {
     }
 }
 
+/// How the lock screen says it opens, on this system.
+fn unlock_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Unlock with Touch ID or your Mac's password"
+    } else if cfg!(windows) {
+        "Unlock with Windows Hello"
+    } else {
+        "Unlock with your account's password"
+    }
+}
+
+fn unlock_hint_ru() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Разблокируйте с Touch ID или паролем Mac"
+    } else if cfg!(windows) {
+        "Разблокируйте с Windows Hello"
+    } else {
+        "Разблокируйте паролем своей учётной записи"
+    }
+}
+
 impl Render for FileExplorer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_reveal(window);
@@ -1795,6 +1843,9 @@ impl Render for FileExplorer {
             crate::session::save_if_changed(crate::session::capture(self));
         }
         let palette = self.palette();
+        if crate::app_lock::locked() {
+            return self.render_lock_screen(palette, window, cx).into_any_element();
+        }
         // The desktop shows (blurred) only when there is no own background.
         // Text size: every rem-based size in the window scales with this.
         window.set_rem_size(px(16. * self.accessibility.text_scale.factor()));
@@ -1873,11 +1924,15 @@ impl Render for FileExplorer {
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
+                    crate::app_lock::touch();
                     if window.focused(cx).is_none() {
                         this.focus_main(window, cx);
                     }
                 }),
             )
+            .on_mouse_move(|_, _, _| crate::app_lock::touch())
+            .on_scroll(|_, _, _| crate::app_lock::touch())
+            .capture_key_down(|_, _, _| crate::app_lock::touch())
             // Mouse side buttons walk the history, like in Finder.
             .on_mouse_down(
                 gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back),
@@ -1949,6 +2004,79 @@ impl Render for FileExplorer {
             .child(self.render_status_bar(palette, cx))
             // Last and deferred: toasts paint over everything, dialogs too.
             .children(self.render_toasts(palette, cx))
+            .into_any_element()
+    }
+
+}
+
+impl FileExplorer {
+    /// Every window of a locked Files shows only this: nothing of the files.
+    fn render_lock_screen(&mut self, palette: crate::palette::Palette, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::button::{Button, ButtonVariants as _};
+        let language = self.appearance.read(cx).language;
+        let tr = |en: &'static str, ru: &'static str| crate::settings::localized(language, en, ru);
+        // Ask at once in the window in front; the others wait for its answer.
+        if window.is_window_active() && !crate::app_lock::checking() && !self.lock_asked {
+            self.lock_asked = true;
+            self.unlock(cx);
+        }
+        let error = self.lock_error.clone();
+        div()
+            .track_focus(&self.focus_handle)
+            .key_context("LockScreen")
+            .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "enter" || event.keystroke.key == "space" {
+                    this.unlock(cx);
+                }
+            }))
+            .size_full()
+            .bg(palette.window)
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_4()
+            .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Lock).size(px(48.)).text_color(palette.accent))
+            .child(div().text_xl().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.text).child(tr("Files is locked", "Files заблокирован")))
+            .child(div().text_sm().text_color(palette.muted).child(tr(unlock_hint(), unlock_hint_ru())))
+            .child(
+                Button::new("unlock-files")
+                    .primary()
+                    .icon(gpui_kit::assets::IconName::LockOpen)
+                    .label(if crate::app_lock::checking() { tr("Waiting for you…", "Ожидание…") } else { tr("Unlock", "Разблокировать") })
+                    .disabled(crate::app_lock::checking())
+                    .on_click(cx.listener(|this, _, _, cx| this.unlock(cx))),
+            )
+            .children(error.map(|error| div().text_xs().text_color(palette.video).child(error)))
+    }
+
+    fn unlock(&mut self, cx: &mut Context<Self>) {
+        let language = self.appearance.read(cx).language;
+        let reason = crate::settings::localized(language, "unlock Files", "разблокировать Files").to_string();
+        let answer = std::sync::Arc::new(std::sync::Mutex::new(None::<Result<bool, String>>));
+        let filled = answer.clone();
+        crate::app_lock::check(reason, move |result| *filled.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
+                let result = answer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+                if let Some(result) = result {
+                    let _ = this.update(cx, |this, cx| {
+                        this.lock_error = result.err();
+                        // Locked again later: ask again then.
+                        this.lock_asked = false;
+                        cx.notify();
+                    });
+                    return;
+                }
+                if !crate::app_lock::checking() {
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 }
 
@@ -3425,6 +3553,28 @@ mod tests {
         assert_eq!(right_now, Location::from_path(&root));
         assert_eq!(left_now, Location::from_path(&left), "the other pane stays put");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_sidebar_folder_from_an_extension_tab_opens_or_switches_to_its_tab() {
+        let (view, cx) = pro_window();
+        let tab_of = |cx: &mut VisualTestContext| cx.read(|app| { let this = view.read(app); (this.tabs.len(), this.active_tab, this.current, this.active_panel().is_some()) });
+        // A Music / Mail like view in front (Settings is one too).
+        view.update_in(cx, |this, window, cx| this.open_settings_tab(window, cx));
+        cx.run_until_parked();
+        let (tabs, settings_tab, _, panel) = tab_of(cx);
+        assert!(panel);
+        view.update_in(cx, |this, window, cx| this.show_location(Location::Downloads, window, cx));
+        cx.run_until_parked();
+        let (opened, downloads_tab, current, panel) = tab_of(cx);
+        assert_eq!((opened, current, panel), (tabs + 1, Location::Downloads, false), "a new tab with the folder");
+        // Back to the extension view, then the same folder again: its tab, not one more.
+        view.update_in(cx, |this, window, cx| this.select_tab(settings_tab, window, cx));
+        cx.run_until_parked();
+        view.update_in(cx, |this, window, cx| this.show_location(Location::Downloads, window, cx));
+        cx.run_until_parked();
+        let (count, active, current, panel) = tab_of(cx);
+        assert_eq!((count, active, current, panel), (opened, downloads_tab, Location::Downloads, false), "switched to the tab showing it");
     }
 
     #[test]

@@ -63,6 +63,8 @@ pub struct AppSettings {
     /// One Files at a time: opening another hands its folder to the running
     /// one (a new tab) instead of a second window.
     pub single_instance: bool,
+    /// Settings → General → Lock: the lock screen, and when it comes on.
+    pub lock: crate::app_lock::LockSettings,
     /// Mail: colors of the special folders (Inbox, Sent, Trash…).
     pub mail: MailSettings,
     /// Extension search filters (`git:`…) switched off per search box.
@@ -829,6 +831,7 @@ impl Default for AppSettings {
             power_saving: PowerSavingMode::Automatic,
             power_saving_below: 100,
             single_instance: true,
+            lock: crate::app_lock::LockSettings::default(),
             mail: MailSettings::default(),
             search_filters: SearchFilterSettings::default(),
             sound: SoundSettings::default(),

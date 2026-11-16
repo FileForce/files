@@ -771,6 +771,61 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
+            .child(section(IconName::Lock, tr(language, "Lock", "Блокировка"), palette))
+            .child(
+                Switch::new("lock-enabled")
+                    .label(tr(language, "Lock Files behind the system's check (Touch ID, Windows Hello, your password)", "Блокировать Files системной проверкой (Touch ID, Windows Hello, пароль)"))
+                    .checked(self.draft.lock.enabled && crate::app_lock::available())
+                    .disabled(!crate::app_lock::available())
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.draft.lock.enabled = *checked;
+                        cx.notify();
+                    })),
+            )
+            .when(!crate::app_lock::available(), |this| {
+                this.child(div().text_xs().text_color(palette.faint).child(tr(
+                    language,
+                    "This computer has no way to check who is there (no Touch ID or password, Windows Hello or polkit), so Files could not be opened again.",
+                    "На этом компьютере нечем проверить, кто за ним (нет Touch ID или пароля, Windows Hello или polkit), поэтому Files нельзя было бы открыть снова.",
+                )))
+            })
+            .when(self.draft.lock.enabled && crate::app_lock::available(), |this| {
+                this.child(
+                    Switch::new("lock-on-launch")
+                        .label(tr(language, "When Files starts", "При запуске Files"))
+                        .checked(self.draft.lock.on_launch)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.draft.lock.on_launch = *checked;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Switch::new("lock-on-screen-lock")
+                        .label(tr(language, "When the computer locks its screen or sleeps", "Когда компьютер блокирует экран или засыпает"))
+                        .checked(self.draft.lock.on_screen_lock)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.draft.lock.on_screen_lock = *checked;
+                            cx.notify();
+                        })),
+                )
+                .child(setting_row(
+                    tr(language, "After Files is not used for", "Когда Files не используется"),
+                    h_flex().gap_2().flex_wrap().children(crate::app_lock::LockSettings::IDLE_CHOICES.map(|minutes| {
+                        let label = if minutes == 0 { tr(language, "Never", "Никогда").to_string() } else { format!("{minutes} {}", tr(language, "min", "мин")) };
+                        option_button(gpui_kit::ElementId::Name(format!("lock-idle-{minutes}").into()), label, self.draft.lock.idle_minutes == minutes).on_click(cx.listener(move |this, _, _, cx| {
+                            this.draft.lock.idle_minutes = minutes;
+                            cx.notify();
+                        }))
+                    })),
+                    palette,
+                ))
+                .child(h_flex().child(Button::new("lock-now").small().icon(IconName::Lock).label(tr(language, "Lock now", "Заблокировать сейчас")).disabled(!self.original.lock.enabled).on_click(|_, _, _| crate::app_lock::lock())))
+                .child(div().text_xs().text_color(palette.faint).child(tr(
+                    language,
+                    "Every Files window shows only the lock screen until you unlock. No password of Files' own is kept. Lock now works once the setting is saved.",
+                    "Все окна Files показывают только экран блокировки, пока вы не разблокируете. Своего пароля Files не хранит. «Заблокировать сейчас» работает после сохранения настройки.",
+                )))
+            })
             .child(section(IconName::Zap, tr(language, "Power saving", "Энергосбережение"), palette))
             .child(div().debug_selector(|| "settings-power-saving".into()).child(setting_row(
                 tr(language, "Background activity and animations", "Фоновая активность и анимации"),

@@ -20,6 +20,8 @@ mod licensing;
 mod plugins;
 mod power;
 mod resources;
+mod mp4_info;
+mod app_lock;
 mod sound;
 mod spatial_player;
 mod head_tracking;
@@ -111,6 +113,7 @@ fn main() {
         power::set_mode(loaded.power_saving, loaded.power_saving_below);
         files_ext_music::set_streaming_enhance(loaded.extensions.music_enhance.strength());
         settings::apply_spatial(&loaded);
+        app_lock::configure(&loaded.lock, true);
         power::refresh();
         cx.set_reduce_motion(loaded.accessibility.reduce_motion() || power::power_saving());
         palette::apply_motion(cx, loaded.look.motion);

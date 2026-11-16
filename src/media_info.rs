@@ -269,6 +269,13 @@ fn aspect(width: u32, height: u32) -> String {
 
 // -------------------------------------------------------------- video, audio
 
+/// `60 fps`, `29.97 fps` (phones' variable rates are averages: two decimals).
+fn frame_rate(fps: f64) -> String {
+    let text = format!("{fps:.2}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{text} fps")
+}
+
 fn duration(ms: i64) -> String {
     let seconds = ms / 1000;
     if seconds >= 3600 { format!("{}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60) } else { format!("{}:{:02}", seconds / 60, seconds % 60) }
@@ -288,6 +295,11 @@ fn media(path: &Path) -> Vec<Section> {
     let Some(probe) = crate::video::probe(path) else {
         return vec![Section { title: "MEDIA", rows: vec![("Details".into(), "VLC could not read this file".into())] }];
     };
+    let mut probe = probe;
+    // Fragmented MP4s (OBS, screen recorders): VLC's quick parse finds no rate.
+    for stream in probe.streams.iter_mut().filter(|stream| stream.kind == "Video" && stream.frame_rate <= 0.) {
+        stream.frame_rate = crate::mp4_info::frame_rate(path).unwrap_or(0.);
+    }
     let mut sections = Vec::new();
     let mut general = Vec::new();
     if probe.duration_ms > 0 {
@@ -299,6 +311,9 @@ fn media(path: &Path) -> Vec<Section> {
     }
     if let Some(video) = probe.streams.iter().find(|stream| stream.kind == "Video") {
         general.push(("Resolution".to_string(), format!("{} × {} · {}", video.width, video.height, aspect(video.width, video.height))));
+        if video.frame_rate > 0. {
+            general.push(("Frame rate".to_string(), frame_rate(video.frame_rate)));
+        }
     }
     if !general.is_empty() {
         sections.push(Section { title: "MEDIA", rows: general });
@@ -310,7 +325,7 @@ fn media(path: &Path) -> Vec<Section> {
                 rows.push(("Size".to_string(), format!("{} × {}", stream.width, stream.height)));
             }
             if stream.frame_rate > 0. {
-                rows.push(("Frame rate".to_string(), format!("{:.3} fps", stream.frame_rate).replace(".000", "")));
+                rows.push(("Frame rate".to_string(), frame_rate(stream.frame_rate)));
             }
         }
         if stream.kind == "Audio" {
@@ -356,6 +371,9 @@ mod tests {
         assert_eq!(aspect(1998, 1080), "1.85:1");
         assert_eq!(duration(3_725_000), "1:02:05");
         assert_eq!(duration(65_000), "1:05");
+        assert_eq!(frame_rate(60.0), "60 fps");
+        assert_eq!(frame_rate(29.942196), "29.94 fps");
+        assert_eq!(frame_rate(23.976), "23.98 fps");
         assert_eq!(channels(6), "5.1");
     }
 
