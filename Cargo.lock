@@ -1887,7 +1887,7 @@ checksum = "629c9d6b6f30b5604089e0980f4d924a013aacb1654a6cdf5d3d852224f68651"
 
 [[package]]
 name = "file-force"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "block2 0.6.2",
  "chrono",

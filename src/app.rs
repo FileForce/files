@@ -2225,166 +2225,156 @@ impl Render for FileExplorer {
             window.request_animation_frame();
         }
 
-        gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(
-            format!("files-{:?}", self.current).into(),
-        )))
-        .size_full()
-        .min_w_0()
-        .min_h_0()
-        .child(
-            div()
-                .track_focus(&self.focus_handle)
-                .key_context("FileExplorer")
-                .on_action(cx.listener(Self::on_show_expressive))
-                .on_action(cx.listener(Self::on_show_pro))
-                .on_action(cx.listener(Self::on_show_dual))
-                .on_action(cx.listener(Self::on_focus_search))
-                .on_action(cx.listener(Self::on_global_search))
-                .on_action(cx.listener(Self::on_new_tab))
-                .on_action(cx.listener(Self::on_close_tab))
-                .on_action(cx.listener(Self::on_close_other_tabs))
-                .on_action(cx.listener(Self::on_close_tabs_left))
-                .on_action(cx.listener(Self::on_close_tabs_right))
-                .on_action(cx.listener(Self::on_toggle_pin_tab))
-                .on_action(cx.listener(Self::on_toggle_theme))
-                .on_action(cx.listener(Self::on_toggle_inspector))
-                .on_action(cx.listener(Self::on_show_settings))
-                .on_action(cx.listener(|this, _: &OpenSettingsTab, window, cx| {
-                    this.open_settings_tab(window, cx)
-                }))
-                .on_action(cx.listener(Self::on_select_previous))
-                .on_action(cx.listener(Self::on_select_next))
-                .on_action(cx.listener(Self::on_open_selected))
-                .on_action(cx.listener(Self::on_focus_left_pane))
-                .on_action(cx.listener(Self::on_focus_right_pane))
-                .on_action(cx.listener(Self::on_focus_next))
-                .on_action(cx.listener(Self::on_focus_previous))
-                .on_action(cx.listener(Self::on_new_window))
-                .on_action(cx.listener(Self::on_delete_selected))
-                .on_action(cx.listener(Self::on_extend_up))
-                .on_action(cx.listener(Self::on_extend_down))
-                .on_action(cx.listener(Self::on_select_all))
-                .on_action(cx.listener(Self::on_quick_look))
-                .on_action(cx.listener(Self::on_open_with_app))
-                .on_action(cx.listener(Self::on_compress_selected))
-                .on_action(cx.listener(Self::on_extract_selected))
-                .on_action(cx.listener(Self::on_copy_selected_path))
-                .on_action(cx.listener(Self::on_open_terminal_here))
-                .on_action(cx.listener(Self::on_new_file))
-                .on_action(cx.listener(Self::on_new_folder))
-                .on_action(cx.listener(Self::on_fork_here))
-                .on_action(cx.listener(Self::on_about))
-                .on_action(cx.listener(Self::on_copy_files))
-                .on_action(cx.listener(Self::on_cut_files))
-                .on_action(cx.listener(Self::on_paste_files))
-                .on_action(cx.listener(Self::on_check_for_updates))
-                .on_action(cx.listener(Self::on_report_bug))
-                .on_action(cx.listener(Self::on_install_cli))
-                .on_action(cx.listener(Self::on_uninstall))
-                .on_action(cx.listener(Self::on_toggle_dev_tools))
-                .on_mouse_down(
-                    gpui_kit::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        crate::app_lock::touch();
-                        if window.focused(cx).is_none() {
-                            this.focus_main(window, cx);
-                        }
-                    }),
-                )
-                .on_mouse_move(|_, _, _| crate::app_lock::touch())
-                .on_scroll(|_, _, _| crate::app_lock::touch())
-                .capture_key_down(|_, _, _| crate::app_lock::touch())
-                // Mouse side buttons walk the history, like in Finder.
-                .on_mouse_down(
-                    gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back),
-                    cx.listener(|this, _, window, cx| this.go_back(window, cx)),
-                )
-                .on_mouse_down(
-                    gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Forward),
-                    cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
-                )
-                .on_mouse_up_out(
-                    gpui_kit::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.complete_pending_drop(window, cx)),
-                )
-                .flex()
-                .flex_col()
-                .size_full()
-                .min_w_0()
-                .min_h_0()
-                .border_1()
-                .border_color(gpui_kit::transparent_black())
-                .focus_visible(|style| style.border_color(palette.accent))
-                .relative()
-                .bg(backdrop_color.unwrap_or(palette.window))
-                .text_color(palette.text)
-                .children(backdrop_image.map(|path| {
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(gpui_kit::StyledImage::object_fit(
-                            gpui_kit::img(path).size_full(),
-                            gpui_kit::ObjectFit::Cover,
-                        ))
-                }))
-                .child(self.render_title_bar(palette, cx))
-                .children(self.render_folder_picker_bar(palette, cx))
-                .child(
-                    div().flex_1().min_h_0().child(
-                        h_resizable("workspace-panels")
-                            .child(
-                                resizable_panel()
-                                    .size(px(218.))
-                                    .size_range(px(184.)..px(280.))
-                                    .fixed()
-                                    .child(self.render_sidebar(palette, cx)),
-                            )
-                            .child(
-                                resizable_panel().child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .size_full()
-                                        .min_w_0()
-                                        .min_h_0()
-                                        .child(self.render_tabs(palette, cx))
-                                        .children(
-                                            panel
-                                                .map(|panel| div().flex_1().min_h_0().child(panel)),
-                                        )
-                                        .children(
-                                            (!has_panel).then(|| self.render_toolbar(palette, cx)),
-                                        )
-                                        .children(
-                                            (!has_panel)
-                                                .then(|| self.render_drop_area(palette, cx)),
-                                        ),
-                                ),
-                            )
-                            .child(
-                                resizable_panel()
-                                    .visible(inspector_visible)
-                                    .size(px(292.))
-                                    .size_range(px(252.)..px(380.))
-                                    .fixed()
-                                    .child(self.render_inspector(palette, cx)),
+        div()
+            .track_focus(&self.focus_handle)
+            .key_context("FileExplorer")
+            .on_action(cx.listener(Self::on_show_expressive))
+            .on_action(cx.listener(Self::on_show_pro))
+            .on_action(cx.listener(Self::on_show_dual))
+            .on_action(cx.listener(Self::on_focus_search))
+            .on_action(cx.listener(Self::on_global_search))
+            .on_action(cx.listener(Self::on_new_tab))
+            .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_close_other_tabs))
+            .on_action(cx.listener(Self::on_close_tabs_left))
+            .on_action(cx.listener(Self::on_close_tabs_right))
+            .on_action(cx.listener(Self::on_toggle_pin_tab))
+            .on_action(cx.listener(Self::on_toggle_theme))
+            .on_action(cx.listener(Self::on_toggle_inspector))
+            .on_action(cx.listener(Self::on_show_settings))
+            .on_action(cx.listener(|this, _: &OpenSettingsTab, window, cx| {
+                this.open_settings_tab(window, cx)
+            }))
+            .on_action(cx.listener(Self::on_select_previous))
+            .on_action(cx.listener(Self::on_select_next))
+            .on_action(cx.listener(Self::on_open_selected))
+            .on_action(cx.listener(Self::on_focus_left_pane))
+            .on_action(cx.listener(Self::on_focus_right_pane))
+            .on_action(cx.listener(Self::on_focus_next))
+            .on_action(cx.listener(Self::on_focus_previous))
+            .on_action(cx.listener(Self::on_new_window))
+            .on_action(cx.listener(Self::on_delete_selected))
+            .on_action(cx.listener(Self::on_extend_up))
+            .on_action(cx.listener(Self::on_extend_down))
+            .on_action(cx.listener(Self::on_select_all))
+            .on_action(cx.listener(Self::on_quick_look))
+            .on_action(cx.listener(Self::on_open_with_app))
+            .on_action(cx.listener(Self::on_compress_selected))
+            .on_action(cx.listener(Self::on_extract_selected))
+            .on_action(cx.listener(Self::on_copy_selected_path))
+            .on_action(cx.listener(Self::on_open_terminal_here))
+            .on_action(cx.listener(Self::on_new_file))
+            .on_action(cx.listener(Self::on_new_folder))
+            .on_action(cx.listener(Self::on_fork_here))
+            .on_action(cx.listener(Self::on_about))
+            .on_action(cx.listener(Self::on_copy_files))
+            .on_action(cx.listener(Self::on_cut_files))
+            .on_action(cx.listener(Self::on_paste_files))
+            .on_action(cx.listener(Self::on_check_for_updates))
+            .on_action(cx.listener(Self::on_report_bug))
+            .on_action(cx.listener(Self::on_install_cli))
+            .on_action(cx.listener(Self::on_uninstall))
+            .on_action(cx.listener(Self::on_toggle_dev_tools))
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    crate::app_lock::touch();
+                    if window.focused(cx).is_none() {
+                        this.focus_main(window, cx);
+                    }
+                }),
+            )
+            .on_mouse_move(|_, _, _| crate::app_lock::touch())
+            .on_scroll(|_, _, _| crate::app_lock::touch())
+            .capture_key_down(|_, _, _| crate::app_lock::touch())
+            // Mouse side buttons walk the history, like in Finder.
+            .on_mouse_down(
+                gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| this.go_back(window, cx)),
+            )
+            .on_mouse_down(
+                gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
+            )
+            .on_mouse_up_out(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.complete_pending_drop(window, cx)),
+            )
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(|style| style.border_color(palette.accent))
+            .relative()
+            .bg(backdrop_color.unwrap_or(palette.window))
+            .text_color(palette.text)
+            .children(backdrop_image.map(|path| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(gpui_kit::StyledImage::object_fit(
+                        gpui_kit::img(path).size_full(),
+                        gpui_kit::ObjectFit::Cover,
+                    ))
+            }))
+            .child(self.render_title_bar(palette, cx))
+            .children(self.render_folder_picker_bar(palette, cx))
+            .child(
+                div().flex_1().min_h_0().child(
+                    h_resizable("workspace-panels")
+                        .child(
+                            resizable_panel()
+                                .size(px(218.))
+                                .size_range(px(184.)..px(280.))
+                                .fixed()
+                                .child(self.render_sidebar(palette, cx)),
+                        )
+                        .child(
+                            resizable_panel().child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .size_full()
+                                    .min_w_0()
+                                    .min_h_0()
+                                    .child(self.render_tabs(palette, cx))
+                                    .children(
+                                        panel.map(|panel| div().flex_1().min_h_0().child(panel)),
+                                    )
+                                    .children(
+                                        (!has_panel).then(|| self.render_toolbar(palette, cx)),
+                                    )
+                                    .children(
+                                        (!has_panel).then(|| self.render_drop_area(palette, cx)),
+                                    ),
                             ),
-                    ),
-                )
-                .children(self.render_console(palette, cx))
-                .children(self.render_notifications(palette, cx))
-                .child(self.render_status_bar(palette, cx))
-                .children(
-                    self.appearance
-                        .read(cx)
-                        .developer
-                        .show_fps_counter
-                        .then(|| gpui_fps::fps_monitor(window, cx)),
-                )
-                // Last and deferred: toasts paint over everything, dialogs too.
-                .children(self.render_toasts(palette, cx)),
-        )
-        .into_any_element()
+                        )
+                        .child(
+                            resizable_panel()
+                                .visible(inspector_visible)
+                                .size(px(292.))
+                                .size_range(px(252.)..px(380.))
+                                .fixed()
+                                .child(self.render_inspector(palette, cx)),
+                        ),
+                ),
+            )
+            .children(self.render_console(palette, cx))
+            .children(self.render_notifications(palette, cx))
+            .child(self.render_status_bar(palette, cx))
+            .children(
+                self.appearance
+                    .read(cx)
+                    .developer
+                    .show_fps_counter
+                    .then(|| gpui_fps::fps_monitor(window, cx)),
+            )
+            // Last and deferred: toasts paint over everything, dialogs too.
+            .children(self.render_toasts(palette, cx))
+            .into_any_element()
     }
 }
 

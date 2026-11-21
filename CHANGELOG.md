@@ -7,6 +7,10 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.34
+
+- Windows: file lists scroll again, and tabs and the preview stay in place. The whole-window image cache added in 0.1.33 could leave the content without a bounded height; it has been removed on every platform.
+
 ## 0.1.33
 
 - **Smart Folders** is now a built-in extension: Videos, Photos, Executables, Applications and Duplicates are gathered in the background and shown in the sidebar. It can be turned off in Settings → Extensions.
