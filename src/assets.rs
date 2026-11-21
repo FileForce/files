@@ -33,4 +33,3 @@ impl AssetSource for AppAssets {
         Ok(paths)
     }
 }
-

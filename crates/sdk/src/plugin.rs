@@ -62,13 +62,19 @@ pub fn pack(manifest: &PluginManifest, library: &[u8]) -> Result<Vec<u8>, String
 
 /// Splits a package into its manifest and library without running anything.
 pub fn unpack(bytes: &[u8]) -> Result<(PluginManifest, &[u8]), String> {
-    let rest = bytes.strip_prefix(MAGIC).ok_or("not a Files extension package")?;
+    let rest = bytes
+        .strip_prefix(MAGIC)
+        .ok_or("not a Files extension package")?;
     let (length, rest) = rest.split_at_checked(4).ok_or("truncated package")?;
     let length = u32::from_le_bytes(length.try_into().expect("4 bytes")) as usize;
     let (json, library) = rest.split_at_checked(length).ok_or("truncated package")?;
-    let manifest: PluginManifest = serde_json::from_slice(json).map_err(|error| format!("bad manifest: {error}"))?;
+    let manifest: PluginManifest =
+        serde_json::from_slice(json).map_err(|error| format!("bad manifest: {error}"))?;
     if manifest.abi != ABI_VERSION {
-        return Err(format!("built for extension ABI {}, this Files speaks {ABI_VERSION}: update Files or the extension", manifest.abi));
+        return Err(format!(
+            "built for extension ABI {}, this Files speaks {ABI_VERSION}: update Files or the extension",
+            manifest.abi
+        ));
     }
     Ok((manifest, library))
 }
@@ -84,7 +90,9 @@ pub mod abi {
     pub type Free = unsafe extern "C" fn(*mut c_char);
 
     pub fn into_raw(text: String) -> *mut c_char {
-        CString::new(text.replace('\0', "")).expect("no NUL").into_raw()
+        CString::new(text.replace('\0', ""))
+            .expect("no NUL")
+            .into_raw()
     }
 
     /// # Safety
@@ -93,7 +101,9 @@ pub mod abi {
         if pointer.is_null() {
             return String::new();
         }
-        unsafe { CStr::from_ptr(pointer) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(pointer) }
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// # Safety
@@ -164,8 +174,15 @@ mod tests {
         let (read, library) = unpack(&package).unwrap();
         assert_eq!((read, library), (manifest.clone(), &b"LIBRARY"[..]));
         manifest.abi = 99;
-        assert!(unpack(&pack(&manifest, b"x").unwrap()).unwrap_err().contains("ABI"));
+        assert!(
+            unpack(&pack(&manifest, b"x").unwrap())
+                .unwrap_err()
+                .contains("ABI")
+        );
         assert!(unpack(b"zip bytes").is_err());
-        assert!(unpack(b"FILESEXT1\n\xff\xff\xff\xff{").is_err(), "lengths past the end are refused");
+        assert!(
+            unpack(b"FILESEXT1\n\xff\xff\xff\xff{").is_err(),
+            "lengths past the end are refused"
+        );
     }
 }

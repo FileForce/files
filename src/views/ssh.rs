@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use files_sdk::RemoteProvider as _;
 
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Input, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
@@ -59,13 +59,28 @@ impl SshDialog {
             .and_then(|address| SshConnection::parse(address));
         let host = input_with_value(window, cx, last.as_ref().map_or("", |last| &last.host));
         let user = input_with_value(window, cx, last.as_ref().map_or("", |last| &last.user));
-        let port = input_with_value(window, cx, &last.as_ref().map_or(22, |last| last.port).to_string());
+        let port = input_with_value(
+            window,
+            cx,
+            &last.as_ref().map_or(22, |last| last.port).to_string(),
+        );
         let found_keys = crate::ssh::standard_keys();
-        let saved_key = last.as_ref().and_then(crate::ssh::identity).map(|key| key.display().to_string()).unwrap_or_default();
+        let saved_key = last
+            .as_ref()
+            .and_then(crate::ssh::identity)
+            .map(|key| key.display().to_string())
+            .unwrap_or_default();
         let key = input_with_value(window, cx, &saved_key);
-        let hint = found_keys.first().map_or_else(|| "~/.ssh/id_ed25519 · empty: your ssh setup decides".to_string(), |first| format!("{} · empty: your ssh setup decides", tilde(first)));
+        let hint = found_keys.first().map_or_else(
+            || "~/.ssh/id_ed25519 · empty: your ssh setup decides".to_string(),
+            |first| format!("{} · empty: your ssh setup decides", tilde(first)),
+        );
         key.update(cx, |input, cx| input.set_placeholder(hint, window, cx));
-        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Only if the server has no key for you, or the key has a passphrase"));
+        let password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("Only if the server has no key for you, or the key has a passphrase")
+        });
         let appearance_subscription = cx.observe(&appearance, |_, _, cx| cx.notify());
         Self {
             explorer,
@@ -138,24 +153,38 @@ impl SshDialog {
             let (prompt, done, attempt) = (prompt.clone(), done.clone(), connection.clone());
             std::thread::spawn(move || {
                 let result = crate::ssh::connect_with_prompts(&attempt, |asked| {
-                    *prompt.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(asked);
+                    *prompt
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(asked);
                 });
                 *done.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
             });
         }
         cx.spawn_in(window, async move |this, cx| {
             let result = loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
-                let asked = prompt.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(150))
+                    .await;
+                let asked = prompt
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take();
                 if let Some(asked) = asked {
-                    if this.update(cx, |this, cx| {
-                        this.auth = Some(asked);
-                        cx.notify();
-                    }).is_err() {
+                    if this
+                        .update(cx, |this, cx| {
+                            this.auth = Some(asked);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
                         return;
                     }
                 }
-                if let Some(result) = done.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
+                if let Some(result) = done
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                {
                     break result;
                 }
             };
@@ -179,12 +208,26 @@ impl SshDialog {
     }
 
     /// Fills the form with `connection` and connects.
-    pub(crate) fn start(&mut self, connection: &SshConnection, window: &mut Window, cx: &mut Context<Self>) {
-        self.host.update(cx, |input, cx| input.set_value(connection.host.clone(), window, cx));
-        self.user.update(cx, |input, cx| input.set_value(connection.user.clone(), window, cx));
-        self.port.update(cx, |input, cx| input.set_value(connection.port.to_string(), window, cx));
-        let key = crate::ssh::identity(connection).map(|key| key.display().to_string()).unwrap_or_default();
-        self.key.update(cx, |input, cx| input.set_value(key, window, cx));
+    pub(crate) fn start(
+        &mut self,
+        connection: &SshConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.host.update(cx, |input, cx| {
+            input.set_value(connection.host.clone(), window, cx)
+        });
+        self.user.update(cx, |input, cx| {
+            input.set_value(connection.user.clone(), window, cx)
+        });
+        self.port.update(cx, |input, cx| {
+            input.set_value(connection.port.to_string(), window, cx)
+        });
+        let key = crate::ssh::identity(connection)
+            .map(|key| key.display().to_string())
+            .unwrap_or_default();
+        self.key
+            .update(cx, |input, cx| input.set_value(key, window, cx));
         self.connect(window, cx);
     }
 
@@ -192,10 +235,21 @@ impl SshDialog {
     fn open_in_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let host = self.host.read(cx).value().trim().to_string();
         let user = self.user.read(cx).value().trim().to_string();
-        let port = self.port.read(cx).value().trim().parse::<u16>().unwrap_or(22);
+        let port = self
+            .port
+            .read(cx)
+            .value()
+            .trim()
+            .parse::<u16>()
+            .unwrap_or(22);
         let endpoint = SshConnection { host, user, port };
         let app = self.appearance.read(cx).extensions.terminal_app.effective();
-        let key = crate::ssh::identity_args(&endpoint).unwrap_or_default().iter().map(|arg| files_sdk::log::shell_quote(arg)).collect::<Vec<_>>().join(" ");
+        let key = crate::ssh::identity_args(&endpoint)
+            .unwrap_or_default()
+            .iter()
+            .map(|arg| files_sdk::log::shell_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
         let command = format!(
             "exec ssh -t -p {} {key} {}",
             endpoint.port,
@@ -203,7 +257,12 @@ impl SshDialog {
         );
         match run_in_terminal(&command, "ssh", app) {
             Ok(()) => {
-                files_sdk::log::record(crate::ssh::MANIFEST.id, files_sdk::log::Kind::Process, command, Some("opened in the terminal".to_string()));
+                files_sdk::log::record(
+                    crate::ssh::MANIFEST.id,
+                    files_sdk::log::Kind::Process,
+                    command,
+                    Some("opened in the terminal".to_string()),
+                );
                 self.close(window, cx);
             }
             Err(error) => {
@@ -215,15 +274,25 @@ impl SshDialog {
 
     /// The system's file picker for the key.
     fn choose_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this key".into()) });
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Use this key".into()),
+        });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await
                 && let Some(path) = paths.into_iter().next()
             {
                 let _ = this.update_in(cx, |this, window, cx| {
                     // The public half was picked: the private one is beside it.
-                    let path = if path.extension().is_some_and(|extension| extension == "pub") { path.with_extension("") } else { path };
-                    this.key.update(cx, |input, cx| input.set_value(tilde(&path), window, cx));
+                    let path = if path.extension().is_some_and(|extension| extension == "pub") {
+                        path.with_extension("")
+                    } else {
+                        path
+                    };
+                    this.key
+                        .update(cx, |input, cx| input.set_value(tilde(&path), window, cx));
                     cx.notify();
                 });
             }
@@ -430,17 +499,25 @@ impl FileExplorer {
     /// The connection a folder's server is reached through, if it is connected.
     pub(crate) fn ssh_for(&self, location: Location) -> Option<SshConnection> {
         let server = location.remote_server()?;
-        self.ssh_sessions.iter().find(|session| session.connection.address() == server).map(|session| session.connection.clone())
+        self.ssh_sessions
+            .iter()
+            .find(|session| session.connection.address() == server)
+            .map(|session| session.connection.clone())
     }
 
     /// Disconnects one server; the others stay. Panes and tabs on it go home.
     pub fn disconnect_ssh(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.ssh_sessions.iter().position(|session| session.connection.address() == address) else {
+        let Some(index) = self
+            .ssh_sessions
+            .iter()
+            .position(|session| session.connection.address() == address)
+        else {
             return;
         };
         self.ssh_sessions.remove(index);
         crate::model::remote::forget(address);
-        self.remote_loading.retain(|location| location.remote_server() != Some(address));
+        self.remote_loading
+            .retain(|location| location.remote_server() != Some(address));
         let on_it = |location: Location| location.remote_server() == Some(address);
         for pane in [Pane::Left, Pane::Right] {
             let location = match pane {
@@ -468,7 +545,12 @@ impl FileExplorer {
     /// Connects in the background to a server from the sidebar list.
     /// Reconnects to a server from the sidebar list: through the dialog, so
     /// a sign-in link (Tailscale SSH…) or an error has somewhere to show.
-    pub fn connect_saved_ssh(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn connect_saved_ssh(
+        &mut self,
+        address: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(connection) = SshConnection::parse(address) else {
             return;
         };
@@ -488,10 +570,13 @@ impl FileExplorer {
         let address = connection.address();
         // Connected again: its folders are read afresh; other servers stay.
         crate::model::remote::forget(&address);
-        self.remote_loading.retain(|location| location.remote_server() != Some(address.as_str()));
+        self.remote_loading
+            .retain(|location| location.remote_server() != Some(address.as_str()));
         let home = Location::remote(&address, home);
-        self.ssh_sessions.retain(|session| session.connection.address() != address);
-        self.ssh_sessions.push(crate::app::SshSession { connection, home });
+        self.ssh_sessions
+            .retain(|session| session.connection.address() != address);
+        self.ssh_sessions
+            .push(crate::app::SshSession { connection, home });
         self.update_sidebar(cx, |sidebar| {
             sidebar.ssh.retain(|known| *known != address);
             sidebar.ssh.insert(0, address.clone());
@@ -514,22 +599,30 @@ impl FileExplorer {
     /// Fetches a remote folder in the background (unless cached and `force`
     /// is off) and redraws when it arrives.
     pub(crate) fn load_remote(&mut self, location: Location, force: bool, cx: &mut Context<Self>) {
-        let (Some(connection), Some(path)) = (self.ssh_for(location), location.remote_path()) else {
+        let (Some(connection), Some(path)) = (self.ssh_for(location), location.remote_path())
+        else {
             return;
         };
-        if (!force && crate::model::remote::is_loaded(location)) || !self.remote_loading.insert(location) {
+        if (!force && crate::model::remote::is_loaded(location))
+            || !self.remote_loading.insert(location)
+        {
             return;
         }
         let loading = format!("Loading {path}…");
         self.notice = Some(loading.clone());
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { crate::ssh::EXTENSION.list(&connection, path) }).await;
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::ssh::EXTENSION.list(&connection, path) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.remote_loading.remove(&location);
                 match result {
                     Ok(items) => {
-                        let Location::Remote(id) = location else { return };
+                        let Location::Remote(id) = location else {
+                            return;
+                        };
                         crate::model::remote::store(id, items);
                         if this.notice.as_deref() == Some(loading.as_str()) {
                             this.notice = None;
@@ -545,7 +638,10 @@ impl FileExplorer {
 
     /// Downloads a remote file into the local cache and opens it.
     pub(crate) fn open_remote_file(&mut self, file: crate::model::Entry, cx: &mut Context<Self>) {
-        let (Some(connection), Some(remote)) = (self.ssh_for(file.parent), crate::model::remote::entry_path(&file)) else {
+        let (Some(connection), Some(remote)) = (
+            self.ssh_for(file.parent),
+            crate::model::remote::entry_path(&file),
+        ) else {
             return;
         };
         let local = crate::ssh::cache_path(&connection, remote);
@@ -568,11 +664,16 @@ impl FileExplorer {
                     Ok(()) => {
                         let overrides = this.appearance.read(cx).default_apps.clone();
                         this.notice = Some(match crate::default_apps::open(&local, &overrides) {
-                            Ok(_) => format!("Opened {} · a local copy, edits stay on this Mac", file.name),
+                            Ok(_) => format!(
+                                "Opened {} · a local copy, edits stay on this Mac",
+                                file.name
+                            ),
                             Err(error) => format!("Open failed · {}: {error}", file.name),
                         });
                     }
-                    Err(error) => this.notice = Some(format!("Download failed · {}: {error}", file.name)),
+                    Err(error) => {
+                        this.notice = Some(format!("Download failed · {}: {error}", file.name))
+                    }
                 }
                 cx.notify();
             });
@@ -581,13 +682,24 @@ impl FileExplorer {
     }
 
     /// The dragged remote item, or the whole selection when it is part of one.
-    pub(crate) fn remote_drag_entries(&self, entry: crate::model::Entry) -> Vec<crate::model::Entry> {
+    pub(crate) fn remote_drag_entries(
+        &self,
+        entry: crate::model::Entry,
+    ) -> Vec<crate::model::Entry> {
         let selection = self.selected_entries();
-        if selection.iter().any(|selected| selected.id == entry.id) { selection } else { vec![entry] }
+        if selection.iter().any(|selected| selected.id == entry.id) {
+            selection
+        } else {
+            vec![entry]
+        }
     }
 
     /// Remote files dropped onto a local folder are downloaded into it.
-    pub(crate) fn download_remote_into_active(&mut self, files: Vec<crate::model::Entry>, cx: &mut Context<Self>) {
+    pub(crate) fn download_remote_into_active(
+        &mut self,
+        files: Vec<crate::model::Entry>,
+        cx: &mut Context<Self>,
+    ) {
         let target = self.active_location();
         if target.is_remote() {
             self.copy_between_servers(files, target, cx);
@@ -596,14 +708,22 @@ impl FileExplorer {
         match target.path() {
             Some(target) => self.download_remote(files, target, cx),
             None => {
-                self.notice = Some(format!("Cannot download into {}", self.active_location().label()));
+                self.notice = Some(format!(
+                    "Cannot download into {}",
+                    self.active_location().label()
+                ));
                 cx.notify();
             }
         }
     }
 
     /// Copies the selected remote files into a local folder.
-    pub(crate) fn download_remote(&mut self, files: Vec<crate::model::Entry>, target: PathBuf, cx: &mut Context<Self>) {
+    pub(crate) fn download_remote(
+        &mut self,
+        files: Vec<crate::model::Entry>,
+        target: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
         // One server at a time: the first file's (a selection is in one folder).
         let Some(connection) = files.first().and_then(|file| self.ssh_for(file.parent)) else {
             return;
@@ -611,7 +731,12 @@ impl FileExplorer {
         let jobs: Vec<(String, String)> = files
             .iter()
             .filter(|file| !file.is_folder())
-            .filter_map(|file| Some((crate::model::remote::entry_path(file)?.to_string(), file.name.to_string())))
+            .filter_map(|file| {
+                Some((
+                    crate::model::remote::entry_path(file)?.to_string(),
+                    file.name.to_string(),
+                ))
+            })
             .collect();
         let skipped = files.len() - jobs.len();
         if jobs.is_empty() {
@@ -629,7 +754,11 @@ impl FileExplorer {
                     let mut done = 0;
                     for (remote, name) in jobs {
                         let local = crate::archive::unique_path(&folder.join(&name));
-                        let local = if folder.join(&name).exists() { local } else { folder.join(&name) };
+                        let local = if folder.join(&name).exists() {
+                            local
+                        } else {
+                            folder.join(&name)
+                        };
                         crate::ssh::EXTENSION.download(&connection, &remote, &local)?;
                         done += 1;
                     }
@@ -638,11 +767,18 @@ impl FileExplorer {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let message = match result {
-                    Ok(done) if skipped > 0 => format!("Downloaded {done} file(s) to {} · folders skipped", target.display()),
+                    Ok(done) if skipped > 0 => format!(
+                        "Downloaded {done} file(s) to {} · folders skipped",
+                        target.display()
+                    ),
                     Ok(done) => format!("Downloaded {done} file(s) to {}", target.display()),
                     Err(error) => format!("Download failed: {error}"),
                 };
-                let level = if message.starts_with("Download failed") { files_sdk::log::Level::Error } else { files_sdk::log::Level::Success };
+                let level = if message.starts_with("Download failed") {
+                    files_sdk::log::Level::Error
+                } else {
+                    files_sdk::log::Level::Success
+                };
                 files_sdk::log::notify(crate::ssh::MANIFEST.id, level, message.clone(), None);
                 this.notice = Some(message);
                 cx.notify();
@@ -653,9 +789,16 @@ impl FileExplorer {
 
     /// Copies remote files into a folder on another (or the same) server:
     /// each comes down into a private temporary folder, then goes up.
-    pub(crate) fn copy_between_servers(&mut self, files: Vec<crate::model::Entry>, target: Location, cx: &mut Context<Self>) {
+    pub(crate) fn copy_between_servers(
+        &mut self,
+        files: Vec<crate::model::Entry>,
+        target: Location,
+        cx: &mut Context<Self>,
+    ) {
         let source = files.first().and_then(|file| self.ssh_for(file.parent));
-        let (Some(source), Some(destination), Some(folder)) = (source, self.ssh_for(target), target.remote_path()) else {
+        let (Some(source), Some(destination), Some(folder)) =
+            (source, self.ssh_for(target), target.remote_path())
+        else {
             self.notice = Some("Connect to both servers first".to_string());
             cx.notify();
             return;
@@ -663,7 +806,12 @@ impl FileExplorer {
         let jobs: Vec<(String, String)> = files
             .iter()
             .filter(|file| !file.is_folder())
-            .filter_map(|file| Some((crate::model::remote::entry_path(file)?.to_string(), file.name.to_string())))
+            .filter_map(|file| {
+                Some((
+                    crate::model::remote::entry_path(file)?.to_string(),
+                    file.name.to_string(),
+                ))
+            })
             .collect();
         if jobs.is_empty() {
             self.notice = Some("Only files can be copied between servers".to_string());
@@ -677,7 +825,13 @@ impl FileExplorer {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let staging = std::env::temp_dir().join(format!("file-force-ssh-copy-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos())));
+                    let staging = std::env::temp_dir().join(format!(
+                        "file-force-ssh-copy-{}-{}",
+                        std::process::id(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |time| time.as_nanos())
+                    ));
                     std::fs::create_dir_all(&staging)?;
                     let copied = (|| {
                         for (remote, name) in &jobs {
@@ -697,7 +851,11 @@ impl FileExplorer {
                     Ok(count) => format!("Copied {count} file(s) {route}"),
                     Err(error) => format!("Copy failed: {error}"),
                 };
-                let level = if message.starts_with("Copy failed") { files_sdk::log::Level::Error } else { files_sdk::log::Level::Success };
+                let level = if message.starts_with("Copy failed") {
+                    files_sdk::log::Level::Error
+                } else {
+                    files_sdk::log::Level::Success
+                };
                 files_sdk::log::notify(crate::ssh::MANIFEST.id, level, message.clone(), None);
                 this.notice = Some(message);
                 this.load_remote(target, true, cx);
@@ -708,8 +866,14 @@ impl FileExplorer {
     }
 
     /// Uploads local files into the remote folder `location`.
-    pub(crate) fn upload_remote(&mut self, paths: Vec<PathBuf>, location: Location, cx: &mut Context<Self>) {
-        let (Some(connection), Some(folder)) = (self.ssh_for(location), location.remote_path()) else {
+    pub(crate) fn upload_remote(
+        &mut self,
+        paths: Vec<PathBuf>,
+        location: Location,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(connection), Some(folder)) = (self.ssh_for(location), location.remote_path())
+        else {
             return;
         };
         let files: Vec<PathBuf> = paths.into_iter().filter(|path| path.is_file()).collect();
@@ -735,7 +899,11 @@ impl FileExplorer {
                     Ok(count) => format!("Uploaded {count} file(s) to {folder}"),
                     Err(error) => format!("Upload failed: {error}"),
                 };
-                let level = if message.starts_with("Upload failed") { files_sdk::log::Level::Error } else { files_sdk::log::Level::Success };
+                let level = if message.starts_with("Upload failed") {
+                    files_sdk::log::Level::Error
+                } else {
+                    files_sdk::log::Level::Success
+                };
                 files_sdk::log::notify(crate::ssh::MANIFEST.id, level, message.clone(), None);
                 this.notice = Some(message);
                 this.load_remote(location, true, cx);
@@ -767,21 +935,32 @@ pub(crate) fn open_remote_terminal(
 }
 
 /// Runs a shell command in a new window of the user's terminal app.
-pub(crate) fn run_in_terminal(command: &str, name: &str, app: crate::settings::TerminalApp) -> std::io::Result<()> {
+pub(crate) fn run_in_terminal(
+    command: &str,
+    name: &str,
+    app: crate::settings::TerminalApp,
+) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         // Terminal and iTerm run a `.command` file in a new window.
-        let script = std::env::temp_dir().join(format!("file-force-{name}-{}.command", std::process::id()));
+        let script =
+            std::env::temp_dir().join(format!("file-force-{name}-{}.command", std::process::id()));
         std::fs::write(&script, format!("#!/bin/sh\n{command}\n"))?;
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))?;
-        std::process::Command::new("/usr/bin/open").arg("-a").arg(app.app_name()).arg(&script).spawn()?;
+        std::process::Command::new("/usr/bin/open")
+            .arg("-a")
+            .arg(app.app_name())
+            .arg(&script)
+            .spawn()?;
         Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, name);
-        std::process::Command::new("x-terminal-emulator").args(["-e", "sh", "-c", command]).spawn()?;
+        std::process::Command::new("x-terminal-emulator")
+            .args(["-e", "sh", "-c", command])
+            .spawn()?;
         Ok(())
     }
 }
@@ -804,7 +983,11 @@ fn input_with_value(
 
 /// `/Users/me/.ssh/id_ed25519` → `~/.ssh/id_ed25519`.
 fn tilde(path: &std::path::Path) -> String {
-    match std::env::home_dir().and_then(|home| path.strip_prefix(home).ok().map(std::path::Path::to_path_buf)) {
+    match std::env::home_dir().and_then(|home| {
+        path.strip_prefix(home)
+            .ok()
+            .map(std::path::Path::to_path_buf)
+    }) {
         Some(rest) => format!("~/{}", rest.display()),
         None => path.display().to_string(),
     }

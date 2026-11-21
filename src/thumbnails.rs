@@ -22,7 +22,10 @@ pub fn needs_conversion(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "heic" | "heif" | "hif" | "avif")
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "heic" | "heif" | "hif" | "avif"
+            )
         })
 }
 
@@ -46,7 +49,12 @@ pub fn thumbnail(path: &Path) -> Option<PathBuf> {
         if cached.is_file() {
             return Some(cached);
         }
-        if state().failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains_key(&cached) {
+        if state()
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&cached)
+        {
             return Some(path.to_path_buf());
         }
         enqueue(path, cached);
@@ -60,7 +68,12 @@ pub fn thumbnail(path: &Path) -> Option<PathBuf> {
     if cached.is_file() {
         return Some(cached);
     }
-    if state().failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains_key(&cached) {
+    if state()
+        .failed
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&cached)
+    {
         // Cannot be shrunk (an odd format): the file itself, as before.
         return Some(path.to_path_buf());
     }
@@ -69,21 +82,31 @@ pub fn thumbnail(path: &Path) -> Option<PathBuf> {
 }
 
 fn is_svg(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
 }
 
 /// Rasterizes an SVG to a PNG at most THUMB_SIZE on its longer side (transparency kept).
 pub(crate) fn rasterize_svg(source: &Path, target: &Path) -> std::io::Result<()> {
     let bytes = std::fs::read(source)?;
-    let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default()).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default())
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     let size = tree.size();
     let scale = THUMB_SIZE as f32 / size.width().max(size.height());
     let width = ((size.width() * scale).round() as u32).max(1);
     let height = ((size.height() * scale).round() as u32).max(1);
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).ok_or_else(|| std::io::Error::other("empty SVG"))?;
-    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
+        .ok_or_else(|| std::io::Error::other("empty SVG"))?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
     let partial = target.with_extension("partial.png");
-    pixmap.save_png(&partial).map_err(|error| std::io::Error::other(error.to_string()))?;
+    pixmap
+        .save_png(&partial)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     std::fs::rename(&partial, target)
 }
 
@@ -95,7 +118,9 @@ fn shrink(source: &Path, target: &Path) -> std::io::Result<()> {
         .map_err(|error| std::io::Error::other(format!("cannot decode: {error}")))?;
     let small = image.thumbnail(THUMB_SIZE, THUMB_SIZE).to_rgb8();
     let partial = target.with_extension("partial.jpg");
-    small.save_with_format(&partial, image::ImageFormat::Jpeg).map_err(|error| std::io::Error::other(error.to_string()))?;
+    small
+        .save_with_format(&partial, image::ImageFormat::Jpeg)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     std::fs::rename(&partial, target)
 }
 
@@ -123,7 +148,10 @@ pub enum Preview {
 
 /// macOS previews anything Quick Look can; elsewhere PDFs (first page).
 fn renderable(path: &Path) -> bool {
-    cfg!(target_os = "macos") || path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+    cfg!(target_os = "macos")
+        || path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
 }
 
 /// Quick Look rendering state for the preview panel.
@@ -134,7 +162,12 @@ pub fn quick_look_preview(path: &Path) -> Preview {
     let Some(target) = cache_path(path).map(|cached| cached.with_extension("ql.png")) else {
         return Preview::Unavailable("The file cannot be read".to_string());
     };
-    if let Some(reason) = state().failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&target) {
+    if let Some(reason) = state()
+        .failed
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&target)
+    {
         return Preview::Unavailable(reason.clone());
     }
     match quick_look(path) {
@@ -160,40 +193,75 @@ pub fn quick_look(path: &Path) -> Option<PathBuf> {
 
 fn enqueue(path: &Path, cached: PathBuf) {
     let state = state();
-    let mut queued = state.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut queued = state
+        .queued
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if queued.insert(cached.clone()) {
         // Quick Look (the big preview the user is looking at) has its own
         // worker, so it never waits behind a folder full of thumbnails.
-        let queue = if cached.to_string_lossy().ends_with(".ql.png") { &state.quick_look } else { &state.queue };
+        let queue = if cached.to_string_lossy().ends_with(".ql.png") {
+            &state.quick_look
+        } else {
+            &state.queue
+        };
         let job = crate::tasks::queue(job_kind(&cached), path.display().to_string());
-        let _ = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).send((path.to_path_buf(), cached, job));
+        let _ = queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .send((path.to_path_buf(), cached, job));
     }
 }
 
 /// A macOS app bundle (its icon is in Contents/Resources).
 fn mac_app(path: &Path) -> bool {
-    cfg!(target_os = "macos") && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("app")) && path.is_dir()
+    cfg!(target_os = "macos")
+        && path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        && path.is_dir()
 }
 
 /// Elsewhere there are no app bundles.
 #[cfg(not(target_os = "macos"))]
 fn mac_app_icon(_: &Path, _: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "app bundles are macOS's"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "app bundles are macOS's",
+    ))
 }
 
 /// The app's .icns (CFBundleIconFile in its Info.plist), as a 256 px PNG.
 #[cfg(target_os = "macos")]
 fn mac_app_icon(app: &Path, target: &Path) -> std::io::Result<()> {
     let contents = app.join("Contents");
-    let info: plist::Dictionary = plist::from_file(contents.join("Info.plist")).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let name = info.get("CFBundleIconFile").and_then(|value| value.as_string()).unwrap_or("AppIcon");
-    let name = if name.ends_with(".icns") { name.to_string() } else { format!("{name}.icns") };
+    let info: plist::Dictionary = plist::from_file(contents.join("Info.plist"))
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let name = info
+        .get("CFBundleIconFile")
+        .and_then(|value| value.as_string())
+        .unwrap_or("AppIcon");
+    let name = if name.ends_with(".icns") {
+        name.to_string()
+    } else {
+        format!("{name}.icns")
+    };
     let icns = contents.join("Resources").join(name);
     if !icns.is_file() {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no .icns (the icon is in an asset catalog)"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no .icns (the icon is in an asset catalog)",
+        ));
     }
     let partial = target.with_extension("partial.png");
-    let output = files_sdk::log::run(SOURCE, std::process::Command::new("/usr/bin/sips").args(["-s", "format", "png", "-Z", "256"]).arg(&icns).arg("--out").arg(&partial))?;
+    let output = files_sdk::log::run(
+        SOURCE,
+        std::process::Command::new("/usr/bin/sips")
+            .args(["-s", "format", "png", "-Z", "256"])
+            .arg(&icns)
+            .arg("--out")
+            .arg(&partial),
+    )?;
     if !output.status.success() || !partial.is_file() {
         return Err(std::io::Error::other("sips could not read the icon"));
     }
@@ -211,7 +279,12 @@ pub fn app_icon(path: &Path) -> Option<PathBuf> {
     if cached.is_file() {
         return Some(cached);
     }
-    if state().failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains_key(&cached) {
+    if state()
+        .failed
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&cached)
+    {
         return None;
     }
     enqueue(path, cached);
@@ -235,11 +308,25 @@ fn job_kind(target: &Path) -> &'static str {
 /// DevTools → Retry: forgets that `source` failed (or is queued), so the
 /// next time it shows, it is made again.
 pub fn retry(source: &str) {
-    let Some(base) = cache_path(Path::new(source)) else { return };
-    let targets = [base.clone(), base.with_extension("thumb.jpg"), base.with_extension("svg.png"), base.with_extension("ql.png"), base.with_extension("icon.png")];
+    let Some(base) = cache_path(Path::new(source)) else {
+        return;
+    };
+    let targets = [
+        base.clone(),
+        base.with_extension("thumb.jpg"),
+        base.with_extension("svg.png"),
+        base.with_extension("ql.png"),
+        base.with_extension("icon.png"),
+    ];
     let state = state();
-    let mut failed = state.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut queued = state.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut failed = state
+        .failed
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut queued = state
+        .queued
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     for target in &targets {
         failed.remove(target);
         queued.remove(target);
@@ -250,15 +337,34 @@ pub fn retry(source: &str) {
 /// DevTools → Indexes: failed conversions forgotten, so all are tried again.
 pub fn forget_failures() {
     let state = state();
-    state.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
-    state.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+    state
+        .failed
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    state
+        .queued
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
     state.generation.fetch_add(1, Ordering::Relaxed);
 }
 
 /// (waiting, failed) conversions.
 pub fn stats() -> (usize, usize) {
     let state = state();
-    (state.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len(), state.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len())
+    (
+        state
+            .queued
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len(),
+        state
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len(),
+    )
 }
 
 /// Bumped whenever a conversion finishes, so views know to repaint.
@@ -283,11 +389,18 @@ fn worker(name: &str) -> Sender<(PathBuf, PathBuf, u64)> {
             while let Ok((source, target, job)) = receiver.recv() {
                 // Cancelled in DevTools → Tasks while it waited.
                 if !crate::tasks::start(job) {
-                    state().queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&target);
+                    state()
+                        .queued
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(&target);
                     continue;
                 }
                 let result = convert(&source, &target);
-                crate::tasks::finish(job, result.as_ref().map(|_| ()).map_err(ToString::to_string));
+                crate::tasks::finish(
+                    job,
+                    result.as_ref().map(|_| ()).map_err(ToString::to_string),
+                );
                 if let Err(error) = result {
                     state()
                         .failed
@@ -361,7 +474,10 @@ fn convert(source: &Path, target: &Path) -> std::io::Result<()> {
     let output = converter(source, &partial)?;
     if !output.status.success() || !partial.is_file() {
         let _ = std::fs::remove_file(&partial);
-        return Err(std::io::Error::other(format!("converter exited with {}", output.status)));
+        return Err(std::io::Error::other(format!(
+            "converter exited with {}",
+            output.status
+        )));
     }
     std::fs::rename(&partial, target)
 }
@@ -371,11 +487,16 @@ fn convert(source: &Path, target: &Path) -> std::io::Result<()> {
 /// which writes `<name>.png` into a folder that is then moved into the cache.
 #[cfg(target_os = "macos")]
 fn quick_look_render(source: &Path, target: &Path) -> std::io::Result<()> {
-    let is_pdf = source.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+    let is_pdf = source
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
     if is_pdf {
         let partial = target.with_extension("partial.png");
         let mut sips = std::process::Command::new("/usr/bin/sips");
-        sips.args(["-s", "format", "png", "-Z", "1600"]).arg(source).arg("--out").arg(&partial);
+        sips.args(["-s", "format", "png", "-Z", "1600"])
+            .arg(source)
+            .arg("--out")
+            .arg(&partial);
         let rendered = files_sdk::log::run_with_timeout(SOURCE, &mut sips, TIMEOUT);
         if rendered.is_ok_and(|output| output.status.success()) && partial.is_file() {
             return std::fs::rename(&partial, target);
@@ -385,7 +506,10 @@ fn quick_look_render(source: &Path, target: &Path) -> std::io::Result<()> {
     let scratch = target.with_extension("ql-dir");
     std::fs::create_dir_all(&scratch)?;
     let mut qlmanage = std::process::Command::new("/usr/bin/qlmanage");
-    qlmanage.args(["-t", "-s", "1200", "-o"]).arg(&scratch).arg(source);
+    qlmanage
+        .args(["-t", "-s", "1200", "-o"])
+        .arg(&scratch)
+        .arg(source);
     let output = files_sdk::log::run_with_timeout(SOURCE, &mut qlmanage, TIMEOUT);
     let rendered = std::fs::read_dir(&scratch)
         .ok()
@@ -396,9 +520,14 @@ fn quick_look_render(source: &Path, target: &Path) -> std::io::Result<()> {
         .find(|path| path.extension().is_some_and(|extension| extension == "png"));
     let result = match (output, rendered) {
         (Err(error), _) if error.kind() == std::io::ErrorKind::TimedOut => {
-            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Quick Look took too long and was stopped"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Quick Look took too long and was stopped",
+            ))
         }
-        (Ok(output), Some(rendered)) if output.status.success() => std::fs::rename(rendered, target),
+        (Ok(output), Some(rendered)) if output.status.success() => {
+            std::fs::rename(rendered, target)
+        }
         (Err(error), _) => Err(error),
         _ => Err(std::io::Error::other("Quick Look cannot preview this file")),
     };
@@ -430,15 +559,30 @@ $awaitAction.Invoke($null, @($page.RenderToStreamAsync($stream, $options))).Wait
 $stream.Dispose()
 "#;
     let partial = target.with_extension("partial.png");
-    let folder = partial.parent().ok_or_else(|| std::io::Error::other("no cache folder"))?;
-    let name = partial.file_name().ok_or_else(|| std::io::Error::other("no file name"))?;
+    let folder = partial
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no cache folder"))?;
+    let name = partial
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("no file name"))?;
     let mut powershell = files_sdk::log::command("powershell");
     powershell
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", SCRIPT])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            SCRIPT,
+        ])
         .env("FILES_PDF", source)
         .env("FILES_OUT_DIR", folder)
         .env("FILES_OUT_NAME", name);
-    finish_render(files_sdk::log::run_with_timeout(SOURCE, &mut powershell, TIMEOUT), &partial, target)
+    finish_render(
+        files_sdk::log::run_with_timeout(SOURCE, &mut powershell, TIMEOUT),
+        &partial,
+        target,
+    )
 }
 
 /// Linux: poppler's `pdftoppm` (package poppler-utils), first page only.
@@ -446,23 +590,49 @@ $stream.Dispose()
 fn quick_look_render(source: &Path, target: &Path) -> std::io::Result<()> {
     let partial = target.with_extension("partial");
     let mut pdftoppm = std::process::Command::new("pdftoppm");
-    pdftoppm.args(["-png", "-singlefile", "-f", "1", "-l", "1", "-scale-to", "1600"]).arg(source).arg(&partial);
+    pdftoppm
+        .args([
+            "-png",
+            "-singlefile",
+            "-f",
+            "1",
+            "-l",
+            "1",
+            "-scale-to",
+            "1600",
+        ])
+        .arg(source)
+        .arg(&partial);
     // pdftoppm adds `.png` itself.
-    finish_render(files_sdk::log::run_with_timeout(SOURCE, &mut pdftoppm, TIMEOUT), &partial.with_extension("partial.png"), target)
+    finish_render(
+        files_sdk::log::run_with_timeout(SOURCE, &mut pdftoppm, TIMEOUT),
+        &partial.with_extension("partial.png"),
+        target,
+    )
 }
 
 /// Moves a finished rendering into the cache, or says why there is none.
 #[cfg(not(target_os = "macos"))]
-fn finish_render(output: std::io::Result<std::process::Output>, partial: &Path, target: &Path) -> std::io::Result<()> {
+fn finish_render(
+    output: std::io::Result<std::process::Output>,
+    partial: &Path,
+    target: &Path,
+) -> std::io::Result<()> {
     match output {
-        Ok(output) if output.status.success() && partial.is_file() => std::fs::rename(partial, target),
+        Ok(output) if output.status.success() && partial.is_file() => {
+            std::fs::rename(partial, target)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
             let _ = std::fs::remove_file(partial);
-            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "The PDF took too long to render and was stopped"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "The PDF took too long to render and was stopped",
+            ))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Install poppler-utils (pdftoppm) to preview PDFs"))
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Install poppler-utils (pdftoppm) to preview PDFs",
+        )),
         Err(error) => Err(error),
         Ok(_) => {
             let _ = std::fs::remove_file(partial);
@@ -474,7 +644,10 @@ fn finish_render(output: std::io::Result<std::process::Output>, partial: &Path, 
 #[cfg(target_os = "macos")]
 fn converter(source: &Path, target: &Path) -> std::io::Result<std::process::Output> {
     let mut sips = std::process::Command::new("/usr/bin/sips");
-    sips.args(["-s", "format", "jpeg", "-Z", &PREVIEW_SIZE.to_string()]).arg(source).arg("--out").arg(target);
+    sips.args(["-s", "format", "jpeg", "-Z", &PREVIEW_SIZE.to_string()])
+        .arg(source)
+        .arg("--out")
+        .arg(target);
     files_sdk::log::run_with_timeout(SOURCE, &mut sips, TIMEOUT)
 }
 
@@ -491,9 +664,11 @@ fn converter(source: &Path, target: &Path) -> std::io::Result<std::process::Outp
 #[cfg(not(unix))]
 fn converter(_: &Path, _: &Path) -> std::io::Result<std::process::Output> {
     let _ = PREVIEW_SIZE;
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no HEIC converter"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "no HEIC converter",
+    ))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -503,9 +678,15 @@ mod tests {
     fn only_undecodable_formats_are_converted() {
         assert!(needs_conversion(Path::new("IMG_0001.HEIC")));
         assert!(needs_conversion(Path::new("a.avif")));
-        assert!(!needs_conversion(Path::new("a.webp")), "GPUI decodes WebP itself");
+        assert!(
+            !needs_conversion(Path::new("a.webp")),
+            "GPUI decodes WebP itself"
+        );
         assert!(!needs_conversion(Path::new("a.jpg")));
-        assert_eq!(source(Path::new("/x/a.webp")), Some(PathBuf::from("/x/a.webp")));
+        assert_eq!(
+            source(Path::new("/x/a.webp")),
+            Some(PathBuf::from("/x/a.webp"))
+        );
     }
 
     #[test]
@@ -531,7 +712,10 @@ mod tests {
             if let Some(cached) = source(&heic) {
                 break cached;
             }
-            assert!(std::time::Instant::now() < deadline, "conversion never finished");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "conversion never finished"
+            );
             std::thread::sleep(std::time::Duration::from_millis(50));
         };
         let bytes = std::fs::read(&cached).unwrap();
@@ -561,9 +745,16 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let pdf = dir.join("one page.pdf");
         std::fs::write(&pdf, PDF).unwrap();
-        assert!(matches!(wait_for_preview(&pdf), Preview::Ready(_)), "the PDF preview never finished");
+        assert!(
+            matches!(wait_for_preview(&pdf), Preview::Ready(_)),
+            "the PDF preview never finished"
+        );
         // The conversion is in the journal (Settings → Developer → Console).
-        assert!(files_sdk::log::events().iter().any(|event| event.source == SOURCE && event.message.contains("one page.pdf")));
+        assert!(
+            files_sdk::log::events()
+                .iter()
+                .any(|event| event.source == SOURCE && event.message.contains("one page.pdf"))
+        );
 
         // Something Quick Look cannot draw ends with a reason, not "generating" forever.
         let junk = dir.join("noise.zzqq");

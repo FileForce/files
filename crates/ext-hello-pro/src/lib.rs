@@ -30,7 +30,11 @@ impl Plugin for HelloPro {
     fn run(&self, command: &str, context: &Context) -> Result<Outcome, String> {
         match command {
             "hello-pro.greet" => Ok(Outcome {
-                notice: Some(format!("Hello from Pro · {} item(s) in {}", context.selection.len(), context.folder.clone().unwrap_or_default())),
+                notice: Some(format!(
+                    "Hello from Pro · {} item(s) in {}",
+                    context.selection.len(),
+                    context.folder.clone().unwrap_or_default()
+                )),
                 ..Default::default()
             }),
             other => Err(format!("unknown command {other}")),

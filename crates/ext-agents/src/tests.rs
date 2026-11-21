@@ -45,27 +45,46 @@ fn claude_logs_give_title_usage_and_chat() {
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("s1.jsonl"), CLAUDE_LOG).unwrap();
     // Only hooks, no prompt: not a session.
-    std::fs::write(project.join("empty.jsonl"), "{\"type\":\"mode\",\"mode\":\"normal\"}\n").unwrap();
+    std::fs::write(
+        project.join("empty.jsonl"),
+        "{\"type\":\"mode\",\"mode\":\"normal\"}\n",
+    )
+    .unwrap();
 
     let sessions = scan(&roots(&dir), &[]);
     assert_eq!(sessions.len(), 1, "{sessions:?}");
     let session = &sessions[0];
-    assert_eq!((session.agent, session.id.as_str(), session.title.as_str()), (Agent::Claude, "s1", "Dark theme tokens"));
+    assert_eq!(
+        (session.agent, session.id.as_str(), session.title.as_str()),
+        (Agent::Claude, "s1", "Dark theme tokens")
+    );
     assert_eq!(session.cwd.as_deref(), Some(Path::new("/work/app")));
     assert_eq!(session.model.as_deref(), Some("claude-opus-5-5"));
     assert_eq!(session.origin.as_deref(), Some("cli"));
     assert!(session.external);
     // msg_1 is logged twice but counted once.
     assert_eq!(
-        (session.usage.input, session.usage.output, session.usage.cache_read, session.usage.cache_write, session.usage.reasoning),
+        (
+            session.usage.input,
+            session.usage.output,
+            session.usage.cache_read,
+            session.usage.cache_write,
+            session.usage.reasoning
+        ),
         (11, 6, 100, 50, 2)
     );
-    assert_eq!(session.updated, parse::iso_seconds("2026-10-29T07:48:05Z").unwrap());
+    assert_eq!(
+        session.updated,
+        parse::iso_seconds("2026-10-29T07:48:05Z").unwrap()
+    );
 
     let chat = messages(&roots(&dir), session);
     let roles: Vec<_> = chat.iter().map(|message| message.role).collect();
     assert_eq!(roles, [Role::User, Role::Assistant, Role::Tool, Role::Tool]);
-    assert_eq!(chat[1].text, "Sure, done.", "blocks of one message are joined");
+    assert_eq!(
+        chat[1].text, "Sure, done.",
+        "blocks of one message are joined"
+    );
     assert_eq!(chat[2].text, "⚙ Bash · cargo test");
     assert_eq!(chat[3].text, "↳ ok: 3 passed");
 
@@ -79,23 +98,47 @@ fn codex_logs_give_usage_limits_and_chat() {
     let dir = scratch("codex");
     let day = dir.join("codex/sessions/2026/07/17");
     std::fs::create_dir_all(&day).unwrap();
-    std::fs::write(day.join("rollout-2026-07-17T18-00-00-019f-codex.jsonl"), CODEX_LOG).unwrap();
+    std::fs::write(
+        day.join("rollout-2026-07-17T18-00-00-019f-codex.jsonl"),
+        CODEX_LOG,
+    )
+    .unwrap();
 
     let sessions = scan(&roots(&dir), &[]);
     let session = &sessions[0];
-    assert_eq!((session.agent, session.id.as_str()), (Agent::Codex, "019f-codex"));
+    assert_eq!(
+        (session.agent, session.id.as_str()),
+        (Agent::Codex, "019f-codex")
+    );
     assert_eq!(session.title, "Why is the build slow?");
     assert_eq!(session.model.as_deref(), Some("gpt-5.5"));
-    assert_eq!((session.usage.input, session.usage.cache_read, session.usage.output, session.usage.reasoning), (200, 800, 50, 20));
+    assert_eq!(
+        (
+            session.usage.input,
+            session.usage.cache_read,
+            session.usage.output,
+            session.usage.reasoning
+        ),
+        (200, 800, 50, 20)
+    );
 
     let chat = messages(&roots(&dir), session);
-    assert_eq!(chat.iter().map(|message| message.role).collect::<Vec<_>>(), [Role::User, Role::Tool, Role::Assistant]);
+    assert_eq!(
+        chat.iter().map(|message| message.role).collect::<Vec<_>>(),
+        [Role::User, Role::Tool, Role::Assistant]
+    );
 
     let accounts = accounts(&roots(&dir), &sessions);
-    let (_, codex) = accounts.iter().find(|(agent, _)| *agent == Agent::Codex).unwrap();
+    let (_, codex) = accounts
+        .iter()
+        .find(|(agent, _)| *agent == Agent::Codex)
+        .unwrap();
     assert_eq!(codex.plan.as_deref(), Some("plus"));
     assert_eq!(codex.limits.len(), 2);
-    assert_eq!((codex.limits[0].name.as_str(), codex.limits[0].used_percent), ("5 hours", 42.5));
+    assert_eq!(
+        (codex.limits[0].name.as_str(), codex.limits[0].used_percent),
+        ("5 hours", 42.5)
+    );
     assert_eq!(codex.limits[1].name, "7 days");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -114,7 +157,10 @@ fn claude_account_has_plan_but_no_personal_data() {
     assert_eq!(account.plan.as_deref(), Some("claude enterprise"));
     assert_eq!(account.organization.as_deref(), Some("Acme"));
     let shown = format!("{account:?}");
-    assert!(!shown.contains("me@example.com") && !shown.contains("accountUuid"), "{shown}");
+    assert!(
+        !shown.contains("me@example.com") && !shown.contains("accountUuid"),
+        "{shown}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -144,11 +190,26 @@ fn opencode_database_is_read_only_and_complete() {
     let sessions = scan(&roots(&dir), &[]);
     assert_eq!(sessions.len(), 1, "archived sessions are hidden");
     let session = &sessions[0];
-    assert_eq!((session.title.as_str(), session.model.as_deref()), ("Fix login", Some("k3")));
+    assert_eq!(
+        (session.title.as_str(), session.model.as_deref()),
+        ("Fix login", Some("k3"))
+    );
     assert_eq!(session.usage.cost, Some(0.25));
     assert_eq!((session.usage.input, session.usage.cache_read), (100, 300));
     let chat = messages(&roots(&dir), session);
-    assert_eq!(chat, [ChatMessage { role: Role::User, text: "2+2".into() }, ChatMessage { role: Role::Assistant, text: "4".into() }]);
+    assert_eq!(
+        chat,
+        [
+            ChatMessage {
+                role: Role::User,
+                text: "2+2".into()
+            },
+            ChatMessage {
+                role: Role::Assistant,
+                text: "4".into()
+            }
+        ]
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -159,10 +220,15 @@ fn streams_of_all_three_clis() {
         r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}"#,
         r#"{"type":"result","is_error":false,"usage":{"input_tokens":3,"output_tokens":2},"total_cost_usd":0.01}"#,
     ];
-    let events: Vec<_> = claude.iter().flat_map(|line| parse_line(Agent::Claude, line)).collect();
+    let events: Vec<_> = claude
+        .iter()
+        .flat_map(|line| parse_line(Agent::Claude, line))
+        .collect();
     assert_eq!(events[0], Event::Session("abc".into()));
     assert_eq!(events[1], Event::Text("Hel".into()));
-    assert!(matches!(&events[2], Event::Done { usage } if usage.input == 3 && usage.cost == Some(0.01)));
+    assert!(
+        matches!(&events[2], Event::Done { usage } if usage.input == 3 && usage.cost == Some(0.01))
+    );
 
     let codex = [
         r#"{"type":"thread.started","thread_id":"t1"}"#,
@@ -170,12 +236,27 @@ fn streams_of_all_three_clis() {
         r#"{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"Done"}}"#,
         r#"{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":2}}"#,
     ];
-    let events: Vec<_> = codex.iter().flat_map(|line| parse_line(Agent::Codex, line)).collect();
-    assert_eq!(events[..3], [Event::Session("t1".into()), Event::Tool("ls".into()), Event::Message("Done".into())]);
-    assert!(matches!(&events[3], Event::Done { usage } if usage.input == 6 && usage.cache_read == 4));
+    let events: Vec<_> = codex
+        .iter()
+        .flat_map(|line| parse_line(Agent::Codex, line))
+        .collect();
+    assert_eq!(
+        events[..3],
+        [
+            Event::Session("t1".into()),
+            Event::Tool("ls".into()),
+            Event::Message("Done".into())
+        ]
+    );
+    assert!(
+        matches!(&events[3], Event::Done { usage } if usage.input == 6 && usage.cache_read == 4)
+    );
 
     let opencode = r#"{"type":"text","sessionID":"ses_9","part":{"type":"text","text":"Hi"}}"#;
-    assert_eq!(parse_line(Agent::OpenCode, opencode), [Event::Session("ses_9".into()), Event::Message("Hi".into())]);
+    assert_eq!(
+        parse_line(Agent::OpenCode, opencode),
+        [Event::Session("ses_9".into()), Event::Message("Hi".into())]
+    );
     assert!(parse_line(Agent::Claude, "not json").is_empty());
 }
 
@@ -183,7 +264,11 @@ fn streams_of_all_three_clis() {
 fn models_and_effort_flags() {
     let dir = scratch("models");
     std::fs::create_dir_all(dir.join("codex")).unwrap();
-    std::fs::write(dir.join("codex/config.toml"), "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"high\"\n").unwrap();
+    std::fs::write(
+        dir.join("codex/config.toml"),
+        "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"high\"\n",
+    )
+    .unwrap();
     std::fs::write(
         dir.join("codex/models_cache.json"),
         r#"{"models":[
@@ -193,9 +278,16 @@ fn models_and_effort_flags() {
     .unwrap();
     let codex = models(&roots(&dir), Agent::Codex, &[]);
     assert_eq!(codex.len(), 1, "hidden models are not offered");
-    assert_eq!((codex[0].label.as_str(), codex[0].is_default), ("GPT-5.5", true));
+    assert_eq!(
+        (codex[0].label.as_str(), codex[0].is_default),
+        ("GPT-5.5", true)
+    );
     assert_eq!(codex[0].efforts, ["low", "xhigh"]);
-    assert_eq!(codex[0].default_effort.as_deref(), Some("high"), "config.toml wins");
+    assert_eq!(
+        codex[0].default_effort.as_deref(),
+        Some("high"),
+        "config.toml wins"
+    );
 
     let used = Session {
         agent: Agent::Claude,
@@ -211,22 +303,52 @@ fn models_and_effort_flags() {
         source: None,
     };
     let claude = models(&roots(&dir), Agent::Claude, &[used]);
-    assert_eq!(claude.iter().map(|choice| choice.id.as_str()).collect::<Vec<_>>(), ["fable", "opus", "sonnet", "haiku", "claude-opus-5-5"]);
+    assert_eq!(
+        claude
+            .iter()
+            .map(|choice| choice.id.as_str())
+            .collect::<Vec<_>>(),
+        ["fable", "opus", "sonnet", "haiku", "claude-opus-5-5"]
+    );
     assert_eq!(claude[0].efforts.last().map(String::as_str), Some("max"));
 
-    let options = RunOptions { model: Some("opus".into()), effort: Some("high".into()) };
-    assert_eq!(option_args(Agent::Claude, &options), ["--model", "opus", "--effort", "high"]);
-    assert_eq!(option_args(Agent::Codex, &options), ["-m", "opus", "-c", "model_reasoning_effort=\"high\""]);
-    assert_eq!(option_args(Agent::OpenCode, &options), ["--model", "opus", "--variant", "high"]);
-    assert!(option_args(Agent::Codex, &RunOptions::default()).is_empty(), "nothing picked: the agent's own settings");
+    let options = RunOptions {
+        model: Some("opus".into()),
+        effort: Some("high".into()),
+    };
+    assert_eq!(
+        option_args(Agent::Claude, &options),
+        ["--model", "opus", "--effort", "high"]
+    );
+    assert_eq!(
+        option_args(Agent::Codex, &options),
+        ["-m", "opus", "-c", "model_reasoning_effort=\"high\""]
+    );
+    assert_eq!(
+        option_args(Agent::OpenCode, &options),
+        ["--model", "opus", "--variant", "high"]
+    );
+    assert!(
+        option_args(Agent::Codex, &RunOptions::default()).is_empty(),
+        "nothing picked: the agent's own settings"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn processes_and_dates() {
-    assert_eq!(agent_of_command("/opt/homebrew/bin/claude --resume x"), Some(Agent::Claude));
-    assert_eq!(agent_of_command("node /Users/me/Library/pnpm/codex exec"), Some(Agent::Codex));
-    assert_eq!(agent_of_command("/Users/me/.opencode/bin/opencode"), Some(Agent::OpenCode));
+    assert_eq!(
+        agent_of_command("/opt/homebrew/bin/claude --resume x"),
+        Some(Agent::Claude)
+    );
+    assert_eq!(
+        agent_of_command("node /Users/me/Library/pnpm/codex exec"),
+        Some(Agent::Codex)
+    );
+    assert_eq!(
+        agent_of_command("/Users/me/.opencode/bin/opencode"),
+        Some(Agent::OpenCode)
+    );
     assert_eq!(agent_of_command("/usr/bin/vim claude.md"), None);
     files_sdk::permissions::declare(&MANIFEST);
     use_program(Agent::OpenCode, PathBuf::from("/opt/it's/opencode"));
@@ -236,7 +358,10 @@ fn processes_and_dates() {
     );
     assert_eq!(Agent::Codex.desktop_bundle(), "com.openai.codex");
     assert_eq!(parse::iso_seconds("1970-01-01T00:00:00Z"), Some(0));
-    assert_eq!(parse::iso_seconds("2026-10-29T07:47:27.473Z"), Some(1_793_260_047));
+    assert_eq!(
+        parse::iso_seconds("2026-10-29T07:47:27.473Z"),
+        Some(1_793_260_047)
+    );
 }
 
 #[test]
@@ -247,19 +372,38 @@ fn real_data_summary() {
     let started = std::time::Instant::now();
     let sessions = scan(&roots, &[]);
     for agent in Agent::ALL {
-        let mine: Vec<_> = sessions.iter().filter(|session| session.agent == agent).collect();
+        let mine: Vec<_> = sessions
+            .iter()
+            .filter(|session| session.agent == agent)
+            .collect();
         let mut total = Usage::default();
         mine.iter().for_each(|session| total.add(&session.usage));
         let running = mine.iter().filter(|session| session.running).count();
-        let models: std::collections::BTreeSet<_> = mine.iter().filter_map(|session| session.model.clone()).collect();
-        println!("{}: {} sessions, {running} running, models {models:?}, in {} out {} cache r/w {}/{} cost {:?}",
-            agent.name(), mine.len(), total.input, total.output, total.cache_read, total.cache_write, total.cost);
+        let models: std::collections::BTreeSet<_> = mine
+            .iter()
+            .filter_map(|session| session.model.clone())
+            .collect();
+        println!(
+            "{}: {} sessions, {running} running, models {models:?}, in {} out {} cache r/w {}/{} cost {:?}",
+            agent.name(),
+            mine.len(),
+            total.input,
+            total.output,
+            total.cache_read,
+            total.cache_write,
+            total.cost
+        );
         if let Some(first) = mine.first() {
             println!("   newest chat: {} messages", messages(&roots, first).len());
         }
     }
     for (agent, account) in accounts(&roots, &sessions) {
-        println!("{}: plan {:?}, limits {:?}", agent.name(), account.plan, account.limits);
+        println!(
+            "{}: plan {:?}, limits {:?}",
+            agent.name(),
+            account.plan,
+            account.limits
+        );
     }
     println!("scan took {:?}", started.elapsed());
     let again = std::time::Instant::now();

@@ -1,13 +1,13 @@
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Disableable as _, Icon, InteractiveElementExt as _, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
-    Window, WindowBounds, WindowOptions, actions, div, img, point, px, size,
+    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, Window,
+    WindowBounds, WindowOptions, actions, div, img, point, px, size,
 };
 
 use std::path::{Path, PathBuf};
@@ -19,8 +19,8 @@ pub(crate) use files_ext_archive::extract::{
 pub(crate) use files_sdk::fs::unique_path;
 
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::prelude::FluentBuilder as _;
 
 use crate::app::AppearanceSettings;
 use crate::model::{FileEntry, FileKind};
@@ -93,18 +93,27 @@ impl ArchiveWindow {
         window.focus(&focus_handle, cx);
         // Reading can block for a long time (cloud placeholders, network
         // volumes), so the listing is loaded off the UI thread.
-        let online_only = archive.path.as_deref().is_some_and(crate::model::is_online_only);
+        let online_only = archive
+            .path
+            .as_deref()
+            .is_some_and(crate::model::is_online_only);
         let loading = archive.path.is_some() && is_supported(&archive) && !online_only;
         if let Some(path) = archive.path.clone().filter(|_| loading) {
             cx.spawn(async move |this, cx| {
                 let job_path = path.clone();
-                let result = cx.background_executor().spawn(async move { read_archive(&job_path) }).await;
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { read_archive(&job_path) })
+                    .await;
                 let _ = this.update(cx, |this, cx| {
                     this.loading = false;
                     match result {
                         Ok(entries) => this.entries = Box::leak(entries.into_boxed_slice()),
                         Err(error) => {
-                            this.notice = Some(format!("Cannot read archive: {}", describe_error(&path, &error)));
+                            this.notice = Some(format!(
+                                "Cannot read archive: {}",
+                                describe_error(&path, &error)
+                            ));
                         }
                     }
                     cx.notify();
@@ -128,13 +137,18 @@ impl ArchiveWindow {
             .and_then(Path::parent)
             .map(|parent| parent.display().to_string())
             .unwrap_or_default();
-        let destination = cx.new(|cx| InputState::new(window, cx).default_value(default_destination));
+        let destination =
+            cx.new(|cx| InputState::new(window, cx).default_value(default_destination));
         Self {
             archive: archive.clone(),
             // Leaked once per opened archive window, like model entries.
             entries: &[],
             loading,
-            page: if is_supported(&archive) { page } else { ArchivePage::Browse },
+            page: if is_supported(&archive) {
+                page
+            } else {
+                ArchivePage::Browse
+            },
             destination,
             create_folder: appearance.read(cx).extensions.archives_create_folder,
             overwrite_existing: appearance.read(cx).extensions.archives_overwrite,
@@ -186,7 +200,11 @@ impl ArchiveWindow {
         if self.create_folder {
             let folder = base.join(archive_stem(&self.archive));
             // A file already named like the new folder: create "name (1)" instead.
-            if folder.is_file() { unique_path(&folder) } else { folder }
+            if folder.is_file() {
+                unique_path(&folder)
+            } else {
+                folder
+            }
         } else {
             base
         }
@@ -252,8 +270,10 @@ impl ArchiveWindow {
                     }
                     Ok(_) => this.run_extract(ConflictPolicy::Skip, cx),
                     Err(error) => {
-                        this.extract_error =
-                            Some(format!("Cannot read archive: {}", describe_error(&archive, &error)));
+                        this.extract_error = Some(format!(
+                            "Cannot read archive: {}",
+                            describe_error(&archive, &error)
+                        ));
                     }
                 }
                 cx.notify();
@@ -282,11 +302,8 @@ impl ArchiveWindow {
                 this.extracting = false;
                 match result {
                     Ok(report) => {
-                        let mut notice = format!(
-                            "Extracted {} files to {}",
-                            report.files,
-                            target.display()
-                        );
+                        let mut notice =
+                            format!("Extracted {} files to {}", report.files, target.display());
                         for (count, label) in [
                             (report.renamed, "renamed"),
                             (report.overwritten, "overwritten"),
@@ -300,8 +317,10 @@ impl ArchiveWindow {
                         this.page = ArchivePage::Browse;
                     }
                     Err(error) => {
-                        this.extract_error =
-                            Some(format!("Extract failed: {}", describe_error(&archive, &error)));
+                        this.extract_error = Some(format!(
+                            "Extract failed: {}",
+                            describe_error(&archive, &error)
+                        ));
                     }
                 }
                 cx.notify();
@@ -330,71 +349,78 @@ impl ArchiveWindow {
         {
             self.conflicts = None;
         }
-        let conflict_panel = self.conflicts.as_ref().map(|(_, names)| {
-            const SHOWN: usize = 5;
-            let more = names.len().saturating_sub(SHOWN);
-            v_flex()
-                .gap_2()
-                .p_3()
-                .rounded_md()
-                .border_1()
-                .border_color(palette.archive)
-                .bg(palette.surface)
-                .text_xs()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(Icon::new(IconName::TriangleAlert).small().text_color(palette.archive))
-                        .child(
+        let conflict_panel =
+            self.conflicts.as_ref().map(|(_, names)| {
+                const SHOWN: usize = 5;
+                let more = names.len().saturating_sub(SHOWN);
+                v_flex()
+                    .gap_2()
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(palette.archive)
+                    .bg(palette.surface)
+                    .text_xs()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Icon::new(IconName::TriangleAlert)
+                                    .small()
+                                    .text_color(palette.archive),
+                            )
+                            .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(
+                                format!("{} files already exist in this folder", names.len()),
+                            )),
+                    )
+                    .children(
+                        names
+                            .iter()
+                            .take(SHOWN)
+                            .map(|name| div().text_color(palette.muted).child(name.clone())),
+                    )
+                    .when(more > 0, |this| {
+                        this.child(
                             div()
-                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                .child(format!("{} files already exist in this folder", names.len())),
-                        ),
-                )
-                .children(
-                    names
-                        .iter()
-                        .take(SHOWN)
-                        .map(|name| div().text_color(palette.muted).child(name.clone())),
-                )
-                .when(more > 0, |this| {
-                    this.child(div().text_color(palette.faint).child(format!("…and {more} more")))
-                })
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .pt_1()
-                        .child(
-                            Button::new("conflict-rename")
-                                .primary()
-                                .small()
-                                .label("Keep both")
-                                .tooltip("Extract as \"name (1).ext\"")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.run_extract(ConflictPolicy::Rename, cx)
-                                })),
+                                .text_color(palette.faint)
+                                .child(format!("…and {more} more")),
                         )
-                        .child(
-                            Button::new("conflict-overwrite")
-                                .danger()
-                                .small()
-                                .label("Overwrite")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.run_extract(ConflictPolicy::Overwrite, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("conflict-skip")
-                                .secondary()
-                                .small()
-                                .label("Skip existing")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.run_extract(ConflictPolicy::Skip, cx)
-                                })),
-                        ),
-                )
-        });
+                    })
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .pt_1()
+                            .child(
+                                Button::new("conflict-rename")
+                                    .primary()
+                                    .small()
+                                    .label("Keep both")
+                                    .tooltip("Extract as \"name (1).ext\"")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.run_extract(ConflictPolicy::Rename, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("conflict-overwrite")
+                                    .danger()
+                                    .small()
+                                    .label("Overwrite")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.run_extract(ConflictPolicy::Overwrite, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("conflict-skip")
+                                    .secondary()
+                                    .small()
+                                    .label("Skip existing")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.run_extract(ConflictPolicy::Skip, cx)
+                                    })),
+                            ),
+                    )
+            });
         let folder_name = archive_stem(&self.archive);
         v_flex()
             .flex_1()
@@ -411,17 +437,23 @@ impl ArchiveWindow {
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .child(format!("Extract {}", self.archive.name)),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.muted)
-                            .child(format!("{} items", self.entries.iter().filter(|entry| !entry.is_folder()).count())),
-                    ),
+                    .child(div().text_xs().text_color(palette.muted).child(format!(
+                            "{} items",
+                            self.entries
+                                .iter()
+                                .filter(|entry| !entry.is_folder())
+                                .count()
+                        ))),
             )
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().text_xs().text_color(palette.muted).child("Destination folder"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.muted)
+                            .child("Destination folder"),
+                    )
                     .child(
                         h_flex()
                             .gap_2()
@@ -465,13 +497,19 @@ impl ArchiveWindow {
                     .rounded_md()
                     .bg(palette.surface)
                     .text_xs()
-                    .child(div().text_color(palette.muted).child("Files will be written to"))
+                    .child(
+                        div()
+                            .text_color(palette.muted)
+                            .child("Files will be written to"),
+                    )
                     .child(div().child(target.display().to_string())),
             )
             .children(conflict_panel)
-            .children(self.extract_error.clone().map(|error| {
-                div().text_xs().text_color(palette.video).child(error)
-            }))
+            .children(
+                self.extract_error
+                    .clone()
+                    .map(|error| div().text_xs().text_color(palette.video).child(error)),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -480,7 +518,11 @@ impl ArchiveWindow {
                             .primary()
                             .small()
                             .icon(IconName::PackageOpen)
-                            .label(if self.extracting { "Extracting…" } else { "Extract" })
+                            .label(if self.extracting {
+                                "Extracting…"
+                            } else {
+                                "Extract"
+                            })
                             .disabled(self.extracting || self.conflicts.is_some())
                             .on_click(cx.listener(|this, _, _, cx| this.start_extract(cx))),
                     )
@@ -862,12 +904,9 @@ pub fn open_archive_page(
     .expect("Failed to open Archive window");
 }
 
-
 fn leak(value: String) -> &'static str {
     Box::leak(value.into_boxed_str())
 }
-
-
 
 pub(crate) fn is_supported(archive: &FileEntry) -> bool {
     archive.path.as_deref().and_then(ArchiveKind::of).is_some()
@@ -884,19 +923,6 @@ fn archive_stem(archive: &FileEntry) -> String {
             |(suffix, _)| archive.name[..archive.name.len() - suffix.len()].to_string(),
         )
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /// Lists an archive for the window, adding folder rows for parents that have
 /// no explicit entry.
@@ -943,18 +969,6 @@ fn read_archive(path: &Path) -> std::io::Result<Vec<ArchiveEntry>> {
     Ok(all)
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
 fn archive_entry_size(entry: &ArchiveEntry, settings: HumanSizeSettings) -> String {
     if entry.is_folder() {
         "—".to_string()
@@ -1000,7 +1014,8 @@ mod tests {
     use std::io::Write as _;
 
     fn fixture_zip(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("file-force-zip-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-zip-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bundle.zip");
@@ -1032,9 +1047,22 @@ mod tests {
         let target = path.parent().unwrap().join("out");
         assert!(find_conflicts(&path, &target).unwrap().is_empty());
         let report = extract_archive(&path, &target, ConflictPolicy::Skip).unwrap();
-        assert_eq!(report, ExtractReport { files: 2, skipped: 1, ..Default::default() });
-        assert_eq!(std::fs::read_to_string(target.join("src/lib/main.rs")).unwrap(), "fn main() {}");
-        assert!(!path.parent().unwrap().join("evil.txt").exists(), "zip-slip entry escaped");
+        assert_eq!(
+            report,
+            ExtractReport {
+                files: 2,
+                skipped: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("src/lib/main.rs")).unwrap(),
+            "fn main() {}"
+        );
+        assert!(
+            !path.parent().unwrap().join("evil.txt").exists(),
+            "zip-slip entry escaped"
+        );
 
         std::fs::write(target.join("readme.md"), "mine").unwrap();
         assert_eq!(
@@ -1042,8 +1070,17 @@ mod tests {
             ["readme.md", "src/lib/main.rs"]
         );
         let again = extract_archive(&path, &target, ConflictPolicy::Skip).unwrap();
-        assert_eq!(again, ExtractReport { skipped: 3, ..Default::default() });
-        assert_eq!(std::fs::read_to_string(target.join("readme.md")).unwrap(), "mine");
+        assert_eq!(
+            again,
+            ExtractReport {
+                skipped: 3,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("readme.md")).unwrap(),
+            "mine"
+        );
     }
 
     #[test]
@@ -1055,8 +1092,14 @@ mod tests {
 
         let renamed = extract_archive(&path, &target, ConflictPolicy::Rename).unwrap();
         assert_eq!(renamed.renamed, 2);
-        assert_eq!(std::fs::read_to_string(target.join("readme.md")).unwrap(), "mine");
-        assert_eq!(std::fs::read_to_string(target.join("readme (1).md")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(target.join("readme.md")).unwrap(),
+            "mine"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("readme (1).md")).unwrap(),
+            "hello"
+        );
         assert!(target.join("src/lib/main (1).rs").exists());
 
         let again = extract_archive(&path, &target, ConflictPolicy::Rename).unwrap();
@@ -1065,7 +1108,10 @@ mod tests {
 
         let overwritten = extract_archive(&path, &target, ConflictPolicy::Overwrite).unwrap();
         assert_eq!(overwritten.overwritten, 2);
-        assert_eq!(std::fs::read_to_string(target.join("readme.md")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(target.join("readme.md")).unwrap(),
+            "hello"
+        );
     }
 
     #[test]
@@ -1075,7 +1121,8 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         assert_ne!(error.to_string(), "i/o error");
 
-        let not_zip = std::env::temp_dir().join(format!("file-force-notzip-{}.zip", std::process::id()));
+        let not_zip =
+            std::env::temp_dir().join(format!("file-force-notzip-{}.zip", std::process::id()));
         std::fs::write(&not_zip, b"plain text").unwrap();
         let error = open_zip(&not_zip).err().unwrap();
         assert!(!error.to_string().contains("i/o error"), "{error}");
@@ -1094,7 +1141,9 @@ mod tests {
             // A file where the archive has the folder `src/`, and a read-only readme.
             std::fs::write(target.join("src"), "file").unwrap();
             std::fs::write(target.join("readme.md"), "mine").unwrap();
-            let mut permissions = std::fs::metadata(target.join("readme.md")).unwrap().permissions();
+            let mut permissions = std::fs::metadata(target.join("readme.md"))
+                .unwrap()
+                .permissions();
             permissions.set_readonly(true);
             std::fs::set_permissions(target.join("readme.md"), permissions).unwrap();
             target
@@ -1107,7 +1156,10 @@ mod tests {
         );
         let report = extract_archive(&path, &target, ConflictPolicy::Overwrite).unwrap();
         assert_eq!(report.overwritten, 2);
-        assert_eq!(std::fs::read_to_string(target.join("readme.md")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(target.join("readme.md")).unwrap(),
+            "hello"
+        );
         assert!(target.join("src/lib/main.rs").is_file());
 
         let target = setup("blocked-rename");
@@ -1123,7 +1175,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("file-force-arch-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-arch-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1133,19 +1186,29 @@ mod tests {
     fn single_gz_file_lists_and_extracts_its_member() {
         let dir = scratch("gz");
         let path = dir.join("report.log.gz");
-        let mut encoder = flate2::GzBuilder::new()
-            .filename("report.log")
-            .write(std::fs::File::create(&path).unwrap(), flate2::Compression::default());
+        let mut encoder = flate2::GzBuilder::new().filename("report.log").write(
+            std::fs::File::create(&path).unwrap(),
+            flate2::Compression::default(),
+        );
         encoder.write_all(b"line one\nline two\n").unwrap();
         encoder.finish().unwrap();
 
         let entries = read_archive(&path).unwrap();
-        assert_eq!(entries.iter().map(|entry| (entry.path, entry.size)).collect::<Vec<_>>(), [("report.log", 18)]);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.path, entry.size))
+                .collect::<Vec<_>>(),
+            [("report.log", 18)]
+        );
 
         let out = dir.join("out");
         let report = extract_archive(&path, &out, ConflictPolicy::Skip).unwrap();
         assert_eq!(report.files, 1);
-        assert_eq!(std::fs::read_to_string(out.join("report.log")).unwrap(), "line one\nline two\n");
+        assert_eq!(
+            std::fs::read_to_string(out.join("report.log")).unwrap(),
+            "line one\nline two\n"
+        );
         assert_eq!(find_conflicts(&path, &out).unwrap(), ["report.log"]);
         extract_archive(&path, &out, ConflictPolicy::Rename).unwrap();
         assert!(out.join("report (1).log").exists());
@@ -1155,7 +1218,10 @@ mod tests {
     fn tar_gz_lists_extracts_and_blocks_escapes() {
         let dir = scratch("targz");
         let path = dir.join("bundle.tar.gz");
-        let encoder = flate2::write::GzEncoder::new(std::fs::File::create(&path).unwrap(), flate2::Compression::default());
+        let encoder = flate2::write::GzEncoder::new(
+            std::fs::File::create(&path).unwrap(),
+            flate2::Compression::default(),
+        );
         let mut builder = tar::Builder::new(encoder);
         for (name, body) in [("docs/readme.md", "hi"), ("src/main.rs", "fn main() {}")] {
             let mut header = tar::Header::new_gnu();
@@ -1163,7 +1229,9 @@ mod tests {
             header.set_mode(0o644);
             header.set_mtime(1_700_000_000);
             header.set_cksum();
-            builder.append_data(&mut header, name, body.as_bytes()).unwrap();
+            builder
+                .append_data(&mut header, name, body.as_bytes())
+                .unwrap();
         }
         // A hostile member: the name field bypasses the builder's own checks.
         let mut header = tar::Header::new_gnu();
@@ -1174,7 +1242,11 @@ mod tests {
         builder.append(&header, &b"x"[..]).unwrap();
         builder.into_inner().unwrap().finish().unwrap();
 
-        let paths: Vec<_> = read_archive(&path).unwrap().iter().map(|entry| entry.path).collect();
+        let paths: Vec<_> = read_archive(&path)
+            .unwrap()
+            .iter()
+            .map(|entry| entry.path)
+            .collect();
         assert_eq!(paths, ["docs/", "src/", "docs/readme.md", "src/main.rs"]);
 
         let out = dir.join("out");
@@ -1182,14 +1254,26 @@ mod tests {
         assert_eq!(report.files, 2);
         assert_eq!(report.skipped, 1, "the ../ member is skipped");
         assert!(!dir.join("escape.txt").exists());
-        assert_eq!(std::fs::read_to_string(out.join("src/main.rs")).unwrap(), "fn main() {}");
+        assert_eq!(
+            std::fs::read_to_string(out.join("src/main.rs")).unwrap(),
+            "fn main() {}"
+        );
     }
 
     #[test]
     fn archive_kinds_and_stems() {
-        assert_eq!(ArchiveKind::of(Path::new("a.TAR.GZ")), Some(ArchiveKind::TarGz));
-        assert_eq!(ArchiveKind::of(Path::new("a.tgz")), Some(ArchiveKind::TarGz));
-        assert_eq!(ArchiveKind::of(Path::new("dump.dmw.gz")), Some(ArchiveKind::Gz));
+        assert_eq!(
+            ArchiveKind::of(Path::new("a.TAR.GZ")),
+            Some(ArchiveKind::TarGz)
+        );
+        assert_eq!(
+            ArchiveKind::of(Path::new("a.tgz")),
+            Some(ArchiveKind::TarGz)
+        );
+        assert_eq!(
+            ArchiveKind::of(Path::new("dump.dmw.gz")),
+            Some(ArchiveKind::Gz)
+        );
         assert_eq!(ArchiveKind::of(Path::new("a.7z")), None);
     }
 
@@ -1198,7 +1282,8 @@ mod tests {
     fn zip_extract_skips_symlinks_and_strips_setuid() {
         use std::io::Write as _;
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!("file-force-zip-safety-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-zip-safety-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("evil.zip");
@@ -1209,15 +1294,26 @@ mod tests {
         writer.write_all(b"x").unwrap();
         writer.start_file("../outside.txt", options).unwrap();
         writer.write_all(b"x").unwrap();
-        writer.start_file("tool", options.unix_permissions(0o4755)).unwrap();
+        writer
+            .start_file("tool", options.unix_permissions(0o4755))
+            .unwrap();
         writer.write_all(b"x").unwrap();
         writer.finish().unwrap();
 
         let target = dir.join("out");
         extract_archive(&path, &target, ConflictPolicy::Overwrite).unwrap();
-        assert!(std::fs::symlink_metadata(target.join("escape")).map_or(true, |meta| !meta.file_type().is_symlink()));
-        assert!(!dir.join("outside.txt").exists(), "path traversal must be blocked");
-        let mode = std::fs::metadata(target.join("tool")).unwrap().permissions().mode();
+        assert!(
+            std::fs::symlink_metadata(target.join("escape"))
+                .map_or(true, |meta| !meta.file_type().is_symlink())
+        );
+        assert!(
+            !dir.join("outside.txt").exists(),
+            "path traversal must be blocked"
+        );
+        let mode = std::fs::metadata(target.join("tool"))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o7000, 0, "setuid/setgid bits must be dropped");
         let _ = std::fs::remove_dir_all(&dir);
     }

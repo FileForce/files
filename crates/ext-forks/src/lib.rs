@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use files_sdk::{Permission, Icon, Manifest, SnapshotProvider, host};
+use files_sdk::{Icon, Manifest, Permission, SnapshotProvider, host};
 
 pub static MANIFEST: Manifest = Manifest {
     id: "forks",
@@ -32,7 +32,11 @@ pub static MANIFEST: Manifest = Manifest {
         "Sidebar → Forks (kept across restarts in forks.toml)",
         "Fork header → Changes, Apply, Discard",
     ],
-    permissions: &[Permission::ReadFiles, Permission::WriteFiles, Permission::LaunchApps],
+    permissions: &[
+        Permission::ReadFiles,
+        Permission::WriteFiles,
+        Permission::LaunchApps,
+    ],
     menu: &[],
     sidebar: &[],
     menu_color: Some("purple"),
@@ -202,7 +206,10 @@ fn storage_for(base: &Path) -> Option<(PathBuf, bool)> {
 /// A fork container this app made: under the settings folder or a volume store.
 fn is_fork_container(container: &Path) -> bool {
     storage_dir().is_some_and(|storage| container.starts_with(storage))
-        || container.parent().and_then(Path::file_name).is_some_and(|name| name == VOLUME_STORE)
+        || container
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == VOLUME_STORE)
 }
 
 #[cfg(windows)]
@@ -218,7 +225,10 @@ mod refs {
     }
 
     fn until_nul(buffer: &[u16]) -> &[u16] {
-        &buffer[..buffer.iter().position(|&unit| unit == 0).unwrap_or(buffer.len())]
+        &buffer[..buffer
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(buffer.len())]
     }
 
     /// `D:\` for `D:\code\app` (or the mount folder it lives under).
@@ -252,15 +262,28 @@ mod refs {
     /// Windows 11 24H2 (build 26100) and later block-clone in `CopyFile`,
     /// which `std::fs::copy` uses; older builds make full copies.
     pub fn copy_clones_blocks() -> bool {
-        let key = wide(std::ffi::OsStr::new(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"));
+        let key = wide(std::ffi::OsStr::new(
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+        ));
         let value = wide(std::ffi::OsStr::new("CurrentBuildNumber"));
         let mut data = [0u16; 32];
         let mut size = std::mem::size_of_val(&data) as u32;
         // SAFETY: key and value are NUL-terminated; `data` holds `size` bytes.
         let status = unsafe {
-            RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), data.as_mut_ptr().cast(), &mut size)
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                data.as_mut_ptr().cast(),
+                &mut size,
+            )
         };
-        status == 0 && String::from_utf16_lossy(until_nul(&data)).parse::<u32>().is_ok_and(|build| build >= 26100)
+        status == 0
+            && String::from_utf16_lossy(until_nul(&data))
+                .parse::<u32>()
+                .is_ok_and(|build| build >= 26100)
     }
 }
 
@@ -300,10 +323,16 @@ fn clone_tree(source: &Path, target: &Path) -> io::Result<CloneKind> {
     {
         use std::os::unix::ffi::OsStrExt as _;
         unsafe extern "C" {
-            fn clonefile(src: *const std::ffi::c_char, dst: *const std::ffi::c_char, flags: u32) -> std::ffi::c_int;
+            fn clonefile(
+                src: *const std::ffi::c_char,
+                dst: *const std::ffi::c_char,
+                flags: u32,
+            ) -> std::ffi::c_int;
         }
-        let source_c = std::ffi::CString::new(source.as_os_str().as_bytes()).map_err(io::Error::other)?;
-        let target_c = std::ffi::CString::new(target.as_os_str().as_bytes()).map_err(io::Error::other)?;
+        let source_c =
+            std::ffi::CString::new(source.as_os_str().as_bytes()).map_err(io::Error::other)?;
+        let target_c =
+            std::ffi::CString::new(target.as_os_str().as_bytes()).map_err(io::Error::other)?;
         // SAFETY: both are valid NUL-terminated paths; clonefile copies a whole
         // directory tree as copy-on-write clones on APFS.
         if unsafe { clonefile(source_c.as_ptr(), target_c.as_ptr(), 0) } == 0 {
@@ -346,7 +375,10 @@ pub fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
         } else {
             std::fs::copy(&from, &to)?;
             if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) {
-                let _ = std::fs::File::options().write(true).open(&to).and_then(|file| file.set_modified(modified));
+                let _ = std::fs::File::options()
+                    .write(true)
+                    .open(&to)
+                    .and_then(|file| file.set_modified(modified));
             }
         }
     }
@@ -355,18 +387,28 @@ pub fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
 
 /// Makes a fork of `base` and returns its id and folder.
 pub fn create(base: &Path) -> io::Result<(u32, PathBuf, CloneKind)> {
-    let (storage, block_clone) = storage_for(base).ok_or_else(|| io::Error::other("no settings folder"))?;
-    let folder = base
-        .file_name()
-        .map_or_else(|| "root".to_string(), |name| name.to_string_lossy().into_owned());
+    let (storage, block_clone) =
+        storage_for(base).ok_or_else(|| io::Error::other("no settings folder"))?;
+    let folder = base.file_name().map_or_else(
+        || "root".to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     let (id, number) = {
         let state = state();
-        let number = state.forks.iter().flatten().filter(|fork| fork.base == base).count() + 1;
+        let number = state
+            .forks
+            .iter()
+            .flatten()
+            .filter(|fork| fork.base == base)
+            .count()
+            + 1;
         (state.forks.len() as u32, number)
     };
     let container = storage.join(format!(
         "{}-{}",
-        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |time| time.as_millis()),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |time| time.as_millis()),
         id
     ));
     std::fs::create_dir_all(&container)?;
@@ -446,7 +488,10 @@ pub fn fork_of(path: &Path) -> Option<u32> {
         .forks
         .iter()
         .enumerate()
-        .find(|(_, fork)| fork.as_ref().is_some_and(|fork| path.starts_with(&fork.dir)))
+        .find(|(_, fork)| {
+            fork.as_ref()
+                .is_some_and(|fork| path.starts_with(&fork.dir))
+        })
         .map(|(id, _)| id as u32)
 }
 
@@ -510,14 +555,24 @@ fn diff(base: &Path, fork: &Path) -> Vec<Change> {
     let mut changes = Vec::new();
     let covered = |changes: &[Change], rel: &str| {
         changes.iter().any(|change| {
-            matches!(change, Change::Added { folder: true, .. } | Change::Removed { .. })
-                && rel.starts_with(&format!("{}/", change.rel()))
+            matches!(
+                change,
+                Change::Added { folder: true, .. } | Change::Removed { .. }
+            ) && rel.starts_with(&format!("{}/", change.rel()))
         })
     };
     for (rel, node) in &copy {
         match original.get(rel) {
-            None if !covered(&changes, rel) => changes.push(Change::Added { rel: rel.clone(), folder: node.dir }),
-            Some(before) if !node.dir && (before.dir || before.len != node.len || before.modified != node.modified) => {
+            None if !covered(&changes, rel) => changes.push(Change::Added {
+                rel: rel.clone(),
+                folder: node.dir,
+            }),
+            Some(before)
+                if !node.dir
+                    && (before.dir
+                        || before.len != node.len
+                        || before.modified != node.modified) =>
+            {
                 changes.push(Change::Modified { rel: rel.clone() });
             }
             _ => {}
@@ -537,13 +592,16 @@ const CHANGES_TTL: Duration = Duration::from_secs(3);
 pub fn changes(id: u32) -> Vec<Change> {
     let mut state = state();
     let cached = state.changes.get(&id).cloned();
-    let stale = cached.as_ref().is_none_or(|(at, _)| at.elapsed() >= CHANGES_TTL);
+    let stale = cached
+        .as_ref()
+        .is_none_or(|(at, _)| at.elapsed() >= CHANGES_TTL);
     let paths = state
         .forks
         .get(id as usize)
         .and_then(Option::as_ref)
         .map(|fork| (fork.base.clone(), fork.dir.clone()));
-    if stale && !state.computing.contains(&id)
+    if stale
+        && !state.computing.contains(&id)
         && let Some((base, dir)) = paths
     {
         state.computing.insert(id);
@@ -564,7 +622,9 @@ pub fn changes_now(id: u32) -> Vec<Change> {
         return Vec::new();
     };
     let changes = diff(&fork.base, &fork.dir);
-    state().changes.insert(id, (Instant::now(), changes.clone()));
+    state()
+        .changes
+        .insert(id, (Instant::now(), changes.clone()));
     changes
 }
 
@@ -617,9 +677,14 @@ pub fn apply(
         if let Change::Removed { rel } = change {
             let path = fork.base.join(rel);
             if let Some(rule) = host().protection(&path, protected, home) {
-                report.skipped.push((rel.clone(), format!("protected by \"{rule}\"")));
+                report
+                    .skipped
+                    .push((rel.clone(), format!("protected by \"{rule}\"")));
             } else if changed_since(&path) {
-                report.skipped.push((rel.clone(), "changed in the original after forking".to_string()));
+                report.skipped.push((
+                    rel.clone(),
+                    "changed in the original after forking".to_string(),
+                ));
             } else {
                 removals.push((rel.clone(), path));
             }
@@ -631,7 +696,9 @@ pub fn apply(
         Err((done, error)) => {
             report.removed = done;
             for (rel, _) in &removals[done..] {
-                report.skipped.push((rel.clone(), host().describe_error(&error)));
+                report
+                    .skipped
+                    .push((rel.clone(), host().describe_error(&error)));
             }
         }
     }
@@ -645,11 +712,16 @@ pub fn apply(
         let source = fork.dir.join(rel);
         let target = fork.base.join(rel);
         if kind == "created" && std::fs::symlink_metadata(&target).is_ok() {
-            report.skipped.push((rel.clone(), "already exists in the original".to_string()));
+            report
+                .skipped
+                .push((rel.clone(), "already exists in the original".to_string()));
             continue;
         }
         if kind == "updated" && changed_since(&target) {
-            report.skipped.push((rel.clone(), "changed in the original after forking".to_string()));
+            report.skipped.push((
+                rel.clone(),
+                "changed in the original after forking".to_string(),
+            ));
             continue;
         }
         let result = if source.is_dir() {
@@ -663,7 +735,9 @@ pub fn apply(
         match result {
             Ok(()) if kind == "created" => report.created += 1,
             Ok(()) => report.updated += 1,
-            Err(error) => report.skipped.push((rel.clone(), host().describe_error(&error))),
+            Err(error) => report
+                .skipped
+                .push((rel.clone(), host().describe_error(&error))),
         }
     }
     discard(id);
@@ -672,7 +746,13 @@ pub fn apply(
         MANIFEST.id,
         files_sdk::log::Kind::Fs,
         format!("Applied fork to {}", fork.base.display()),
-        Some(format!("created {} · updated {} · removed {} · skipped {}", report.created, report.updated, report.removed, report.skipped.len())),
+        Some(format!(
+            "created {} · updated {} · removed {} · skipped {}",
+            report.created,
+            report.updated,
+            report.removed,
+            report.skipped.len()
+        )),
     );
     Ok((fork.base, report))
 }
@@ -687,17 +767,28 @@ mod tests {
 
     impl files_sdk::Host for TestHost {
         fn config_dir(&self) -> Option<PathBuf> {
-            let thread = format!("{:?}", std::thread::current().id()).replace(|c: char| !c.is_alphanumeric(), "");
-            Some(std::env::temp_dir().join(format!("files-ext-forks-{}-{thread}", std::process::id())))
+            let thread = format!("{:?}", std::thread::current().id())
+                .replace(|c: char| !c.is_alphanumeric(), "");
+            Some(
+                std::env::temp_dir()
+                    .join(format!("files-ext-forks-{}-{thread}", std::process::id())),
+            )
         }
 
         fn protection(&self, path: &Path, patterns: &[String], _: &Path) -> Option<String> {
-            patterns.iter().find(|pattern| Path::new(pattern) == path).cloned()
+            patterns
+                .iter()
+                .find(|pattern| Path::new(pattern) == path)
+                .cloned()
         }
 
         fn delete(&self, paths: &[&Path], _: bool) -> Result<(), (usize, io::Error)> {
             for (done, path) in paths.iter().enumerate() {
-                let result = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+                let result = if path.is_dir() {
+                    std::fs::remove_dir_all(path)
+                } else {
+                    std::fs::remove_file(path)
+                };
                 result.map_err(|error| (done, error))?;
             }
             Ok(())
@@ -706,7 +797,8 @@ mod tests {
 
     fn base(name: &str) -> PathBuf {
         files_sdk::set_host(Box::new(TestHost));
-        let dir = std::env::temp_dir().join(format!("file-force-forkcow-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-forkcow-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("docs")).unwrap();
         std::fs::write(dir.join("notes.txt"), "keep me").unwrap();
@@ -734,7 +826,10 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert_eq!(kind, CloneKind::CopyOnWrite, "APFS should clone");
         }
-        assert_eq!(std::fs::read_to_string(fork.join("notes.txt")).unwrap(), "keep me");
+        assert_eq!(
+            std::fs::read_to_string(fork.join("notes.txt")).unwrap(),
+            "keep me"
+        );
         assert!(changes_now(id).is_empty(), "a fresh fork has no changes");
 
         // Anything works inside: plain file system operations.
@@ -744,15 +839,24 @@ mod tests {
         std::fs::write(fork.join("assets/icons/logo.svg"), "<svg/>").unwrap();
         std::fs::remove_dir_all(fork.join("docs")).unwrap();
 
-        assert_eq!(rels(&changes_now(id)), ["+assets", "+new.md", "-docs", "~notes.txt"]);
-        assert_eq!(std::fs::read_to_string(dir.join("notes.txt")).unwrap(), "keep me");
+        assert_eq!(
+            rels(&changes_now(id)),
+            ["+assets", "+new.md", "-docs", "~notes.txt"]
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "keep me"
+        );
         assert!(dir.join("docs/plan.md").exists());
         assert_eq!(fork_of(&fork.join("assets")), Some(id));
         assert_eq!(root_of(&fork), Some(id));
 
         assert_eq!(discard(id), Some(dir.clone()));
         assert!(!fork.exists(), "discard deletes the copy");
-        assert_eq!(std::fs::read_to_string(dir.join("notes.txt")).unwrap(), "keep me");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "keep me"
+        );
     }
 
     #[test]
@@ -771,14 +875,31 @@ mod tests {
         std::fs::write(dir.join("both.txt"), "original edit").unwrap();
 
         let protected = vec![dir.join("guarded.txt").display().to_string()];
-        let (applied, report) = apply(id, &protected, Path::new("/nonexistent-home"), false).unwrap();
+        let (applied, report) =
+            apply(id, &protected, Path::new("/nonexistent-home"), false).unwrap();
         assert_eq!(applied, dir);
-        assert_eq!(std::fs::read_to_string(dir.join("notes.txt")).unwrap(), "edited");
-        assert_eq!(std::fs::read_to_string(dir.join("fresh.md")).unwrap(), "fresh");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "edited"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("fresh.md")).unwrap(),
+            "fresh"
+        );
         assert!(!dir.join("docs").exists());
-        assert!(dir.join("guarded.txt").exists(), "protected item was removed");
-        assert_eq!(std::fs::read_to_string(dir.join("both.txt")).unwrap(), "original edit");
-        assert_eq!((report.created, report.updated, report.removed), (1, 1, 1), "{report:?}");
+        assert!(
+            dir.join("guarded.txt").exists(),
+            "protected item was removed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("both.txt")).unwrap(),
+            "original edit"
+        );
+        assert_eq!(
+            (report.created, report.updated, report.removed),
+            (1, 1, 1),
+            "{report:?}"
+        );
         assert_eq!(report.skipped.len(), 2, "{:?}", report.skipped);
         assert!(!fork.exists(), "applying deletes the fork");
     }
@@ -788,15 +909,25 @@ mod tests {
         let dir = base("restart");
         let (id, fork, _) = create(&dir).unwrap();
         let saved = load(&store_path().unwrap());
-        assert!(saved.iter().any(|stored| stored.dir == fork && stored.base == dir), "fork was not saved");
+        assert!(
+            saved
+                .iter()
+                .any(|stored| stored.dir == fork && stored.base == dir),
+            "fork was not saved"
+        );
         discard(id);
-        assert!(load(&store_path().unwrap()).iter().all(|stored| stored.dir != fork));
+        assert!(
+            load(&store_path().unwrap())
+                .iter()
+                .all(|stored| stored.dir != fork)
+        );
     }
 
     #[test]
     fn plain_copies_keep_dates_so_nothing_looks_changed() {
         let dir = base("copy");
-        let target = std::env::temp_dir().join(format!("file-force-forkcopy-{}", std::process::id()));
+        let target =
+            std::env::temp_dir().join(format!("file-force-forkcopy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&target);
         copy_tree(&dir, &target).unwrap();
         assert!(diff(&dir, &target).is_empty(), "{:?}", diff(&dir, &target));

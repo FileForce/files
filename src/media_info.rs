@@ -26,7 +26,10 @@ struct State {
 
 fn state() -> std::sync::MutexGuard<'static, State> {
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
-    STATE.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    STATE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Bumped when details arrive: the preview redraws.
@@ -53,7 +56,11 @@ fn worker() -> &'static std::sync::mpsc::Sender<(Key, u64)> {
                     continue;
                 }
                 let sections = read(&key.0);
-                let failed = sections.iter().flat_map(|section| &section.rows).find(|(label, _)| label == "Error" || label == "Details").map(|(_, value)| value.clone());
+                let failed = sections
+                    .iter()
+                    .flat_map(|section| &section.rows)
+                    .find(|(label, _)| label == "Error" || label == "Details")
+                    .map(|(_, value)| value.clone());
                 crate::tasks::finish(job, failed.map_or(Ok(()), Err));
                 let mut state = state();
                 // Small cache: the last couple hundred files looked at.
@@ -110,15 +117,23 @@ pub fn cached() -> usize {
 /// Whether the preview has details to look for in this kind of file.
 pub fn applies(path: &Path) -> bool {
     use crate::model::FileKind;
-    let extension = path.extension().map(|extension| extension.to_string_lossy().to_lowercase()).unwrap_or_default();
-    matches!(FileKind::from_extension(&extension), FileKind::Image | FileKind::Video | FileKind::Audio)
-        || files_ext_archive::ArchiveKind::of(path).is_some()
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        FileKind::from_extension(&extension),
+        FileKind::Image | FileKind::Video | FileKind::Audio
+    ) || files_ext_archive::ArchiveKind::of(path).is_some()
         || crate::pe_info::applies(path)
 }
 
 fn read(path: &Path) -> Vec<Section> {
     use crate::model::FileKind;
-    let extension = path.extension().map(|extension| extension.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
     if files_ext_archive::ArchiveKind::of(path).is_some() {
         return archive(path);
     }
@@ -139,9 +154,15 @@ fn archive(path: &Path) -> Vec<Section> {
         Ok(info) => {
             let mut rows = vec![("Format".to_string(), info.format)];
             rows.extend(info.details);
-            vec![Section { title: "ARCHIVE", rows }]
+            vec![Section {
+                title: "ARCHIVE",
+                rows,
+            }]
         }
-        Err(error) => vec![Section { title: "ARCHIVE", rows: vec![("Error".into(), error.to_string())] }],
+        Err(error) => vec![Section {
+            title: "ARCHIVE",
+            rows: vec![("Error".into(), error.to_string())],
+        }],
     }
 }
 
@@ -154,31 +175,60 @@ fn image(path: &Path) -> Vec<Section> {
         picture.push(("Dimensions".to_string(), format!("{width} × {height}")));
         let megapixels = f64::from(width) * f64::from(height) / 1_000_000.;
         if megapixels >= 0.1 {
-            picture.push(("Resolution".to_string(), format!("{megapixels:.1} MP · {}", aspect(width, height))));
+            picture.push((
+                "Resolution".to_string(),
+                format!("{megapixels:.1} MP · {}", aspect(width, height)),
+            ));
         }
     }
-    if let Ok(reader) = image::ImageReader::open(path).and_then(|reader| reader.with_guessed_format())
+    if let Ok(reader) =
+        image::ImageReader::open(path).and_then(|reader| reader.with_guessed_format())
         && let Some(format) = reader.format()
     {
         picture.push(("Format".to_string(), format!("{format:?}").to_uppercase()));
     }
-    let exif = std::fs::File::open(path).ok().and_then(|file| exif::Reader::new().read_from_container(&mut std::io::BufReader::new(file)).ok());
+    let exif = std::fs::File::open(path).ok().and_then(|file| {
+        exif::Reader::new()
+            .read_from_container(&mut std::io::BufReader::new(file))
+            .ok()
+    });
     let Some(exif) = exif else {
         if !picture.is_empty() {
-            sections.push(Section { title: "IMAGE", rows: picture });
+            sections.push(Section {
+                title: "IMAGE",
+                rows: picture,
+            });
         }
         return sections;
     };
-    let field = |tag: exif::Tag| exif.get_field(tag, exif::In::PRIMARY).map(|field| field.display_value().with_unit(&exif).to_string().trim_matches('"').trim().to_string()).filter(|value| !value.is_empty());
+    let field = |tag: exif::Tag| {
+        exif.get_field(tag, exif::In::PRIMARY)
+            .map(|field| {
+                field
+                    .display_value()
+                    .with_unit(&exif)
+                    .to_string()
+                    .trim_matches('"')
+                    .trim()
+                    .to_string()
+            })
+            .filter(|value| !value.is_empty())
+    };
     let push = |rows: &mut Vec<(String, String)>, label: &str, tag: exif::Tag| {
         if let Some(value) = field(tag) {
             rows.push((label.to_string(), value));
         }
     };
-    for (label, tag) in [("Color space", exif::Tag::ColorSpace), ("Bit depth", exif::Tag::BitsPerSample)] {
+    for (label, tag) in [
+        ("Color space", exif::Tag::ColorSpace),
+        ("Bit depth", exif::Tag::BitsPerSample),
+    ] {
         push(&mut picture, label, tag);
     }
-    if let Some(orientation) = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY).and_then(|field| field.value.get_uint(0)) {
+    if let Some(orientation) = exif
+        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(|field| field.value.get_uint(0))
+    {
         let text = match orientation {
             1 => "Normal",
             2 => "Mirrored",
@@ -195,7 +245,10 @@ fn image(path: &Path) -> Vec<Section> {
         }
     }
     if !picture.is_empty() {
-        sections.push(Section { title: "IMAGE", rows: picture });
+        sections.push(Section {
+            title: "IMAGE",
+            rows: picture,
+        });
     }
     let mut camera = Vec::new();
     for (label, tag) in [
@@ -212,7 +265,10 @@ fn image(path: &Path) -> Vec<Section> {
         push(&mut camera, label, tag);
     }
     if !camera.is_empty() {
-        sections.push(Section { title: "CAMERA", rows: camera });
+        sections.push(Section {
+            title: "CAMERA",
+            rows: camera,
+        });
     }
     let mut exposure = Vec::new();
     for (label, tag) in [
@@ -231,17 +287,29 @@ fn image(path: &Path) -> Vec<Section> {
         push(&mut exposure, label, tag);
     }
     if !exposure.is_empty() {
-        sections.push(Section { title: "EXPOSURE", rows: exposure });
+        sections.push(Section {
+            title: "EXPOSURE",
+            rows: exposure,
+        });
     }
     let mut place = Vec::new();
     if let Some((latitude, longitude)) = gps(&exif) {
-        place.push(("Coordinates".to_string(), format!("{latitude:.5}, {longitude:.5}")));
+        place.push((
+            "Coordinates".to_string(),
+            format!("{latitude:.5}, {longitude:.5}"),
+        ));
     }
-    for (label, tag) in [("Altitude", exif::Tag::GPSAltitude), ("Direction", exif::Tag::GPSImgDirection)] {
+    for (label, tag) in [
+        ("Altitude", exif::Tag::GPSAltitude),
+        ("Direction", exif::Tag::GPSImgDirection),
+    ] {
         push(&mut place, label, tag);
     }
     if !place.is_empty() {
-        sections.push(Section { title: "LOCATION", rows: place });
+        sections.push(Section {
+            title: "LOCATION",
+            rows: place,
+        });
     }
     sections
 }
@@ -249,12 +317,24 @@ fn image(path: &Path) -> Vec<Section> {
 /// Decimal degrees from EXIF's degrees/minutes/seconds and N/S, E/W.
 fn gps(exif: &exif::Exif) -> Option<(f64, f64)> {
     let degrees = |tag: exif::Tag, reference: exif::Tag, negative: &str| -> Option<f64> {
-        let exif::Value::Rational(parts) = &exif.get_field(tag, exif::In::PRIMARY)?.value else { return None };
-        let value = parts.iter().zip([1., 60., 3600.]).map(|(part, divisor)| part.to_f64() / divisor).sum::<f64>();
-        let sign = exif.get_field(reference, exif::In::PRIMARY).map(|field| field.display_value().to_string()).is_some_and(|text| text.contains(negative));
+        let exif::Value::Rational(parts) = &exif.get_field(tag, exif::In::PRIMARY)?.value else {
+            return None;
+        };
+        let value = parts
+            .iter()
+            .zip([1., 60., 3600.])
+            .map(|(part, divisor)| part.to_f64() / divisor)
+            .sum::<f64>();
+        let sign = exif
+            .get_field(reference, exif::In::PRIMARY)
+            .map(|field| field.display_value().to_string())
+            .is_some_and(|text| text.contains(negative));
         Some(if sign { -value } else { value })
     };
-    Some((degrees(exif::Tag::GPSLatitude, exif::Tag::GPSLatitudeRef, "S")?, degrees(exif::Tag::GPSLongitude, exif::Tag::GPSLongitudeRef, "W")?))
+    Some((
+        degrees(exif::Tag::GPSLatitude, exif::Tag::GPSLatitudeRef, "S")?,
+        degrees(exif::Tag::GPSLongitude, exif::Tag::GPSLongitudeRef, "W")?,
+    ))
 }
 
 /// "16:9", "3:2", else "1.85:1".
@@ -264,7 +344,11 @@ fn aspect(width: u32, height: u32) -> String {
     }
     let divisor = gcd(width, height).max(1);
     let (w, h) = (width / divisor, height / divisor);
-    if w <= 32 && h <= 32 { format!("{w}:{h}") } else { format!("{:.2}:1", f64::from(width) / f64::from(height.max(1))) }
+    if w <= 32 && h <= 32 {
+        format!("{w}:{h}")
+    } else {
+        format!("{:.2}:1", f64::from(width) / f64::from(height.max(1)))
+    }
 }
 
 // -------------------------------------------------------------- video, audio
@@ -278,7 +362,16 @@ fn frame_rate(fps: f64) -> String {
 
 fn duration(ms: i64) -> String {
     let seconds = ms / 1000;
-    if seconds >= 3600 { format!("{}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60) } else { format!("{}:{:02}", seconds / 60, seconds % 60) }
+    if seconds >= 3600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    }
 }
 
 fn channels(count: u32) -> String {
@@ -293,11 +386,18 @@ fn channels(count: u32) -> String {
 
 fn media(path: &Path) -> Vec<Section> {
     let Some(probe) = crate::video::probe(path) else {
-        return vec![Section { title: "MEDIA", rows: vec![("Details".into(), "VLC could not read this file".into())] }];
+        return vec![Section {
+            title: "MEDIA",
+            rows: vec![("Details".into(), "VLC could not read this file".into())],
+        }];
     };
     let mut probe = probe;
     // Fragmented MP4s (OBS, screen recorders): VLC's quick parse finds no rate.
-    for stream in probe.streams.iter_mut().filter(|stream| stream.kind == "Video" && stream.frame_rate <= 0.) {
+    for stream in probe
+        .streams
+        .iter_mut()
+        .filter(|stream| stream.kind == "Video" && stream.frame_rate <= 0.)
+    {
         stream.frame_rate = crate::mp4_info::frame_rate(path).unwrap_or(0.);
     }
     let mut sections = Vec::new();
@@ -310,19 +410,33 @@ fn media(path: &Path) -> Vec<Section> {
         }
     }
     if let Some(video) = probe.streams.iter().find(|stream| stream.kind == "Video") {
-        general.push(("Resolution".to_string(), format!("{} × {} · {}", video.width, video.height, aspect(video.width, video.height))));
+        general.push((
+            "Resolution".to_string(),
+            format!(
+                "{} × {} · {}",
+                video.width,
+                video.height,
+                aspect(video.width, video.height)
+            ),
+        ));
         if video.frame_rate > 0. {
             general.push(("Frame rate".to_string(), frame_rate(video.frame_rate)));
         }
     }
     if !general.is_empty() {
-        sections.push(Section { title: "MEDIA", rows: general });
+        sections.push(Section {
+            title: "MEDIA",
+            rows: general,
+        });
     }
     for (index, stream) in probe.streams.iter().enumerate() {
         let mut rows = vec![("Codec".to_string(), stream.codec.clone())];
         if stream.kind == "Video" {
             if stream.width > 0 {
-                rows.push(("Size".to_string(), format!("{} × {}", stream.width, stream.height)));
+                rows.push((
+                    "Size".to_string(),
+                    format!("{} × {}", stream.width, stream.height),
+                ));
             }
             if stream.frame_rate > 0. {
                 rows.push(("Frame rate".to_string(), frame_rate(stream.frame_rate)));
@@ -333,11 +447,17 @@ fn media(path: &Path) -> Vec<Section> {
                 rows.push(("Channels".to_string(), channels(stream.channels)));
             }
             if stream.sample_rate > 0 {
-                rows.push(("Sample rate".to_string(), format!("{:.1} kHz", f64::from(stream.sample_rate) / 1000.).replace(".0 ", " ")));
+                rows.push((
+                    "Sample rate".to_string(),
+                    format!("{:.1} kHz", f64::from(stream.sample_rate) / 1000.).replace(".0 ", " "),
+                ));
             }
         }
         if stream.bitrate > 0 {
-            rows.push(("Bitrate".to_string(), format!("{} kb/s", stream.bitrate / 1000)));
+            rows.push((
+                "Bitrate".to_string(),
+                format!("{} kb/s", stream.bitrate / 1000),
+            ));
         }
         if !stream.language.is_empty() {
             rows.push(("Language".to_string(), stream.language.clone()));
@@ -345,7 +465,15 @@ fn media(path: &Path) -> Vec<Section> {
         if !stream.description.is_empty() {
             rows.push(("Name".to_string(), stream.description.clone()));
         }
-        let title: &'static str = match (stream.kind, probe.streams.iter().filter(|other| other.kind == stream.kind).count() > 1) {
+        let title: &'static str = match (
+            stream.kind,
+            probe
+                .streams
+                .iter()
+                .filter(|other| other.kind == stream.kind)
+                .count()
+                > 1,
+        ) {
             ("Video", _) => "VIDEO",
             ("Audio", false) => "AUDIO",
             ("Audio", true) => Box::leak(format!("AUDIO {}", index + 1).into_boxed_str()),
@@ -355,7 +483,14 @@ fn media(path: &Path) -> Vec<Section> {
         sections.push(Section { title, rows });
     }
     if !probe.tags.is_empty() {
-        sections.push(Section { title: "TAGS", rows: probe.tags.into_iter().map(|(label, value)| (label.to_string(), value)).collect() });
+        sections.push(Section {
+            title: "TAGS",
+            rows: probe
+                .tags
+                .into_iter()
+                .map(|(label, value)| (label.to_string(), value))
+                .collect(),
+        });
     }
     sections
 }
@@ -379,10 +514,15 @@ mod tests {
 
     #[test]
     fn a_picture_says_its_size_and_format() {
-        let path = std::env::temp_dir().join(format!("file-force-media-info-{}.png", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("file-force-media-info-{}.png", std::process::id()));
         image::RgbImage::new(64, 36).save(&path).unwrap();
         let sections = read(&path);
-        let rows = &sections.iter().find(|section| section.title == "IMAGE").unwrap().rows;
+        let rows = &sections
+            .iter()
+            .find(|section| section.title == "IMAGE")
+            .unwrap()
+            .rows;
         assert!(rows.contains(&("Dimensions".to_string(), "64 × 36".to_string())));
         assert!(rows.contains(&("Format".to_string(), "PNG".to_string())));
         let _ = std::fs::remove_file(&path);
@@ -394,7 +534,11 @@ mod probe_files {
     #[test]
     #[ignore]
     fn print_details_of_files() {
-        for path in std::env::var("PROBE").unwrap_or_default().split('|').filter(|path| !path.is_empty()) {
+        for path in std::env::var("PROBE")
+            .unwrap_or_default()
+            .split('|')
+            .filter(|path| !path.is_empty())
+        {
             println!("== {path}");
             for section in super::read(std::path::Path::new(path)) {
                 println!("  [{}]", section.title);

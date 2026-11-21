@@ -42,7 +42,14 @@ impl Upmixer {
         let ambience = self.rear.iter_mut().fold(side, |x, filter| filter.run(x));
         let back = std::mem::replace(&mut self.delay[self.at], ambience);
         self.at = (self.at + 1) % self.delay.len();
-        [left - 0.5 * voice, right - 0.5 * voice, 0.7 * voice, lfe, 0.7 * back, -0.7 * back]
+        [
+            left - 0.5 * voice,
+            right - 0.5 * voice,
+            0.7 * voice,
+            lfe,
+            0.7 * back,
+            -0.7 * back,
+        ]
     }
 }
 
@@ -78,14 +85,19 @@ impl Shadow {
 fn shadow_alpha(theta: f32) -> f32 {
     const ALPHA_MIN: f32 = 0.1;
     const THETA_MIN: f32 = 150.0 * std::f32::consts::PI / 180.0;
-    (1.0 + ALPHA_MIN / 2.0) + (1.0 - ALPHA_MIN / 2.0) * (theta / THETA_MIN * std::f32::consts::PI).cos()
+    (1.0 + ALPHA_MIN / 2.0)
+        + (1.0 - ALPHA_MIN / 2.0) * (theta / THETA_MIN * std::f32::consts::PI).cos()
 }
 
 /// How late the sound reaches an ear `theta` radians off its axis, in
 /// seconds, the earliest ear at 0 (Woodworth's formula as the model uses it).
 fn ear_delay(theta: f32) -> f32 {
     let half = std::f32::consts::FRAC_PI_2;
-    let path = if theta < half { 1.0 - theta.cos() } else { 1.0 + theta - half };
+    let path = if theta < half {
+        1.0 - theta.cos()
+    } else {
+        1.0 + theta - half
+    };
     HEAD_RADIUS / SOUND_SPEED * path
 }
 
@@ -93,7 +105,11 @@ fn ear_delay(theta: f32) -> f32 {
 /// (radians, positive to the left).
 fn off_axis(azimuth: f32, ear: f32) -> f32 {
     let difference = (azimuth - ear).rem_euclid(std::f32::consts::TAU);
-    if difference > std::f32::consts::PI { std::f32::consts::TAU - difference } else { difference }
+    if difference > std::f32::consts::PI {
+        std::f32::consts::TAU - difference
+    } else {
+        difference
+    }
 }
 
 /// A virtual speaker: where it stands, and its recent samples for the delays.
@@ -141,7 +157,13 @@ impl Binaural {
                 target: [0.0; 2],
             })
             .collect();
-        let mut binaural = Self { rate: rate as f32, speakers, yaw: 0.0, since: 0, room: Room::new(rate) };
+        let mut binaural = Self {
+            rate: rate as f32,
+            speakers,
+            yaw: 0.0,
+            since: 0,
+            room: Room::new(rate),
+        };
         binaural.aim(true);
         binaural
     }
@@ -212,9 +234,19 @@ impl Room {
     fn new(rate: u32) -> Self {
         let samples = |ms: f32| (rate as f32 * ms / 1000.0) as usize;
         // (delay, gain, crossed to the other ear)
-        let taps = [(samples(7.0), 0.18, true), (samples(11.0), 0.14, false), (samples(17.0), 0.11, true), (samples(23.0), 0.08, false)];
+        let taps = [
+            (samples(7.0), 0.18, true),
+            (samples(11.0), 0.14, false),
+            (samples(17.0), 0.11, true),
+            (samples(23.0), 0.08, false),
+        ];
         let length = taps.iter().map(|tap| tap.0).max().unwrap_or(1) + 1;
-        Self { line: vec![[0.0; 2]; length], at: 0, taps, tone: [Biquad::lowpass(rate, 6000.0), Biquad::lowpass(rate, 6000.0)] }
+        Self {
+            line: vec![[0.0; 2]; length],
+            at: 0,
+            taps,
+            tone: [Biquad::lowpass(rate, 6000.0), Biquad::lowpass(rate, 6000.0)],
+        }
     }
 
     fn run(&mut self, dry: [f32; 2]) -> [f32; 2] {
@@ -223,7 +255,11 @@ impl Room {
         let mut wet = [0.0f32; 2];
         for &(delay, gain, crossed) in &self.taps {
             let past = self.line[(self.at + length - delay) % length];
-            let (left, right) = if crossed { (past[1], past[0]) } else { (past[0], past[1]) };
+            let (left, right) = if crossed {
+                (past[1], past[0])
+            } else {
+                (past[0], past[1])
+            };
             wet[0] += gain * left;
             wet[1] += gain * right;
         }
@@ -233,7 +269,9 @@ impl Room {
 }
 
 /// The equalizer's band centres in Hz, as VLC's (so the presets match).
-pub const EQUALIZER_BANDS: [f32; 10] = [60.0, 170.0, 310.0, 600.0, 1000.0, 3000.0, 6000.0, 12000.0, 14000.0, 16000.0];
+pub const EQUALIZER_BANDS: [f32; 10] = [
+    60.0, 170.0, 310.0, 600.0, 1000.0, 3000.0, 6000.0, 12000.0, 14000.0, 16000.0,
+];
 
 /// A 10-band equalizer (peaking filters) with a preamp, in dB like VLC's,
 /// for `channels` channels.
@@ -249,14 +287,21 @@ impl Equalizer {
             .iter()
             .zip(gains_db)
             .filter(|(_, gain)| gain.abs() > 0.05)
-            .map(|(&frequency, &gain)| Biquad::peaking(rate, frequency, 1.4, gain.clamp(-20.0, 20.0)))
+            .map(|(&frequency, &gain)| {
+                Biquad::peaking(rate, frequency, 1.4, gain.clamp(-20.0, 20.0))
+            })
             .collect();
-        Self { bands: vec![filters; channels], preamp: 10f32.powf(preamp_db.clamp(-20.0, 20.0) / 20.0) }
+        Self {
+            bands: vec![filters; channels],
+            preamp: 10f32.powf(preamp_db.clamp(-20.0, 20.0) / 20.0),
+        }
     }
 
     pub fn run(&mut self, frame: &mut [f32]) {
         for (sample, bands) in frame.iter_mut().zip(&mut self.bands) {
-            *sample = bands.iter_mut().fold(*sample * self.preamp, |x, band| band.run(x));
+            *sample = bands
+                .iter_mut()
+                .fold(*sample * self.preamp, |x, band| band.run(x));
         }
     }
 }
@@ -292,13 +337,22 @@ pub struct Chain {
 
 impl Chain {
     /// `enhance`: the exciter first (for MP3 streams), as Enhance streaming does.
-    pub fn new(rate: u32, channels: usize, enhance: Option<crate::enhance::Strength>, target: Target) -> Self {
+    pub fn new(
+        rate: u32,
+        channels: usize,
+        enhance: Option<crate::enhance::Strength>,
+        target: Target,
+    ) -> Self {
         Self {
             channels,
             target,
             upmixer: Upmixer::new(rate),
             binaural: Binaural::new(rate),
-            exciters: enhance.map(|strength| (0..channels).map(|_| crate::enhance::Exciter::new(rate, strength)).collect()),
+            exciters: enhance.map(|strength| {
+                (0..channels)
+                    .map(|_| crate::enhance::Exciter::new(rate, strength))
+                    .collect()
+            }),
         }
     }
 
@@ -321,7 +375,14 @@ impl Chain {
             2 => self.upmixer.run(input[0], input[1]),
             // 5.1 (and 7.1, its sides folded into the rears) as it is.
             6 => [input[0], input[1], input[2], input[3], input[4], input[5]],
-            8 => [input[0], input[1], input[2], input[3], input[4] + 0.7 * input[6], input[5] + 0.7 * input[7]],
+            8 => [
+                input[0],
+                input[1],
+                input[2],
+                input[3],
+                input[4] + 0.7 * input[6],
+                input[5] + 0.7 * input[7],
+            ],
             // Anything else: its first two channels.
             _ => self.upmixer.run(input[0], input[1]),
         };
@@ -332,12 +393,30 @@ impl Chain {
                 [left, right, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
             }
             // No centre: it goes to both fronts; no rears: they too.
-            Target::Speakers(3) => [fl + 0.7 * fc + 0.7 * bl, fr + 0.7 * fc + 0.7 * br, lfe, 0.0, 0.0, 0.0, 0.0, 0.0],
+            Target::Speakers(3) => [
+                fl + 0.7 * fc + 0.7 * bl,
+                fr + 0.7 * fc + 0.7 * br,
+                lfe,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
             Target::Speakers(4) => [fl + 0.7 * bl, fr + 0.7 * br, fc, lfe, 0.0, 0.0, 0.0, 0.0],
             Target::Speakers(6) => [fl, fr, fc, lfe, bl, br, 0.0, 0.0],
             // 7.1: the ambience shared by the rears and the sides.
             Target::Speakers(8) => [fl, fr, fc, lfe, 0.8 * bl, 0.8 * br, 0.7 * bl, 0.7 * br],
-            Target::Speakers(_) => [fl + 0.7 * fc + 0.7 * bl, fr + 0.7 * fc + 0.7 * br, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            Target::Speakers(_) => [
+                fl + 0.7 * fc + 0.7 * bl,
+                fr + 0.7 * fc + 0.7 * br,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
         }[..8];
         for (slot, sample) in out.iter_mut().zip(written) {
             *slot = crate::live::soft_limit(*sample);
@@ -359,7 +438,8 @@ mod tests {
         let mut right = Vec::new();
         for index in 0..frames {
             let mut frame = [0.0; 6];
-            frame[channel] = (index as f32 * 0.07).sin() * 0.5 + if index % 9 == 0 { 0.3 } else { 0.0 };
+            frame[channel] =
+                (index as f32 * 0.07).sin() * 0.5 + if index % 9 == 0 { 0.3 } else { 0.0 };
             let [l, r] = binaural.run(frame);
             left.push(l);
             right.push(r);
@@ -371,7 +451,10 @@ mod tests {
     fn a_speaker_on_the_left_is_louder_and_earlier_in_the_left_ear() {
         let mut binaural = Binaural::new(48_000);
         let (left, right) = ears(&mut binaural, 4, 48_000); // rear left, 110°
-        assert!(energy(&left) > 1.5 * energy(&right), "the head shadows the far ear");
+        assert!(
+            energy(&left) > 1.5 * energy(&right),
+            "the head shadows the far ear"
+        );
         let first = |ear: &[f32]| ear.iter().position(|sample| sample.abs() > 1e-4).unwrap();
         assert!(first(&left) < first(&right), "the near ear hears it first");
     }
@@ -388,17 +471,27 @@ mod tests {
         let mut binaural = Binaural::new(48_000);
         binaural.set_yaw(60f32.to_radians());
         let (left, right) = ears(&mut binaural, 2, 48_000);
-        assert!(energy(&right) > 1.3 * energy(&left), "facing left, what was ahead is now on the right");
+        assert!(
+            energy(&right) > 1.3 * energy(&left),
+            "facing left, what was ahead is now on the right"
+        );
     }
 
     #[test]
     fn the_equalizer_boosts_its_band_only() {
         let rate = 48_000;
         let tone = |frequency: f32| -> f32 {
-            let mut equalizer = Equalizer::new(rate, 0.0, &[0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2);
+            let mut equalizer = Equalizer::new(
+                rate,
+                0.0,
+                &[0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                2,
+            );
             let samples: Vec<f32> = (0..rate as usize)
                 .map(|index| {
-                    let mut frame = [(std::f32::consts::TAU * frequency * index as f32 / rate as f32).sin() * 0.1; 2];
+                    let mut frame =
+                        [(std::f32::consts::TAU * frequency * index as f32 / rate as f32).sin()
+                            * 0.1; 2];
                     equalizer.run(&mut frame);
                     frame[0]
                 })
@@ -407,14 +500,28 @@ mod tests {
         };
         let reference = 0.1 * (rate as f32 / 4.0).sqrt();
         assert!(tone(1000.0) > 3.0 * reference, "+12 dB at 1 kHz");
-        assert!((tone(60.0) / reference - 1.0).abs() < 0.1, "60 Hz untouched");
+        assert!(
+            (tone(60.0) / reference - 1.0).abs() < 0.1,
+            "60 Hz untouched"
+        );
     }
 
     #[test]
     fn the_chain_takes_any_channel_count_and_stays_under_full_scale() {
-        for target in [Target::Headphones, Target::Speakers(3), Target::Speakers(4), Target::Speakers(6), Target::Speakers(8)] {
+        for target in [
+            Target::Headphones,
+            Target::Speakers(3),
+            Target::Speakers(4),
+            Target::Speakers(6),
+            Target::Speakers(8),
+        ] {
             for channels in [1, 2, 6, 8, 3] {
-                let mut chain = Chain::new(44_100, channels, Some(crate::enhance::Strength::High), target);
+                let mut chain = Chain::new(
+                    44_100,
+                    channels,
+                    Some(crate::enhance::Strength::High),
+                    target,
+                );
                 let loud = vec![0.99f32; channels];
                 let mut out = [0.0; 8];
                 let mut peak = 0.0f32;
@@ -422,7 +529,10 @@ mod tests {
                     chain.run(&loud, &mut out);
                     peak = out.iter().fold(peak, |peak, sample| peak.max(sample.abs()));
                 }
-                assert!(peak <= 1.0, "{target:?} from {channels} channels: peak {peak}");
+                assert!(
+                    peak <= 1.0,
+                    "{target:?} from {channels} channels: peak {peak}"
+                );
             }
         }
     }
@@ -447,11 +557,20 @@ mod tests {
     fn stereo_is_spread_over_real_speakers() {
         // The same in both: centre (and a little in the fronts).
         let centred = spread(Target::Speakers(6), &[0.5, 0.5]);
-        assert!(centred[2] > 10.0 * centred[4], "5.1: shared sound in the centre, not behind");
+        assert!(
+            centred[2] > 10.0 * centred[4],
+            "5.1: shared sound in the centre, not behind"
+        );
         // Opposite in each: ambience, behind.
         let wide = spread(Target::Speakers(8), &[0.5, -0.5]);
-        assert!(wide[4] > 10.0 * wide[2] && wide[6] > 10.0 * wide[2], "7.1: rears and sides carry the ambience");
+        assert!(
+            wide[4] > 10.0 * wide[2] && wide[6] > 10.0 * wide[2],
+            "7.1: rears and sides carry the ambience"
+        );
         let small = spread(Target::Speakers(3), &[0.5, 0.5]);
-        assert!(small[0] > 0.0 && small[1] > 0.0, "2.1 has no centre: it goes to the fronts");
+        assert!(
+            small[0] > 0.0 && small[1] > 0.0,
+            "2.1 has no centre: it goes to the fronts"
+        );
     }
 }

@@ -15,7 +15,9 @@ pub enum Event {
     /// The agent used a tool.
     Tool(String),
     /// The turn finished.
-    Done { usage: Usage },
+    Done {
+        usage: Usage,
+    },
     Error(String),
 }
 
@@ -58,16 +60,25 @@ fn claude(value: &Value) -> Vec<Event> {
             }
         }
         Some("assistant") => {
-            for block in value.pointer("/message/content").and_then(Value::as_array).into_iter().flatten() {
+            for block in value
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 if text(block, "type") == Some("tool_use") {
-                    events.push(Event::Tool(text(block, "name").unwrap_or("tool").to_string()));
+                    events.push(Event::Tool(
+                        text(block, "name").unwrap_or("tool").to_string(),
+                    ));
                 }
             }
         }
         Some("result") => {
             let usage = value.get("usage").unwrap_or(&Value::Null);
             if value.get("is_error").and_then(Value::as_bool) == Some(true) {
-                events.push(Event::Error(text(value, "result").unwrap_or("failed").to_string()));
+                events.push(Event::Error(
+                    text(value, "result").unwrap_or("failed").to_string(),
+                ));
             }
             events.push(Event::Done {
                 usage: Usage {
@@ -103,9 +114,13 @@ fn codex(value: &Value) -> Vec<Event> {
                     }
                 }
                 Some("command_execution") => {
-                    events.push(Event::Tool(text(item, "command").unwrap_or("command").to_string()));
+                    events.push(Event::Tool(
+                        text(item, "command").unwrap_or("command").to_string(),
+                    ));
                 }
-                Some(other) if other != "reasoning" => events.push(Event::Tool(other.replace('_', " "))),
+                Some(other) if other != "reasoning" => {
+                    events.push(Event::Tool(other.replace('_', " ")))
+                }
                 _ => {}
             }
         }
@@ -124,7 +139,11 @@ fn codex(value: &Value) -> Vec<Event> {
             });
         }
         Some("turn.failed" | "error") => {
-            let message = value.pointer("/error/message").and_then(Value::as_str).or(text(value, "message")).unwrap_or("failed");
+            let message = value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .or(text(value, "message"))
+                .unwrap_or("failed");
             events.push(Event::Error(message.to_string()));
         }
         _ => {}
@@ -145,22 +164,34 @@ fn opencode(value: &Value) -> Vec<Event> {
                 events.push(Event::Message(answer.to_string()));
             }
         }
-        (_, Some("tool")) => events.push(Event::Tool(text(part, "tool").unwrap_or("tool").to_string())),
+        (_, Some("tool")) => events.push(Event::Tool(
+            text(part, "tool").unwrap_or("tool").to_string(),
+        )),
         (_, Some("step-finish")) => {
             let tokens = part.get("tokens").unwrap_or(&Value::Null);
             events.push(Event::Done {
                 usage: Usage {
                     input: number(tokens, "input"),
                     output: number(tokens, "output"),
-                    cache_read: tokens.pointer("/cache/read").and_then(Value::as_u64).unwrap_or(0),
-                    cache_write: tokens.pointer("/cache/write").and_then(Value::as_u64).unwrap_or(0),
+                    cache_read: tokens
+                        .pointer("/cache/read")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    cache_write: tokens
+                        .pointer("/cache/write")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
                     reasoning: number(tokens, "reasoning"),
                     cost: part.get("cost").and_then(Value::as_f64),
                 },
             });
         }
         (Some("error"), _) => {
-            let message = value.pointer("/error/data/message").and_then(Value::as_str).or(text(value, "message")).unwrap_or("failed");
+            let message = value
+                .pointer("/error/data/message")
+                .and_then(Value::as_str)
+                .or(text(value, "message"))
+                .unwrap_or("failed");
             events.push(Event::Error(message.to_string()));
         }
         _ => {}

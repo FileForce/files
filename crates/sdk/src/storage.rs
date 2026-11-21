@@ -16,12 +16,23 @@ pub struct Usage {
 
 /// An id as a folder name: letters, digits, `-`, `_` and `.` stay.
 pub fn folder_name(extension: &str) -> String {
-    extension.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' }).collect()
+    extension
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Where every extension's cache folder lives.
 pub fn root() -> io::Result<PathBuf> {
-    crate::host().cache_dir().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "This host keeps no cache"))
+    crate::host()
+        .cache_dir()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "This host keeps no cache"))
 }
 
 /// The extension's own cache folder, made if missing.
@@ -65,9 +76,14 @@ pub fn walk(dir: &Path) -> Vec<(PathBuf, std::fs::Metadata)> {
 
 /// What the extension's cache takes now.
 pub fn usage(extension: &str) -> Usage {
-    let Ok(root) = root() else { return Usage::default() };
+    let Ok(root) = root() else {
+        return Usage::default();
+    };
     let files = walk(&root.join(folder_name(extension)));
-    Usage { files: files.len(), bytes: files.iter().map(|(_, metadata)| metadata.len()).sum() }
+    Usage {
+        files: files.len(),
+        bytes: files.iter().map(|(_, metadata)| metadata.len()).sum(),
+    }
 }
 
 /// Empties the extension's cache folder; returns the bytes freed.
@@ -89,7 +105,13 @@ mod tests {
         assert_eq!(folder_name("acme/../x y"), "acme_.._x_y");
         let file = cache_file("storage-test", "covers/a.bin").unwrap();
         std::fs::write(&file, [0u8; 300]).unwrap();
-        assert_eq!(usage("storage-test"), Usage { files: 1, bytes: 300 });
+        assert_eq!(
+            usage("storage-test"),
+            Usage {
+                files: 1,
+                bytes: 300
+            }
+        );
         assert_eq!(clear("storage-test").unwrap(), 300);
         assert_eq!(usage("storage-test"), Usage::default());
     }

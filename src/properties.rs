@@ -1,13 +1,12 @@
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Subscription, Window, WindowBounds,
-    WindowOptions, actions, div, point, px, size,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, WindowBounds, WindowOptions, actions, div, point, px, size,
 };
 
 use crate::app::AppearanceSettings;
@@ -235,7 +234,6 @@ pub fn open_properties(
     .expect("Failed to open Properties window");
 }
 
-
 pub(crate) fn demo_human_size(
     file: &FileEntry,
     settings: crate::settings::HumanSizeSettings,
@@ -246,7 +244,11 @@ pub(crate) fn demo_human_size(
 /// Folder sizes arrive asynchronously; `None` means still calculating.
 pub(crate) fn demo_size_bytes(file: &FileEntry) -> Option<u64> {
     // A package (an app…) weighs what its folder holds, like a folder.
-    if file.path.as_deref().is_some_and(|path| file.is_folder() || crate::model::is_package(path)) {
+    if file
+        .path
+        .as_deref()
+        .is_some_and(|path| file.is_folder() || crate::model::is_package(path))
+    {
         crate::model::folder_size(file)
     } else {
         Some(file.bytes)
@@ -277,7 +279,10 @@ pub(crate) fn watch_folder_sizes<T: 'static>(cx: &mut Context<T>) {
                 ))
                 .await;
             // Files made by other programs (an agent, a terminal) show up too.
-            let changed = cx.background_executor().spawn(async { crate::model::forget_changed_listings() }).await;
+            let changed = cx
+                .background_executor()
+                .spawn(async { crate::model::forget_changed_listings() })
+                .await;
             let current = generation();
             if changed || current != seen {
                 seen = current;
@@ -302,8 +307,139 @@ fn format_grouped(bytes: u64) -> String {
     grouped
 }
 
+/// Everything the file system says about `file`, for the Inspector's INFO
+/// section: dates, where it is, who may do what, how it is stored.
+pub(crate) fn full_info(
+    file: &FileEntry,
+    language: crate::settings::Language,
+) -> Vec<(&'static str, String)> {
+    let Some(path) = file.path.as_deref() else {
+        return Vec::new();
+    };
+    let Ok(link) = std::fs::symlink_metadata(path) else {
+        return Vec::new();
+    };
+    let metadata = std::fs::metadata(path).unwrap_or_else(|_| link.clone());
+    let date = |time: std::io::Result<std::time::SystemTime>| {
+        time.ok().map(|time| {
+            chrono::DateTime::<chrono::Local>::from(time)
+                .format("%b %d, %Y, %H:%M:%S")
+                .to_string()
+        })
+    };
+    let mut rows = Vec::new();
+    if let Some(created) = date(metadata.created()) {
+        rows.push((tr(language, "Created", "Создан"), created));
+    }
+    if let Some(modified) = date(metadata.modified()) {
+        rows.push((tr(language, "Modified", "Изменён"), modified));
+    }
+    if let Some(opened) = date(metadata.accessed()) {
+        rows.push((tr(language, "Last opened", "Открыт"), opened));
+    }
+    rows.push((tr(language, "Path", "Путь"), path.display().to_string()));
+    let symlink = link.file_type().is_symlink();
+    if symlink {
+        rows.push((
+            tr(language, "Points to", "Ссылка на"),
+            symlink_target(file).unwrap_or_else(|| "—".into()),
+        ));
+    }
+    if !metadata.is_dir()
+        && let Some(extension) = path.extension()
+    {
+        rows.push((
+            tr(language, "Extension", "Расширение"),
+            format!(".{}", extension.to_string_lossy()),
+        ));
+    }
+    let hidden = path
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with('.'));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let mode = metadata.permissions().mode() & 0o7777;
+        rows.push((
+            tr(language, "Permissions", "Права"),
+            format!("{} ({mode:o})", permissions(file, symlink)),
+        ));
+        rows.extend(access_rows(file, language));
+        if !metadata.is_dir() {
+            // Blocks of 512 bytes, whatever the disk's own block size.
+            rows.push((
+                tr(language, "On disk", "На диске"),
+                crate::resources::size(metadata.blocks() * 512),
+            ));
+        }
+        rows.push((tr(language, "Inode", "Inode"), metadata.ino().to_string()));
+        if metadata.nlink() > 1 && !metadata.is_dir() {
+            rows.push((
+                tr(language, "Hard links", "Жёстких ссылок"),
+                metadata.nlink().to_string(),
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt as _;
+            // UF_HIDDEN: hidden in Finder without a leading dot.
+            let flags = metadata.st_flags();
+            rows.push((
+                tr(language, "Hidden", "Скрытый"),
+                yes_no(hidden || flags & 0x8000 != 0, language),
+            ));
+            if flags & 0x2 != 0 {
+                rows.push((tr(language, "Locked", "Защищён"), yes_no(true, language)));
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        rows.push((tr(language, "Hidden", "Скрытый"), yes_no(hidden, language)));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        let attributes = metadata.file_attributes();
+        let named: Vec<&str> = [
+            (0x1, "read-only"),
+            (0x2, "hidden"),
+            (0x4, "system"),
+            (0x20, "archive"),
+            (0x800, "compressed"),
+            (0x4000, "encrypted"),
+            (0x400000, "online-only"),
+        ]
+        .into_iter()
+        .filter(|(bit, _)| attributes & bit != 0)
+        .map(|(_, name)| name)
+        .collect();
+        rows.push((
+            tr(language, "Attributes", "Атрибуты"),
+            if named.is_empty() {
+                "—".into()
+            } else {
+                named.join(", ")
+            },
+        ));
+        rows.push((
+            tr(language, "Hidden", "Скрытый"),
+            yes_no(hidden || attributes & 0x2 != 0, language),
+        ));
+    }
+    rows
+}
+
+fn yes_no(value: bool, language: crate::settings::Language) -> String {
+    if value {
+        tr(language, "Yes", "Да")
+    } else {
+        tr(language, "No", "Нет")
+    }
+    .to_string()
+}
+
 fn created(file: &FileEntry) -> String {
-    file.path.as_deref()
+    file.path
+        .as_deref()
         .and_then(|path| std::fs::metadata(path).ok()?.created().ok())
         .map(|time| {
             chrono::DateTime::<chrono::Local>::from(time)
@@ -320,7 +456,11 @@ fn symlink_target(file: &FileEntry) -> Option<String> {
 
 fn permissions(file: &FileEntry, symlink: bool) -> String {
     #[cfg(unix)]
-    if let Some(metadata) = file.path.as_deref().and_then(|path| std::fs::metadata(path).ok()) {
+    if let Some(metadata) = file
+        .path
+        .as_deref()
+        .and_then(|path| std::fs::metadata(path).ok())
+    {
         use std::os::unix::fs::PermissionsExt as _;
         let mode = metadata.permissions().mode();
         let kind = if symlink {
@@ -342,24 +482,51 @@ fn permissions(file: &FileEntry, symlink: bool) -> String {
         return format!("{kind}{bits}");
     }
     let _ = symlink;
-    if file.is_folder() { "directory" } else { "file" }.to_string()
+    if file.is_folder() {
+        "directory"
+    } else {
+        "file"
+    }
+    .to_string()
 }
 
 /// Explains the `rwxr-xr-x` string: who the owner and group are, and what
 /// the owner, the group's members and everyone else may do.
-fn access_rows(file: &FileEntry, language: crate::settings::Language) -> Vec<(&'static str, String)> {
+fn access_rows(
+    file: &FileEntry,
+    language: crate::settings::Language,
+) -> Vec<(&'static str, String)> {
     #[cfg(unix)]
-    if let Some(metadata) = file.path.as_deref().and_then(|path| std::fs::metadata(path).ok()) {
+    if let Some(metadata) = file
+        .path
+        .as_deref()
+        .and_then(|path| std::fs::metadata(path).ok())
+    {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let mode = metadata.permissions().mode();
         let folder = metadata.is_dir();
         let (uid, gid) = (metadata.uid(), metadata.gid());
-        let owner = user_name(uid).map_or_else(|| format!("uid {uid}"), |name| format!("{name} (uid {uid})"));
-        let group = group_name(gid).map_or_else(|| format!("gid {gid}"), |name| format!("{name} (gid {gid})"));
+        let owner = user_name(uid).map_or_else(
+            || format!("uid {uid}"),
+            |name| format!("{name} (uid {uid})"),
+        );
+        let group = group_name(gid).map_or_else(
+            || format!("gid {gid}"),
+            |name| format!("{name} (gid {gid})"),
+        );
         return vec![
-            (tr(language, "Owner", "Владелец"), format!("{owner} — {}", access_text(mode >> 6, folder, language))),
-            (tr(language, "Group", "Группа"), format!("{group} — {}", access_text(mode >> 3, folder, language))),
-            (tr(language, "Others", "Остальные"), access_text(mode, folder, language)),
+            (
+                tr(language, "Owner", "Владелец"),
+                format!("{owner} — {}", access_text(mode >> 6, folder, language)),
+            ),
+            (
+                tr(language, "Group", "Группа"),
+                format!("{group} — {}", access_text(mode >> 3, folder, language)),
+            ),
+            (
+                tr(language, "Others", "Остальные"),
+                access_text(mode, folder, language),
+            ),
         ];
     }
     let _ = (file, language);
@@ -371,13 +538,25 @@ fn access_rows(file: &FileEntry, language: crate::settings::Language) -> Vec<(&'
 fn access_text(bits: u32, folder: bool, language: crate::settings::Language) -> String {
     let mut parts = Vec::new();
     if bits & 0o4 != 0 {
-        parts.push(if folder { tr(language, "list", "просмотр содержимого") } else { tr(language, "read", "чтение") });
+        parts.push(if folder {
+            tr(language, "list", "просмотр содержимого")
+        } else {
+            tr(language, "read", "чтение")
+        });
     }
     if bits & 0o2 != 0 {
-        parts.push(if folder { tr(language, "add & delete items", "создание и удаление") } else { tr(language, "write", "запись") });
+        parts.push(if folder {
+            tr(language, "add & delete items", "создание и удаление")
+        } else {
+            tr(language, "write", "запись")
+        });
     }
     if bits & 0o1 != 0 {
-        parts.push(if folder { tr(language, "open", "вход в папку") } else { tr(language, "run", "запуск") });
+        parts.push(if folder {
+            tr(language, "open", "вход в папку")
+        } else {
+            tr(language, "run", "запуск")
+        });
     }
     if parts.is_empty() {
         return tr(language, "no access", "нет доступа").to_string();
@@ -391,7 +570,11 @@ fn user_name(uid: u32) -> Option<String> {
     // name is copied out immediately on the UI thread.
     unsafe {
         let entry = libc::getpwuid(uid);
-        (!entry.is_null()).then(|| std::ffi::CStr::from_ptr((*entry).pw_name).to_string_lossy().into_owned())
+        (!entry.is_null()).then(|| {
+            std::ffi::CStr::from_ptr((*entry).pw_name)
+                .to_string_lossy()
+                .into_owned()
+        })
     }
 }
 
@@ -400,7 +583,11 @@ fn group_name(gid: u32) -> Option<String> {
     // SAFETY: as in `user_name`.
     unsafe {
         let entry = libc::getgrgid(gid);
-        (!entry.is_null()).then(|| std::ffi::CStr::from_ptr((*entry).gr_name).to_string_lossy().into_owned())
+        (!entry.is_null()).then(|| {
+            std::ffi::CStr::from_ptr((*entry).gr_name)
+                .to_string_lossy()
+                .into_owned()
+        })
     }
 }
 
@@ -437,7 +624,10 @@ mod access_tests {
     #[test]
     fn permission_triplets_are_explained() {
         assert_eq!(access_text(0o5, false, Language::English), "read, run");
-        assert_eq!(access_text(0o7, true, Language::English), "list, add & delete items, open");
+        assert_eq!(
+            access_text(0o7, true, Language::English),
+            "list, add & delete items, open"
+        );
         assert_eq!(access_text(0o0, false, Language::English), "no access");
         assert_eq!(access_text(0o6, false, Language::Russian), "чтение, запись");
     }

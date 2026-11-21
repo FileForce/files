@@ -37,7 +37,8 @@ pub fn stop() {
 
 /// Yaw relative to `reference`, wrapped to −π…π.
 fn relative(yaw: f32, reference: f32) -> f32 {
-    let turned = (yaw - reference + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    let turned = (yaw - reference + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+        - std::f32::consts::PI;
     if turned.is_finite() { turned } else { 0.0 }
 }
 
@@ -50,9 +51,18 @@ mod macos {
     pub fn follow() {
         // macOS ends an app that asks for motion without saying why in its
         // Info.plist: a development build (cargo run) has no Info.plist.
-        let explained = objc2_foundation::NSBundle::mainBundle().objectForInfoDictionaryKey(&objc2_foundation::NSString::from_str("NSMotionUsageDescription")).is_some();
+        let explained = objc2_foundation::NSBundle::mainBundle()
+            .objectForInfoDictionaryKey(&objc2_foundation::NSString::from_str(
+                "NSMotionUsageDescription",
+            ))
+            .is_some();
         if !explained {
-            files_sdk::log::record("music", files_sdk::log::Kind::Info, "Head tracking: off outside the app bundle (no NSMotionUsageDescription)", None);
+            files_sdk::log::record(
+                "music",
+                files_sdk::log::Kind::Info,
+                "Head tracking: off outside the app bundle (no NSMotionUsageDescription)",
+                None,
+            );
             RUNNING.store(false, Ordering::SeqCst);
             return;
         }
@@ -60,7 +70,12 @@ mod macos {
         unsafe {
             let manager = CMHeadphoneMotionManager::new();
             if !manager.isDeviceMotionAvailable() {
-                files_sdk::log::record("music", files_sdk::log::Kind::Info, "Head tracking: no headphones with motion sensors", None);
+                files_sdk::log::record(
+                    "music",
+                    files_sdk::log::Kind::Info,
+                    "Head tracking: no headphones with motion sensors",
+                    None,
+                );
                 RUNNING.store(false, Ordering::SeqCst);
                 return;
             }
@@ -72,7 +87,10 @@ mod macos {
                     if RECENTER.swap(false, Ordering::Relaxed) || reference.is_none() {
                         reference = Some(now);
                     }
-                    YAW.store(relative(now, reference.unwrap_or(now)).to_bits(), Ordering::Relaxed);
+                    YAW.store(
+                        relative(now, reference.unwrap_or(now)).to_bits(),
+                        Ordering::Relaxed,
+                    );
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -88,7 +106,10 @@ mod tests {
     #[test]
     fn turning_is_measured_from_the_reference_the_short_way_round() {
         assert!((relative(0.5, 0.2) - 0.3).abs() < 1e-6);
-        assert!((relative(-3.0, 3.0) - (std::f32::consts::TAU - 6.0)).abs() < 1e-5, "across ±π, the short way");
+        assert!(
+            (relative(-3.0, 3.0) - (std::f32::consts::TAU - 6.0)).abs() < 1e-5,
+            "across ±π, the short way"
+        );
         assert_eq!(relative(f32::NAN, 0.0), 0.0);
     }
 }

@@ -1,6 +1,5 @@
 use gpui_kit::component::scroll::ScrollableElement as _;
 
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,9 +12,8 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Styled as _, Subscription, Window, WindowBounds,
-    WindowOptions, actions, div, point, px, size,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
+    Window, WindowBounds, WindowOptions, actions, div, point, px, size,
 };
 
 pub use files_ext_archive::compress::*;
@@ -26,26 +24,6 @@ use crate::palette::Palette;
 use crate::settings::format_size;
 
 actions!(compress, [CloseCompress]);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 struct CompressJob {
     sources: Sources,
@@ -80,16 +58,18 @@ impl CompressWindow {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         let settings = CompressSettings::default();
-        let stem = source
-            .file_name()
-            .map_or_else(|| "Archive".to_string(), |name| name.to_string_lossy().into_owned());
+        let stem = source.file_name().map_or_else(
+            || "Archive".to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         let default_name = format!("{stem}.{}", settings.format.extension());
         let default_destination = source
             .parent()
             .map(|parent| parent.display().to_string())
             .unwrap_or_default();
         let name = cx.new(|cx| InputState::new(window, cx).default_value(default_name));
-        let destination = cx.new(|cx| InputState::new(window, cx).default_value(default_destination));
+        let destination =
+            cx.new(|cx| InputState::new(window, cx).default_value(default_destination));
         let roots = vec![source];
 
         let scan_roots = roots.clone();
@@ -173,7 +153,10 @@ impl CompressWindow {
         let start = if current.is_dir() {
             current
         } else {
-            self.roots[0].parent().map(Path::to_path_buf).unwrap_or_default()
+            self.roots[0]
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default()
         };
         let target = cx.entity().downgrade();
         let picker = crate::app::FolderPicker {
@@ -188,7 +171,10 @@ impl CompressWindow {
     fn start(&mut self, cx: &mut Context<Self>) {
         let destination = PathBuf::from(self.destination.read(cx).value().trim());
         if !destination.is_dir() {
-            self.result = Some(Err(format!("Folder does not exist: {}", destination.display())));
+            self.result = Some(Err(format!(
+                "Folder does not exist: {}",
+                destination.display()
+            )));
             cx.notify();
             return;
         }
@@ -214,7 +200,9 @@ impl CompressWindow {
                 create_archive(&sources, &roots, &job_output, settings, &job_progress)
             });
             let original: u64 = this
-                .update(cx, |this, _| this.job.sources.files.iter().map(|file| file.size).sum())
+                .update(cx, |this, _| {
+                    this.job.sources.files.iter().map(|file| file.size).sum()
+                })
                 .unwrap_or(0);
             // Repaint progress while the background job runs.
             let ticker = this.clone();
@@ -245,7 +233,10 @@ impl CompressWindow {
                 this.result = Some(match result {
                     Ok(bytes) => {
                         let ratio = if original > 0 {
-                            format!(" · {:.0}% of original", bytes as f64 * 100. / original as f64)
+                            format!(
+                                " · {:.0}% of original",
+                                bytes as f64 * 100. / original as f64
+                            )
                         } else {
                             String::new()
                         };
@@ -276,15 +267,21 @@ impl CompressWindow {
             .gap_1()
             .children(Level::ALL.map(|level| {
                 let on_pick = on_pick.clone();
-                let button = Button::new(gpui_kit::ElementId::Name(format!("{id}-{}", level.label()).into()))
-                    .xsmall()
-                    .label(level.label())
-                    .disabled(self.running)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        on_pick(this, level);
-                        cx.notify();
-                    }));
-                if level == current { button.primary() } else { button.ghost() }
+                let button = Button::new(gpui_kit::ElementId::Name(
+                    format!("{id}-{}", level.label()).into(),
+                ))
+                .xsmall()
+                .label(level.label())
+                .disabled(self.running)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    on_pick(this, level);
+                    cx.notify();
+                }));
+                if level == current {
+                    button.primary()
+                } else {
+                    button.ghost()
+                }
             }))
             .into_any_element()
     }
@@ -307,23 +304,38 @@ impl Render for CompressWindow {
 
         let format_row = h_flex().gap_1().children(ArchiveFormat::ALL.map(|format| {
             let unavailable = format == ArchiveFormat::Rar && !rar_available;
-            let mut button = Button::new(gpui_kit::ElementId::Name(format!("format-{}", format.label()).into()))
-                .small()
-                .label(format.label())
-                .disabled(self.running || unavailable)
-                .on_click(cx.listener(move |this, _, window, cx| this.set_format(format, window, cx)));
+            let mut button = Button::new(gpui_kit::ElementId::Name(
+                format!("format-{}", format.label()).into(),
+            ))
+            .small()
+            .label(format.label())
+            .disabled(self.running || unavailable)
+            .on_click(cx.listener(move |this, _, window, cx| this.set_format(format, window, cx)));
             if unavailable {
-                button = button.tooltip("RAR is proprietary: install RARLAB's `rar` tool to create it");
+                button =
+                    button.tooltip("RAR is proprietary: install RARLAB's `rar` tool to create it");
             }
-            if format == self.settings.format { button.primary() } else { button.ghost() }
+            if format == self.settings.format {
+                button.primary()
+            } else {
+                button.ghost()
+            }
         }));
 
         let levels = if !self.job.loaded {
-            div().text_xs().text_color(palette.muted).child("Scanning files…").into_any_element()
+            div()
+                .text_xs()
+                .text_color(palette.muted)
+                .child("Scanning files…")
+                .into_any_element()
         } else if self.settings.format.per_category() {
             let mut rows = v_flex().gap_2();
             for category in Category::ALL {
-                let files: Vec<_> = sources.files.iter().filter(|file| file.category == category).collect();
+                let files: Vec<_> = sources
+                    .files
+                    .iter()
+                    .filter(|file| file.category == category)
+                    .collect();
                 if files.is_empty() {
                     continue;
                 }
@@ -346,7 +358,12 @@ impl Render for CompressWindow {
                                     files.len(),
                                     format_size(bytes, appearance.human_sizes)
                                 )))
-                                .child(div().text_size(px(10.)).text_color(palette.muted).child(category.hint())),
+                                .child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .text_color(palette.muted)
+                                        .child(category.hint()),
+                                ),
                         )
                         .child(self.level_picker(
                             match category {
@@ -384,7 +401,9 @@ impl Render for CompressWindow {
         };
 
         let progress = self.progress.load(Ordering::Relaxed);
-        let can_start = self.job.loaded && !self.running && self.load_error.is_none()
+        let can_start = self.job.loaded
+            && !self.running
+            && self.load_error.is_none()
             && (!sources.files.is_empty() || !sources.dirs.is_empty());
 
         v_flex()
@@ -573,5 +592,3 @@ pub fn open_compress(entry: &FileEntry, appearance: Entity<AppearanceSettings>, 
         eprintln!("Failed to open Compress window: {error}");
     }
 }
-
-

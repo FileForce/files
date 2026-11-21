@@ -55,6 +55,9 @@ pub struct AppSettings {
     pub license: LicenseSettings,
     /// Update checks.
     pub updates: UpdateSettings,
+    /// Maximum animation frame rate: 24, 30, 45, 60, 90 or 120 FPS.
+    #[serde(default = "default_frame_rate")]
+    pub frame_rate: u8,
     /// Reduce background work and animation, automatically or on demand.
     pub power_saving: PowerSavingMode,
     /// Automatic: power saving starts when the battery drops to this
@@ -63,6 +66,8 @@ pub struct AppSettings {
     /// One Files at a time: opening another hands its folder to the running
     /// one (a new tab) instead of a second window.
     pub single_instance: bool,
+    /// The Pro list's columns after Name, in order (hidden ones left out).
+    pub list_columns: Vec<ListColumn>,
     /// Settings → General → Lock: the lock screen, and when it comes on.
     pub lock: crate::app_lock::LockSettings,
     /// Mail: colors of the special folders (Inbox, Sent, Trash…).
@@ -77,6 +82,44 @@ pub struct AppSettings {
     pub system_notifications: SystemNotificationSettings,
 }
 
+pub const FRAME_RATES: [u8; 6] = [24, 30, 45, 60, 90, 120];
+
+const fn default_frame_rate() -> u8 {
+    30
+}
+
+pub fn frame_rate_index(frame_rate: u8) -> usize {
+    FRAME_RATES
+        .iter()
+        .position(|candidate| *candidate == frame_rate)
+        .unwrap_or(1)
+}
+
+static FRAME_RATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(30);
+
+pub fn set_frame_rate(frame_rate: u8) {
+    FRAME_RATE.store(
+        FRAME_RATES[frame_rate_index(frame_rate)] as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn frame_duration() -> std::time::Duration {
+    std::time::Duration::from_secs_f64(
+        1.0 / FRAME_RATE.load(std::sync::atomic::Ordering::Relaxed) as f64,
+    )
+}
+
+pub fn animation(duration: std::time::Duration) -> gpui_kit::Animation {
+    let animation = gpui_kit::Animation::new(duration);
+    let fps = FRAME_RATE.load(std::sync::atomic::Ordering::Relaxed);
+    if fps >= 60 {
+        animation
+    } else {
+        animation.with_max_fps(fps as f32)
+    }
+}
+
 /// `[system_notifications]` in settings.toml.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -89,9 +132,118 @@ pub struct SystemNotificationSettings {
 /// Settings → Music → Spatial audio, for the players and head tracking.
 pub fn apply_spatial(settings: &AppSettings) {
     let extensions = &settings.extensions;
-    let tracking = extensions.music_spatial != crate::spatial_player::SpatialMode::Off && extensions.music_head_tracking && cfg!(target_os = "macos");
+    let tracking = extensions.music_spatial != crate::spatial_player::SpatialMode::Off
+        && extensions.music_head_tracking
+        && cfg!(target_os = "macos");
     crate::spatial_player::set_mode(extensions.music_spatial, tracking, settings.sound.layout);
-    if tracking { crate::head_tracking::start() } else { crate::head_tracking::stop() }
+    if tracking {
+        crate::head_tracking::start()
+    } else {
+        crate::head_tracking::stop()
+    }
+}
+
+/// A column of the Pro list after Name. Right-click the header to show or
+/// hide one, drag a header to move it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListColumn {
+    Kind,
+    Modified,
+    Created,
+    Size,
+}
+
+impl ListColumn {
+    pub const ALL: [ListColumn; 4] = [
+        ListColumn::Kind,
+        ListColumn::Modified,
+        ListColumn::Created,
+        ListColumn::Size,
+    ];
+    /// Created stays hidden until it is turned on.
+    pub const DEFAULT: [ListColumn; 3] = [ListColumn::Kind, ListColumn::Modified, ListColumn::Size];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ListColumn::Kind => "KIND",
+            ListColumn::Modified => "MODIFIED",
+            ListColumn::Created => "CREATED",
+            ListColumn::Size => "SIZE",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            ListColumn::Kind => "Kind",
+            ListColumn::Modified => "Date Modified",
+            ListColumn::Created => "Date Created",
+            ListColumn::Size => "Size",
+        }
+    }
+
+    pub fn width(self) -> f32 {
+        match self {
+            ListColumn::Kind => 76.,
+            ListColumn::Modified | ListColumn::Created => 132.,
+            ListColumn::Size => 64.,
+        }
+    }
+
+    pub fn sort_key(self) -> crate::model::SortKey {
+        match self {
+            ListColumn::Kind => crate::model::SortKey::Kind,
+            ListColumn::Modified => crate::model::SortKey::Modified,
+            ListColumn::Created => crate::model::SortKey::Created,
+            ListColumn::Size => crate::model::SortKey::Size,
+        }
+    }
+}
+
+/// `columns` with `column` shown or hidden (shown: where it was by default).
+pub fn toggle_column(columns: &[ListColumn], column: ListColumn) -> Vec<ListColumn> {
+    if columns.contains(&column) {
+        return columns
+            .iter()
+            .copied()
+            .filter(|known| *known != column)
+            .collect();
+    }
+    let mut shown = columns.to_vec();
+    let rank = |column: ListColumn| {
+        ListColumn::ALL
+            .iter()
+            .position(|known| *known == column)
+            .unwrap_or(0)
+    };
+    let at = shown
+        .iter()
+        .position(|known| rank(*known) > rank(column))
+        .unwrap_or(shown.len());
+    shown.insert(at, column);
+    shown
+}
+
+/// `columns` with `moved` put just before `before`.
+pub fn move_column(
+    columns: &[ListColumn],
+    moved: ListColumn,
+    before: ListColumn,
+) -> Vec<ListColumn> {
+    if moved == before || !columns.contains(&moved) {
+        return columns.to_vec();
+    }
+    let mut order: Vec<ListColumn> = columns
+        .iter()
+        .copied()
+        .filter(|known| *known != moved)
+        .collect();
+    let at = order
+        .iter()
+        .position(|known| *known == before)
+        .unwrap_or(order.len());
+    order.insert(at, moved);
+    order
 }
 
 /// Settings → Music: how streamed Yandex tracks (MP3) are enhanced.
@@ -106,7 +258,12 @@ pub enum MusicEnhance {
 }
 
 impl MusicEnhance {
-    pub const ALL: [MusicEnhance; 4] = [MusicEnhance::Off, MusicEnhance::Low, MusicEnhance::Medium, MusicEnhance::High];
+    pub const ALL: [MusicEnhance; 4] = [
+        MusicEnhance::Off,
+        MusicEnhance::Low,
+        MusicEnhance::Medium,
+        MusicEnhance::High,
+    ];
 
     pub fn strength(self) -> Option<files_ext_music::enhance::Strength> {
         use files_ext_music::enhance::Strength;
@@ -131,7 +288,11 @@ pub enum SystemNotify {
 }
 
 impl SystemNotify {
-    pub const ALL: [SystemNotify; 3] = [SystemNotify::Off, SystemNotify::Background, SystemNotify::Always];
+    pub const ALL: [SystemNotify; 3] = [
+        SystemNotify::Off,
+        SystemNotify::Background,
+        SystemNotify::Always,
+    ];
 }
 
 /// Which notifications reach the system.
@@ -145,7 +306,8 @@ pub enum NotifyLevel {
 }
 
 impl NotifyLevel {
-    pub const ALL: [NotifyLevel; 3] = [NotifyLevel::All, NotifyLevel::Warnings, NotifyLevel::Errors];
+    pub const ALL: [NotifyLevel; 3] =
+        [NotifyLevel::All, NotifyLevel::Warnings, NotifyLevel::Errors];
 
     pub fn allows(self, level: files_sdk::log::Level) -> bool {
         use files_sdk::log::Level;
@@ -194,7 +356,13 @@ pub enum ThemePreset {
 }
 
 impl ThemePreset {
-    pub const ALL: [ThemePreset; 5] = [ThemePreset::Default, ThemePreset::MacOs, ThemePreset::Windows, ThemePreset::Omarchy, ThemePreset::Catppuccin];
+    pub const ALL: [ThemePreset; 5] = [
+        ThemePreset::Default,
+        ThemePreset::MacOs,
+        ThemePreset::Windows,
+        ThemePreset::Omarchy,
+        ThemePreset::Catppuccin,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -248,7 +416,13 @@ pub enum Corners {
 }
 
 impl Corners {
-    pub const ALL: [Corners; 5] = [Corners::Theme, Corners::Square, Corners::Small, Corners::Medium, Corners::Large];
+    pub const ALL: [Corners; 5] = [
+        Corners::Theme,
+        Corners::Square,
+        Corners::Small,
+        Corners::Medium,
+        Corners::Large,
+    ];
 
     /// (controls, panels and cards) in px; `None` for the theme's.
     pub fn radii(self) -> Option<(f32, f32)> {
@@ -276,7 +450,11 @@ pub enum IconTheme {
 }
 
 impl IconTheme {
-    pub const ALL: [IconTheme; 3] = [IconTheme::Colorful, IconTheme::Monochrome, IconTheme::Accent];
+    pub const ALL: [IconTheme; 3] = [
+        IconTheme::Colorful,
+        IconTheme::Monochrome,
+        IconTheme::Accent,
+    ];
 }
 
 /// `[sound]` in settings.toml.
@@ -294,7 +472,12 @@ pub struct SoundSettings {
 
 impl Default for SoundSettings {
     fn default() -> Self {
-        Self { notifications: true, volume: 60, chime: Chime::Soft, layout: SpeakerLayout::Stereo21 }
+        Self {
+            notifications: true,
+            volume: 60,
+            chime: Chime::Soft,
+            layout: SpeakerLayout::Stereo21,
+        }
     }
 }
 
@@ -331,7 +514,13 @@ pub enum SpeakerLayout {
 }
 
 impl SpeakerLayout {
-    pub const ALL: [Self; 5] = [Self::Headphones, Self::Stereo21, Self::Surround31, Self::Surround51, Self::Surround71];
+    pub const ALL: [Self; 5] = [
+        Self::Headphones,
+        Self::Stereo21,
+        Self::Surround31,
+        Self::Surround51,
+        Self::Surround71,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -357,7 +546,10 @@ pub struct SearchFilterSettings {
 impl SearchFilterSettings {
     /// The folder Cmd-K searches by default.
     pub fn global_root(&self) -> Option<PathBuf> {
-        self.global_folder.clone().filter(|folder| folder.is_dir()).or_else(dirs::home_dir)
+        self.global_folder
+            .clone()
+            .filter(|folder| folder.is_dir())
+            .or_else(dirs::home_dir)
     }
 }
 
@@ -387,7 +579,12 @@ pub struct UpdateSettings {
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        Self { automatic: true, last_check: 0, last_version: String::new(), skipped: String::new() }
+        Self {
+            automatic: true,
+            last_check: 0,
+            last_version: String::new(),
+            skipped: String::new(),
+        }
     }
 }
 
@@ -409,16 +606,21 @@ pub struct DeveloperSettings {
     pub enabled: bool,
     /// The Console button in the footer (off: only the bell).
     pub show_console: bool,
+    /// The measured frame rate over the window.
+    pub show_fps_counter: bool,
 }
 
 impl AppSettings {
     /// Where an extension's view opens (Settings → Extensions → its page).
     pub fn opens_in(&self, extension: &str) -> OpenIn {
-        self.extension_windows.get(extension).copied().unwrap_or(match extension {
-            // Set in General before it moved to the extension's page.
-            "mail" => self.behavior.open_in,
-            _ => OpenIn::Tab,
-        })
+        self.extension_windows
+            .get(extension)
+            .copied()
+            .unwrap_or(match extension {
+                // Set in General before it moved to the extension's page.
+                "mail" => self.behavior.open_in,
+                _ => OpenIn::Tab,
+            })
     }
 
     /// Settings written by older versions: TortoiseGit is now Git.
@@ -434,10 +636,17 @@ impl AppSettings {
     }
 
     pub fn revoked(&self, extension: &str, permission: files_sdk::Permission) -> bool {
-        self.permissions.get(extension).is_some_and(|keys| keys.iter().any(|key| key == permission.key()))
+        self.permissions
+            .get(extension)
+            .is_some_and(|keys| keys.iter().any(|key| key == permission.key()))
     }
 
-    pub fn set_revoked(&mut self, extension: &str, permission: files_sdk::Permission, revoked: bool) {
+    pub fn set_revoked(
+        &mut self,
+        extension: &str,
+        permission: files_sdk::Permission,
+        revoked: bool,
+    ) {
         let keys = self.permissions.entry(extension.to_string()).or_default();
         keys.retain(|key| key != permission.key());
         if revoked {
@@ -455,7 +664,12 @@ impl AppSettings {
             .permissions
             .iter()
             .map(|(extension, keys)| {
-                (extension.clone(), keys.iter().filter_map(|key| files_sdk::Permission::from_key(key)).collect())
+                (
+                    extension.clone(),
+                    keys.iter()
+                        .filter_map(|key| files_sdk::Permission::from_key(key))
+                        .collect(),
+                )
             })
             .collect();
         files_sdk::permissions::set_revoked(map);
@@ -546,7 +760,10 @@ impl TextScale {
 
     /// Position on the slider (0 = smallest).
     pub fn index(self) -> usize {
-        Self::ALL.iter().position(|scale| *scale == self).unwrap_or(2)
+        Self::ALL
+            .iter()
+            .position(|scale| *scale == self)
+            .unwrap_or(2)
     }
 
     pub fn from_index(index: usize) -> Self {
@@ -582,7 +799,9 @@ pub struct SystemAccessibility {
 
 /// Reads the OS switches once per process (Settings re-reads on open).
 pub fn system_accessibility() -> SystemAccessibility {
-    let mut cache = SYSTEM_ACCESSIBILITY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = SYSTEM_ACCESSIBILITY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *cache.get_or_insert_with(read_system_accessibility)
 }
 
@@ -591,7 +810,9 @@ static SYSTEM_ACCESSIBILITY: Mutex<Option<SystemAccessibility>> = Mutex::new(Non
 /// Re-reads the OS switches (they can change while the app runs).
 pub fn refresh_system_accessibility() -> SystemAccessibility {
     let fresh = read_system_accessibility();
-    *SYSTEM_ACCESSIBILITY.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fresh);
+    *SYSTEM_ACCESSIBILITY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fresh);
     fresh
 }
 
@@ -618,20 +839,24 @@ fn read_system_accessibility() -> SystemAccessibility {
 
 impl AccessibilitySettings {
     pub fn reduce_motion(&self) -> bool {
-        self.reduce_motion.resolve(system_accessibility().reduce_motion)
+        self.reduce_motion
+            .resolve(system_accessibility().reduce_motion)
     }
 
     pub fn high_contrast(&self) -> bool {
-        self.high_contrast.resolve(system_accessibility().increase_contrast)
+        self.high_contrast
+            .resolve(system_accessibility().increase_contrast)
     }
 
     pub fn reduce_transparency(&self) -> bool {
-        self.reduce_transparency.resolve(system_accessibility().reduce_transparency)
+        self.reduce_transparency
+            .resolve(system_accessibility().reduce_transparency)
     }
 
     /// System: follows macOS Increase contrast.
     pub fn text_contrast(&self) -> bool {
-        self.text_contrast.resolve(system_accessibility().increase_contrast)
+        self.text_contrast
+            .resolve(system_accessibility().increase_contrast)
     }
 
     /// System: on unless motion is reduced; never while Reduce motion is on.
@@ -701,8 +926,12 @@ pub enum Background {
     #[default]
     Default,
     /// `#rrggbb`
-    Color { hex: String },
-    Image { path: PathBuf },
+    Color {
+        hex: String,
+    },
+    Image {
+        path: PathBuf,
+    },
 }
 
 /// Parses `#rrggbb` (or `rrggbb`).
@@ -711,7 +940,9 @@ pub fn parse_hex(hex: &str) -> Option<gpui_kit::Hsla> {
     if digits.len() != 6 {
         return None;
     }
-    u32::from_str_radix(digits, 16).ok().map(|value| gpui_kit::rgb(value).into())
+    u32::from_str_radix(digits, 16)
+        .ok()
+        .map(|value| gpui_kit::rgb(value).into())
 }
 
 /// How the file lists react to the mouse. `[behavior]` in settings.toml.
@@ -828,10 +1059,12 @@ impl Default for AppSettings {
             developer: DeveloperSettings::default(),
             license: LicenseSettings::default(),
             updates: UpdateSettings::default(),
+            frame_rate: default_frame_rate(),
             power_saving: PowerSavingMode::Automatic,
             power_saving_below: 100,
             single_instance: true,
             lock: crate::app_lock::LockSettings::default(),
+            list_columns: ListColumn::DEFAULT.to_vec(),
             mail: MailSettings::default(),
             search_filters: SearchFilterSettings::default(),
             sound: SoundSettings::default(),
@@ -882,6 +1115,10 @@ pub struct ExtensionSettings {
     pub music_spatial: crate::spatial_player::SpatialMode,
     /// The scene stays put when the head turns (macOS, AirPods and Beats).
     pub music_head_tracking: bool,
+    /// Live output channel levels in DevTools → Audio.
+    pub music_devtools_channels: bool,
+    /// Smart collections of media, programs and duplicate files.
+    pub smart_folders: bool,
     /// Quick Look and the preview panel's look inside files.
     pub preview: bool,
     /// The context menu's Quick Actions (Convert Image, scripts…).
@@ -932,14 +1169,22 @@ impl TerminalApp {
 
     /// Terminals installed here, the built-in one first.
     pub fn available() -> Vec<Self> {
-        Self::CANDIDATES.iter().copied().filter(|app| app.installed()).collect()
+        Self::CANDIDATES
+            .iter()
+            .copied()
+            .filter(|app| app.installed())
+            .collect()
     }
 
     /// What "Open in Terminal" really uses: the chosen app, or the first
     /// installed one when it is missing (a setting from another computer).
     pub fn effective(self) -> Self {
         let available = Self::available();
-        if available.contains(&self) { self } else { available.first().copied().unwrap_or(self) }
+        if available.contains(&self) {
+            self
+        } else {
+            available.first().copied().unwrap_or(self)
+        }
     }
 
     fn installed(self) -> bool {
@@ -947,9 +1192,14 @@ impl TerminalApp {
             Self::Terminal | Self::PowerShell | Self::Cmd => true,
             #[cfg(target_os = "macos")]
             Self::Iterm | Self::Warp | Self::Ghostty => {
-                let bundle = if self == Self::Iterm { "iTerm.app".to_string() } else { format!("{}.app", self.app_name()) };
+                let bundle = if self == Self::Iterm {
+                    "iTerm.app".to_string()
+                } else {
+                    format!("{}.app", self.app_name())
+                };
                 let home = dirs::home_dir().map(|home| home.join("Applications").join(&bundle));
-                std::path::Path::new("/Applications").join(&bundle).exists() || home.is_some_and(|path| path.exists())
+                std::path::Path::new("/Applications").join(&bundle).exists()
+                    || home.is_some_and(|path| path.exists())
             }
             #[cfg(not(target_os = "macos"))]
             Self::Ghostty => on_path("ghostty"),
@@ -964,8 +1214,13 @@ impl TerminalApp {
 /// Whether `program` (`.exe` on Windows) is in a `PATH` folder.
 #[cfg(not(target_os = "macos"))]
 fn on_path(program: &str) -> bool {
-    let name = if cfg!(windows) { format!("{program}.exe") } else { program.to_string() };
-    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(&name).is_file()))
+    let name = if cfg!(windows) {
+        format!("{program}.exe")
+    } else {
+        program.to_string()
+    };
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(&name).is_file()))
 }
 
 impl Default for ExtensionSettings {
@@ -984,6 +1239,8 @@ impl Default for ExtensionSettings {
             music_enhance: MusicEnhance::Off,
             music_spatial: crate::spatial_player::SpatialMode::Off,
             music_head_tracking: true,
+            music_devtools_channels: false,
+            smart_folders: true,
             preview: true,
             quick_actions: true,
             archives_create_folder: true,
@@ -1333,7 +1590,10 @@ mod deletion_tests {
     #[test]
     fn deletion_settings_round_trip_through_toml() {
         let mut settings = AppSettings::default();
-        settings.deletion.protected.push("~/Projects/**".to_string());
+        settings
+            .deletion
+            .protected
+            .push("~/Projects/**".to_string());
         settings.deletion.use_trash = false;
         let source = toml::to_string_pretty(&settings).unwrap();
         assert!(source.contains("[deletion]"), "{source}");
@@ -1345,22 +1605,34 @@ mod deletion_tests {
     #[test]
     fn default_app_overrides_round_trip_through_toml() {
         let mut settings = AppSettings::default();
-        settings
-            .default_apps
-            .insert("docx".to_string(), "/Applications/LibreOffice.app".to_string());
+        settings.default_apps.insert(
+            "docx".to_string(),
+            "/Applications/LibreOffice.app".to_string(),
+        );
         let source = toml::to_string_pretty(&settings).unwrap();
         assert!(source.contains("[default_apps]"), "{source}");
-        assert!(source.contains("docx = \"/Applications/LibreOffice.app\""), "{source}");
+        assert!(
+            source.contains("docx = \"/Applications/LibreOffice.app\""),
+            "{source}"
+        );
         let parsed: AppSettings = toml::from_str(&source).unwrap();
         assert_eq!(parsed.default_apps, settings.default_apps);
-        assert!(toml::from_str::<AppSettings>("").unwrap().default_apps.is_empty());
+        assert!(
+            toml::from_str::<AppSettings>("")
+                .unwrap()
+                .default_apps
+                .is_empty()
+        );
     }
 
     #[test]
     fn extension_settings_keep_old_files_working() {
         let old: AppSettings = toml::from_str("[extensions]\nssh = false\n").unwrap();
         assert!(!old.extensions.ssh);
-        assert!(old.extensions.archives_create_folder, "new fields default on load");
+        assert!(
+            old.extensions.archives_create_folder,
+            "new fields default on load"
+        );
         assert_eq!(old.extensions.terminal_app, TerminalApp::Terminal);
 
         let mut settings = AppSettings::default();
@@ -1378,31 +1650,57 @@ mod deletion_tests {
         settings.behavior.default_view = crate::model::ViewMode::Dual;
         let source = toml::to_string_pretty(&settings).unwrap();
         assert!(source.contains("default_view = \"dual\""), "{source}");
-        assert_eq!(toml::from_str::<AppSettings>(&source).unwrap().behavior.default_view, crate::model::ViewMode::Dual);
+        assert_eq!(
+            toml::from_str::<AppSettings>(&source)
+                .unwrap()
+                .behavior
+                .default_view,
+            crate::model::ViewMode::Dual
+        );
     }
 
     #[test]
     fn power_saving_defaults_to_automatic_and_round_trips() {
         let old: AppSettings = toml::from_str("").unwrap();
         assert_eq!(old.power_saving, PowerSavingMode::Automatic);
+        assert_eq!(old.frame_rate, 30);
         let mut settings = AppSettings::default();
         settings.power_saving = PowerSavingMode::On;
+        settings.frame_rate = 120;
         let source = toml::to_string_pretty(&settings).unwrap();
         assert!(source.contains("power_saving = \"on\""), "{source}");
-        assert_eq!(toml::from_str::<AppSettings>(&source).unwrap().power_saving, PowerSavingMode::On);
+        let loaded: AppSettings = toml::from_str(&source).unwrap();
+        assert_eq!(loaded.power_saving, PowerSavingMode::On);
+        assert_eq!(loaded.frame_rate, 120);
     }
 
     #[test]
     fn look_settings_round_trip_and_hex_parses() {
         let mut settings = AppSettings::default();
         settings.look.panel_opacity = 70;
-        settings.look.background = Background::Image { path: PathBuf::from("/tmp/wall.jpg") };
+        settings.look.background = Background::Image {
+            path: PathBuf::from("/tmp/wall.jpg"),
+        };
         let source = toml::to_string_pretty(&settings).unwrap();
-        assert!(source.contains("[look]") && source.contains("panel_opacity = 70"), "{source}");
-        assert_eq!(toml::from_str::<AppSettings>(&source).unwrap().look, settings.look);
+        assert!(
+            source.contains("[look]") && source.contains("panel_opacity = 70"),
+            "{source}"
+        );
+        assert_eq!(
+            toml::from_str::<AppSettings>(&source).unwrap().look,
+            settings.look
+        );
         assert!(parse_hex("#1E293B").is_some());
         assert!(parse_hex("zzz").is_none() && parse_hex("#12345").is_none());
-        assert_eq!(LookSettings { panel_opacity: 10, ..Default::default() }.opacity(), 0.4, "clamped");
+        assert_eq!(
+            LookSettings {
+                panel_opacity: 10,
+                ..Default::default()
+            }
+            .opacity(),
+            0.4,
+            "clamped"
+        );
     }
 
     #[test]
@@ -1410,7 +1708,11 @@ mod deletion_tests {
         use crate::model::{ColorScheme, set_system_dark};
         set_system_dark(false);
         assert!(!ColorScheme::System.is_dark());
-        assert_eq!(ColorScheme::System.toggled(), ColorScheme::Dark, "toggle flips what is showing");
+        assert_eq!(
+            ColorScheme::System.toggled(),
+            ColorScheme::Dark,
+            "toggle flips what is showing"
+        );
         set_system_dark(true);
         assert!(ColorScheme::System.is_dark());
         let parsed: AppSettings = toml::from_str("scheme = \"system\"\n").unwrap();
@@ -1425,29 +1727,53 @@ mod deletion_tests {
         settings.accessibility.high_contrast = Toggle::On;
         settings.accessibility.text_scale = TextScale::Large;
         let source = toml::to_string_pretty(&settings).unwrap();
-        assert!(source.contains("[accessibility]") && source.contains("high_contrast = \"on\""), "{source}");
-        assert_eq!(toml::from_str::<AppSettings>(&source).unwrap().accessibility, settings.accessibility);
-        assert_eq!(AppSettings::default().accessibility.reduce_motion, Toggle::System, "follows macOS by default");
+        assert!(
+            source.contains("[accessibility]") && source.contains("high_contrast = \"on\""),
+            "{source}"
+        );
+        assert_eq!(
+            toml::from_str::<AppSettings>(&source)
+                .unwrap()
+                .accessibility,
+            settings.accessibility
+        );
+        assert_eq!(
+            AppSettings::default().accessibility.reduce_motion,
+            Toggle::System,
+            "follows macOS by default"
+        );
         // Values written before the slider still load.
-        let old: AppSettings = toml::from_str("[accessibility]\ntext_scale = \"larger\"\n").unwrap();
+        let old: AppSettings =
+            toml::from_str("[accessibility]\ntext_scale = \"larger\"\n").unwrap();
         assert_eq!(old.accessibility.text_scale, TextScale::Larger);
         for (index, scale) in TextScale::ALL.into_iter().enumerate() {
             assert_eq!(TextScale::from_index(index), scale);
             assert_eq!(scale.index(), index);
         }
-        assert!(TextScale::ALL.windows(2).all(|pair| pair[0].factor() < pair[1].factor()), "steps grow");
+        assert!(
+            TextScale::ALL
+                .windows(2)
+                .all(|pair| pair[0].factor() < pair[1].factor()),
+            "steps grow"
+        );
     }
 
     #[test]
     fn drop_settings_default_to_copy_and_round_trip() {
-        assert_eq!(AppSettings::default().behavior.drop_action, DropAction::Copy);
+        assert_eq!(
+            AppSettings::default().behavior.drop_action,
+            DropAction::Copy
+        );
         assert!(!AppSettings::default().behavior.ask_on_drop);
         let mut settings = AppSettings::default();
         settings.behavior.drop_action = DropAction::Finder;
         settings.behavior.ask_on_drop = true;
         let source = toml::to_string_pretty(&settings).unwrap();
         assert!(source.contains("drop_action = \"finder\""), "{source}");
-        assert_eq!(toml::from_str::<AppSettings>(&source).unwrap().behavior, settings.behavior);
+        assert_eq!(
+            toml::from_str::<AppSettings>(&source).unwrap().behavior,
+            settings.behavior
+        );
     }
 
     #[test]
@@ -1455,7 +1781,11 @@ mod deletion_tests {
         let root = std::env::temp_dir().join(format!("file-force-migrate-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("file-explorer")).unwrap();
-        fs::write(root.join("file-explorer/settings.toml"), "scheme = \"dark\"").unwrap();
+        fs::write(
+            root.join("file-explorer/settings.toml"),
+            "scheme = \"dark\"",
+        )
+        .unwrap();
         let new = root.join("file-force/settings.toml");
         migrate_legacy_folder(&new);
         assert_eq!(fs::read_to_string(&new).unwrap(), "scheme = \"dark\"");
@@ -1474,14 +1804,20 @@ mod deletion_tests {
         settings.sidebar.favorites = vec![PathBuf::from("/Users/me/Documents/git")];
         let source = toml::to_string_pretty(&settings).unwrap();
         assert!(source.contains("[sidebar]"), "{source}");
-        assert_eq!(toml::from_str::<AppSettings>(&source).unwrap().sidebar, settings.sidebar);
+        assert_eq!(
+            toml::from_str::<AppSettings>(&source).unwrap().sidebar,
+            settings.sidebar
+        );
     }
 
     #[test]
     fn old_settings_files_get_the_default_blacklist() {
         let parsed: AppSettings = toml::from_str("scheme = \"light\"\n").unwrap();
         assert!(parsed.deletion.use_trash);
-        assert_eq!(parsed.deletion.protected.len(), crate::delete::default_protected().len());
+        assert_eq!(
+            parsed.deletion.protected.len(),
+            crate::delete::default_protected().len()
+        );
     }
 }
 
@@ -1492,11 +1828,20 @@ static LOGGED: std::sync::Mutex<Option<toml::Table>> = std::sync::Mutex::new(Non
 /// console (`look.panel_opacity: 90 → 75`). The first call only remembers.
 /// Secrets (license key, passwords, tokens) are masked.
 pub fn log_changes(settings: &AppSettings) {
-    let Ok(toml::Value::Table(now)) = toml::Value::try_from(settings) else { return };
-    let mut logged = LOGGED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Ok(toml::Value::Table(now)) = toml::Value::try_from(settings) else {
+        return;
+    };
+    let mut logged = LOGGED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(before) = logged.as_ref() {
         for (key, old, new) in changes(before, &now) {
-            files_sdk::log::record("settings", files_sdk::log::Kind::Setting, format!("{key}: {old} → {new}"), None);
+            files_sdk::log::record(
+                "settings",
+                files_sdk::log::Kind::Setting,
+                format!("{key}: {old} → {new}"),
+                None,
+            );
         }
     }
     *logged = Some(now);
@@ -1504,11 +1849,19 @@ pub fn log_changes(settings: &AppSettings) {
 
 /// Changed leaves of two tables as (`dotted.key`, old, new), in key order.
 fn changes(before: &toml::Table, now: &toml::Table) -> Vec<(String, String, String)> {
-    fn flatten(prefix: &str, value: &toml::Value, out: &mut std::collections::BTreeMap<String, String>) {
+    fn flatten(
+        prefix: &str,
+        value: &toml::Value,
+        out: &mut std::collections::BTreeMap<String, String>,
+    ) {
         match value {
             toml::Value::Table(table) => {
                 for (key, value) in table {
-                    let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
                     flatten(&path, value, out);
                 }
             }
@@ -1517,10 +1870,19 @@ fn changes(before: &toml::Table, now: &toml::Table) -> Vec<(String, String, Stri
             }
         }
     }
-    let secret = |key: &str| ["key", "password", "token", "secret"].iter().any(|word| key.rsplit('.').next().is_some_and(|last| last.contains(word)));
+    let secret = |key: &str| {
+        ["key", "password", "token", "secret"].iter().any(|word| {
+            key.rsplit('.')
+                .next()
+                .is_some_and(|last| last.contains(word))
+        })
+    };
     // Bookkeeping, not choices: when updates were last checked.
     let noise = |key: &str| key == "updates.last_check";
-    let (mut old, mut new) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
+    let (mut old, mut new) = (
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::new(),
+    );
     flatten("", &toml::Value::Table(before.clone()), &mut old);
     flatten("", &toml::Value::Table(now.clone()), &mut new);
     let keys: std::collections::BTreeSet<&String> = old.keys().chain(new.keys()).collect();
@@ -1555,8 +1917,19 @@ mod change_log_tests {
         };
         let listed = changes(&table(&before), &table(&after));
         let keys: Vec<&str> = listed.iter().map(|(key, _, _)| key.as_str()).collect();
-        assert_eq!(keys, ["license.key", "power_saving", "power_saving_below"], "last_check is bookkeeping");
-        assert_eq!(listed[1], ("power_saving".into(), "\"automatic\"".into(), "\"on\"".into()));
+        assert_eq!(
+            keys,
+            ["license.key", "power_saving", "power_saving_below"],
+            "last_check is bookkeeping"
+        );
+        assert_eq!(
+            listed[1],
+            (
+                "power_saving".into(),
+                "\"automatic\"".into(),
+                "\"on\"".into()
+            )
+        );
         assert_eq!(listed[2].1, "100");
         assert_eq!(listed[0].2, "••••", "never the key itself");
     }
@@ -1568,9 +1941,57 @@ mod image_fit_tests {
 
     #[test]
     fn pictures_fit_whole_by_default_and_switch_to_fill() {
-        assert_eq!(AppSettings::default().image_fit, ImageFit::Fit, "never cropped unless asked");
-        assert!(matches!(ImageFit::Fit.object_fit(), gpui_kit::ObjectFit::Contain));
+        assert_eq!(
+            AppSettings::default().image_fit,
+            ImageFit::Fit,
+            "never cropped unless asked"
+        );
+        assert!(matches!(
+            ImageFit::Fit.object_fit(),
+            gpui_kit::ObjectFit::Contain
+        ));
         assert_eq!(ImageFit::Fit.toggled(), ImageFit::Fill);
-        assert!(matches!(ImageFit::Fill.object_fit(), gpui_kit::ObjectFit::Cover));
+        assert!(matches!(
+            ImageFit::Fill.object_fit(),
+            gpui_kit::ObjectFit::Cover
+        ));
+    }
+}
+
+#[cfg(test)]
+mod list_column_tests {
+    use super::*;
+
+    #[test]
+    fn list_columns_show_hide_and_move() {
+        use ListColumn::*;
+        assert_eq!(
+            ListColumn::DEFAULT,
+            [Kind, Modified, Size],
+            "Created starts hidden"
+        );
+        let shown = toggle_column(&ListColumn::DEFAULT, Created);
+        assert_eq!(
+            shown,
+            [Kind, Modified, Created, Size],
+            "turned on: in its usual place"
+        );
+        assert_eq!(toggle_column(&shown, Kind), [Modified, Created, Size]);
+        assert_eq!(
+            move_column(&shown, Size, Kind),
+            [Size, Kind, Modified, Created],
+            "dropped on Kind: before it"
+        );
+        assert_eq!(
+            move_column(&shown, Kind, Kind),
+            shown,
+            "onto itself: no change"
+        );
+        let saved: AppSettings = toml::from_str("").unwrap();
+        assert_eq!(
+            saved.list_columns,
+            ListColumn::DEFAULT,
+            "old settings get the default columns"
+        );
     }
 }

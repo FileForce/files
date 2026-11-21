@@ -119,7 +119,9 @@ impl Category {
 
     pub fn hint(self) -> &'static str {
         match self {
-            Self::CompressedMedia => "jpg, png, heic, mp4, mov, mp3 · already compressed, Store saves time",
+            Self::CompressedMedia => {
+                "jpg, png, heic, mp4, mov, mp3 · already compressed, Store saves time"
+            }
             Self::RawMedia => "bmp, tiff, psd, wav, aiff · shrink a lot",
             Self::Documents => "pdf, docx, xlsx, key · mostly compressed inside",
             Self::Archives => "zip, 7z, gz, rar · cannot shrink further",
@@ -138,7 +140,10 @@ impl Category {
     }
 
     pub fn index(self) -> usize {
-        Self::ALL.iter().position(|category| *category == self).unwrap_or(0)
+        Self::ALL
+            .iter()
+            .position(|category| *category == self)
+            .unwrap_or(0)
     }
 
     pub fn of(path: &Path) -> Self {
@@ -157,11 +162,9 @@ impl Category {
             | "numbers" | "odt" | "ods" | "epub" | "fig" | "sketch" => Self::Documents,
             "zip" | "7z" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "rar" | "dmg" | "jar"
             | "crate" | "iso" => Self::Archives,
-            "txt" | "md" | "json" | "csv" | "xml" | "html" | "css" | "js" | "ts" | "tsx"
-            | "rs" | "py" | "go" | "java" | "kt" | "swift" | "c" | "h" | "cpp" | "hpp" | "rb"
-            | "php" | "sh" | "toml" | "yaml" | "yml" | "sql" | "log" | "lock" | "rtf" => {
-                Self::TextCode
-            }
+            "txt" | "md" | "json" | "csv" | "xml" | "html" | "css" | "js" | "ts" | "tsx" | "rs"
+            | "py" | "go" | "java" | "kt" | "swift" | "c" | "h" | "cpp" | "hpp" | "rb" | "php"
+            | "sh" | "toml" | "yaml" | "yml" | "sql" | "log" | "lock" | "rtf" => Self::TextCode,
             _ => Self::Other,
         }
     }
@@ -251,7 +254,9 @@ pub fn create_archive(
 ) -> io::Result<u64> {
     let partial = output.with_file_name(format!(
         ".{}.partial",
-        output.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+        output
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
     ));
     let result = match settings.format {
         ArchiveFormat::Zip => write_zip(sources, &partial, settings, progress),
@@ -300,7 +305,9 @@ fn write_zip(
             use std::os::unix::fs::PermissionsExt as _;
             options = options.unix_permissions(metadata.permissions().mode());
         }
-        writer.start_file(file.name.as_str(), options).map_err(io::Error::other)?;
+        writer
+            .start_file(file.name.as_str(), options)
+            .map_err(io::Error::other)?;
         io::copy(&mut File::open(&file.path)?, &mut writer)?;
         progress.fetch_add(1, Ordering::Relaxed);
     }
@@ -390,7 +397,8 @@ pub fn rar_tool() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 fn write_rar(roots: &[PathBuf], output: &Path, settings: CompressSettings) -> io::Result<()> {
-    let tool = rar_tool().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "rar tool not found"))?;
+    let tool =
+        rar_tool().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "rar tool not found"))?;
     // rar picks the format from the extension, so give the temp file one.
     let named = output.with_extension("rar");
     let status = files_sdk::log::command(tool)
@@ -413,7 +421,8 @@ mod tests {
 
     /// photo.jpg (media), notes/readme.md (text), data.bin (other).
     fn fixture(name: &str) -> (PathBuf, PathBuf) {
-        let root = std::env::temp_dir().join(format!("file-force-compress-{}-{name}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("file-force-compress-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let source = root.join("project");
         fs::create_dir_all(source.join("notes")).unwrap();
@@ -485,7 +494,8 @@ mod tests {
     fn seven_zip_round_trips() {
         let (_, output, _) = build(ArchiveFormat::SevenZip, "7z");
         let mut found = BTreeMap::new();
-        let mut reader = sevenz_rust2::ArchiveReader::open(&output, sevenz_rust2::Password::empty()).unwrap();
+        let mut reader =
+            sevenz_rust2::ArchiveReader::open(&output, sevenz_rust2::Password::empty()).unwrap();
         reader
             .for_each_entries(|entry, data| {
                 if !entry.is_directory {
@@ -502,7 +512,8 @@ mod tests {
     #[test]
     fn tar_gz_round_trips() {
         let (_, output, _) = build(ArchiveFormat::TarGz, "targz");
-        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(File::open(&output).unwrap()));
+        let mut archive =
+            tar::Archive::new(flate2::read::GzDecoder::new(File::open(&output).unwrap()));
         let mut found = BTreeMap::new();
         for entry in archive.entries().unwrap() {
             let mut entry = entry.unwrap();
@@ -523,7 +534,13 @@ mod tests {
         let mut sources = collect_sources(&[source.clone()]).unwrap();
         sources.files[0].path = root.join("missing.bin");
         let output = root.join("out.zip");
-        let result = create_archive(&sources, &[source], &output, CompressSettings::default(), &AtomicUsize::new(0));
+        let result = create_archive(
+            &sources,
+            &[source],
+            &output,
+            CompressSettings::default(),
+            &AtomicUsize::new(0),
+        );
         assert!(result.is_err());
         assert!(!output.exists());
         assert!(!root.join(".out.zip.partial").exists());

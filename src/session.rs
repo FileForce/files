@@ -31,7 +31,11 @@ fn default_mode() -> ViewMode {
 }
 
 fn file() -> Option<PathBuf> {
-    Some(crate::settings::settings_path()?.parent()?.join("session.toml"))
+    Some(
+        crate::settings::settings_path()?
+            .parent()?
+            .join("session.toml"),
+    )
 }
 
 /// How a place is written down; `None` for what cannot come back (a
@@ -41,6 +45,7 @@ pub fn place_of(location: Location) -> Option<String> {
         Location::Recents => Some("recents".into()),
         Location::Trash => Some("trash".into()),
         Location::Tag(_) => Some(format!("tag:{}", location.tag_name()?)),
+        Location::Smart(folder) => Some(format!("smart:{}", folder.key())),
         Location::Dir(_) => Some(format!("path:{}", location.path()?.display())),
         Location::Remote(_) => None,
     }
@@ -54,6 +59,9 @@ pub fn location_of(place: &str) -> Option<Location> {
         _ => {
             if let Some(name) = place.strip_prefix("tag:") {
                 return Some(Location::tag(name));
+            }
+            if let Some(key) = place.strip_prefix("smart:") {
+                return files_ext_smart_folders::SmartFolder::from_key(key).map(Location::Smart);
             }
             let path = PathBuf::from(place.strip_prefix("path:")?);
             path.is_dir().then(|| Location::from_path(&path))
@@ -69,16 +77,31 @@ pub fn capture(explorer: &FileExplorer) -> Session {
         .enumerate()
         .filter_map(|(index, tab)| {
             // The active tab's place lives in the window until it is left.
-            let current = if index == explorer.active_tab { explorer.current } else { tab.current };
+            let current = if index == explorer.active_tab {
+                explorer.current
+            } else {
+                tab.current
+            };
             let place = match tab.panel {
                 Some(_) => format!("panel:{}", tab.panel_title),
                 None => place_of(current)?,
             };
-            let mode = if index == explorer.active_tab { explorer.mode } else { tab.mode };
-            Some(SavedTab { place, pinned: tab.pinned, mode })
+            let mode = if index == explorer.active_tab {
+                explorer.mode
+            } else {
+                tab.mode
+            };
+            Some(SavedTab {
+                place,
+                pinned: tab.pinned,
+                mode,
+            })
         })
         .collect();
-    Session { tabs, active: explorer.active_tab }
+    Session {
+        tabs,
+        active: explorer.active_tab,
+    }
 }
 
 /// Saves when it changed since the last time (called every frame).
@@ -116,8 +139,22 @@ mod tests {
         assert!(place.starts_with("path:"));
         assert_eq!(location_of(&place), Some(Location::from_path(&dir)));
         assert_eq!(location_of("recents"), Some(Location::Recents));
-        assert_eq!(location_of("path:/no/such/folder/anywhere"), None, "a folder that is gone does not come back");
-        let session = Session { tabs: vec![SavedTab { place, pinned: true, mode: ViewMode::Pro }], active: 0 };
-        assert_eq!(toml::from_str::<Session>(&toml::to_string(&session).unwrap()).unwrap(), session);
+        assert_eq!(
+            location_of("path:/no/such/folder/anywhere"),
+            None,
+            "a folder that is gone does not come back"
+        );
+        let session = Session {
+            tabs: vec![SavedTab {
+                place,
+                pinned: true,
+                mode: ViewMode::Pro,
+            }],
+            active: 0,
+        };
+        assert_eq!(
+            toml::from_str::<Session>(&toml::to_string(&session).unwrap()).unwrap(),
+            session
+        );
     }
 }

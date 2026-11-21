@@ -85,14 +85,25 @@ impl Render for CreateDialog {
         #[cfg(test)]
         let content = gpui_kit::InteractiveElement::debug_selector(content, {
             let folder = self.folder;
-            move || if folder { "create-dialog-folder".into() } else { "create-dialog-file".into() }
+            move || {
+                if folder {
+                    "create-dialog-folder".into()
+                } else {
+                    "create-dialog-file".into()
+                }
+            }
         });
         content
             .gap_3()
             .text_color(palette.text)
-            .child(div().text_xs().text_color(palette.muted).child(match &self.target {
-                Target::Disk(dir) => format!("In {}", dir.display()),
-            }))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette.muted)
+                    .child(match &self.target {
+                        Target::Disk(dir) => format!("In {}", dir.display()),
+                    }),
+            )
             .child(Input::new(&self.name).w_full())
             .children(hint.map(|hint| {
                 h_flex()
@@ -118,7 +129,11 @@ impl Render for CreateDialog {
                         Button::new("create-confirm")
                             .primary()
                             .small()
-                            .icon(if self.folder { IconName::FolderPlus } else { IconName::FilePlus })
+                            .icon(if self.folder {
+                                IconName::FolderPlus
+                            } else {
+                                IconName::FilePlus
+                            })
                             .label("Create")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.create(window, cx);
@@ -156,19 +171,23 @@ impl FileExplorer {
         };
         let dialog = cx.new(|cx| {
             let name = cx.new(|cx| InputState::new(window, cx).default_value(default_name));
-            let subscription = cx.subscribe_in(&name, window, |this: &mut CreateDialog, _, event, window, cx| {
-                match event {
-                    // The input swallows Enter, so it creates from here.
-                    InputEvent::PressEnter { .. } => {
-                        this.create(window, cx);
+            let subscription = cx.subscribe_in(
+                &name,
+                window,
+                |this: &mut CreateDialog, _, event, window, cx| {
+                    match event {
+                        // The input swallows Enter, so it creates from here.
+                        InputEvent::PressEnter { .. } => {
+                            this.create(window, cx);
+                        }
+                        InputEvent::Change => {
+                            this.error = None;
+                            cx.notify();
+                        }
+                        _ => {}
                     }
-                    InputEvent::Change => {
-                        this.error = None;
-                        cx.notify();
-                    }
-                    _ => {}
-                }
-            });
+                },
+            );
             CreateDialog {
                 explorer,
                 target,

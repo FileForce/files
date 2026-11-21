@@ -37,7 +37,13 @@ pub fn keep_awake(extension: &str) -> io::Result<Awake> {
         .ok();
     #[cfg(target_os = "linux")]
     let child = Command::new("systemd-inhibit")
-        .args(["--what=idle:sleep", "--who=Files", "--why=Extension task", "sleep", "infinity"])
+        .args([
+            "--what=idle:sleep",
+            "--who=Files",
+            "--why=Extension task",
+            "sleep",
+            "infinity",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

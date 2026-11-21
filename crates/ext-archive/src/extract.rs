@@ -35,7 +35,10 @@ impl ArchiveKind {
     /// (Docker Desktop's `.dockerbuild.zip` is a tar.gz).
     pub fn of(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().to_lowercase();
-        let named = Self::SUFFIXES.iter().find(|(suffix, _)| name.ends_with(suffix)).map(|(_, kind)| *kind)?;
+        let named = Self::SUFFIXES
+            .iter()
+            .find(|(suffix, _)| name.ends_with(suffix))
+            .map(|(_, kind)| *kind)?;
         // A disc image's mark is 32 KiB in; its name is trusted.
         if named == Self::Iso {
             return Some(named);
@@ -67,12 +70,19 @@ impl ArchiveKind {
 
     fn from_head(head: &[u8], gunzipped: impl FnOnce() -> Option<[u8; 512]>) -> Option<Self> {
         let is_tar = |block: &[u8]| block.len() >= 262 && &block[257..262] == b"ustar";
-        if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") || head.starts_with(b"PK\x07\x08") {
+        if head.starts_with(b"PK\x03\x04")
+            || head.starts_with(b"PK\x05\x06")
+            || head.starts_with(b"PK\x07\x08")
+        {
             Some(Self::Zip)
         } else if head.starts_with(b"Rar!\x1a\x07") {
             Some(Self::Rar)
         } else if head.starts_with(&[0x1f, 0x8b]) {
-            Some(if gunzipped().is_some_and(|inner| is_tar(&inner)) { Self::TarGz } else { Self::Gz })
+            Some(if gunzipped().is_some_and(|inner| is_tar(&inner)) {
+                Self::TarGz
+            } else {
+                Self::Gz
+            })
         } else if is_tar(head) {
             Some(Self::Tar)
         } else {
@@ -92,7 +102,9 @@ fn zip_error(error: zip::result::ZipError) -> std::io::Error {
 }
 /// Error text with a hint for the common cloud-placeholder case.
 pub fn describe_error(path: &Path, error: &std::io::Error) -> String {
-    let in_cloud = path.components().any(|part| part.as_os_str() == "CloudStorage");
+    let in_cloud = path
+        .components()
+        .any(|part| part.as_os_str() == "CloudStorage");
     if error.kind() == std::io::ErrorKind::TimedOut || in_cloud {
         format!(
             "{error} · the file may be online-only in cloud storage; download it locally first (Finder → Download Now)"
@@ -141,7 +153,9 @@ fn gz_member_name(path: &Path) -> std::io::Result<String> {
         .and_then(|header| header.filename())
         .map(|name| String::from_utf8_lossy(name).into_owned())
         // Only a plain file name is trusted from the header.
-        .filter(|name| sanitize(Path::new(name)).is_some_and(|clean| clean.components().count() == 1));
+        .filter(|name| {
+            sanitize(Path::new(name)).is_some_and(|clean| clean.components().count() == 1)
+        });
     let fallback = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -192,7 +206,11 @@ pub fn list_items(path: &Path) -> std::io::Result<Vec<Item>> {
                             time.month().into(),
                             time.day().into(),
                         )?
-                        .and_hms_opt(time.hour().into(), time.minute().into(), time.second().into())
+                        .and_hms_opt(
+                            time.hour().into(),
+                            time.minute().into(),
+                            time.second().into(),
+                        )
                     }),
                 });
             }
@@ -234,12 +252,17 @@ pub fn list_items(path: &Path) -> std::io::Result<Vec<Item>> {
         }
         ArchiveKind::Iso => {
             for entry in crate::iso::entries(path)? {
-                let Some(name) = sanitize(Path::new(&entry.path)) else { continue };
+                let Some(name) = sanitize(Path::new(&entry.path)) else {
+                    continue;
+                };
                 items.push(Item {
                     name: slash_name(&name),
                     dir: entry.dir,
                     size: entry.size,
-                    modified: entry.modified.and_then(|time| chrono::DateTime::from_timestamp(time, 0)).map(|time| time.naive_utc()),
+                    modified: entry
+                        .modified
+                        .and_then(|time| chrono::DateTime::from_timestamp(time, 0))
+                        .map(|time| time.naive_utc()),
                 });
             }
         }
@@ -263,7 +286,11 @@ pub fn find_conflicts(archive: &Path, target: &Path) -> std::io::Result<Vec<Stri
     for item in list_items(archive)? {
         let relative = PathBuf::from(&item.name);
         let components: Vec<_> = relative.components().collect();
-        let folder_parts = if item.dir { components.len() } else { components.len() - 1 };
+        let folder_parts = if item.dir {
+            components.len()
+        } else {
+            components.len() - 1
+        };
         let mut prefix = PathBuf::new();
         for component in &components[..folder_parts] {
             prefix.push(component);
@@ -329,7 +356,8 @@ impl Extractor<'_> {
                 }
             }
         }
-        let mut writer = std::fs::File::create(&output).map_err(|error| with_path(error, relative))?;
+        let mut writer =
+            std::fs::File::create(&output).map_err(|error| with_path(error, relative))?;
         std::io::copy(reader, &mut writer).map_err(|error| with_path(error, relative))?;
         #[cfg(unix)]
         if let Some(mode) = mode {
@@ -394,11 +422,15 @@ pub fn extract_archive(
             }
         }
         ArchiveKind::Rar => {
-            let mut rar = open_rar(archive)?.open_for_processing().map_err(rar_error)?;
+            let mut rar = open_rar(archive)?
+                .open_for_processing()
+                .map_err(rar_error)?;
             while let Some(header) = rar.read_header().map_err(rar_error)? {
                 let entry = header.entry();
                 let is_dir = entry.is_directory();
-                let Some(relative) = sanitize(&entry.filename).filter(|_| is_dir || entry.is_file()) else {
+                let Some(relative) =
+                    sanitize(&entry.filename).filter(|_| is_dir || entry.is_file())
+                else {
                     extractor.report.skipped += 1;
                     rar = header.skip().map_err(rar_error)?;
                     continue;
@@ -422,7 +454,12 @@ pub fn extract_archive(
                 if entry.dir {
                     extractor.entry(&relative, true, &mut std::io::empty(), None)?;
                 } else {
-                    extractor.entry(&relative, false, &mut crate::iso::reader(archive, &entry)?, None)?;
+                    extractor.entry(
+                        &relative,
+                        false,
+                        &mut crate::iso::reader(archive, &entry)?,
+                        None,
+                    )?;
                 }
             }
         }
@@ -438,7 +475,10 @@ pub fn extract_archive(
 }
 fn open_rar(path: &Path) -> std::io::Result<unrar::Archive<'_>> {
     if !path.is_file() {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} not found", path.display())));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} not found", path.display()),
+        ));
     }
     Ok(unrar::Archive::new(path))
 }
@@ -469,7 +509,11 @@ fn resolve_folders(
     report: &mut ExtractReport,
 ) -> std::io::Result<Option<PathBuf>> {
     let components: Vec<_> = relative.components().collect();
-    let folder_parts = if is_dir { components.len() } else { components.len() - 1 };
+    let folder_parts = if is_dir {
+        components.len()
+    } else {
+        components.len() - 1
+    };
     let mut current = target.to_path_buf();
     let mut original = PathBuf::new();
     for component in &components[..folder_parts] {
@@ -521,7 +565,8 @@ mod rar_tests {
 
     #[test]
     fn a_misnamed_archive_is_read_as_what_it_is() {
-        let dir = std::env::temp_dir().join(format!("files-archive-misnamed-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("files-archive-misnamed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src/blobs")).unwrap();
         std::fs::write(dir.join("src/blobs/layer"), "data").unwrap();
@@ -529,20 +574,41 @@ mod rar_tests {
         // Like Docker Desktop's build export: a tar.gz named .dockerbuild.zip.
         let misnamed = dir.join("app.dockerbuild.zip");
         let file = std::fs::File::create(&misnamed).unwrap();
-        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(file, flate2::Compression::default()));
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+            file,
+            flate2::Compression::default(),
+        ));
         tar.append_dir_all(".", dir.join("src")).unwrap();
         tar.into_inner().unwrap().finish().unwrap();
         assert_eq!(ArchiveKind::of(&misnamed), Some(ArchiveKind::TarGz));
-        let names: Vec<String> = list_items(&misnamed).unwrap().into_iter().map(|item| item.name).collect();
-        assert!(names.iter().any(|name| name.ends_with("index.json")) && names.iter().any(|name| name.ends_with("blobs/layer")), "{names:?}");
+        let names: Vec<String> = list_items(&misnamed)
+            .unwrap()
+            .into_iter()
+            .map(|item| item.name)
+            .collect();
+        assert!(
+            names.iter().any(|name| name.ends_with("index.json"))
+                && names.iter().any(|name| name.ends_with("blobs/layer")),
+            "{names:?}"
+        );
         // One gzipped file named .zip is a .gz; a real zip stays a zip.
         let single = dir.join("notes.zip");
-        let mut gz = flate2::write::GzEncoder::new(std::fs::File::create(&single).unwrap(), flate2::Compression::default());
+        let mut gz = flate2::write::GzEncoder::new(
+            std::fs::File::create(&single).unwrap(),
+            flate2::Compression::default(),
+        );
         std::io::Write::write_all(&mut gz, b"just text").unwrap();
         gz.finish().unwrap();
         assert_eq!(ArchiveKind::of(&single), Some(ArchiveKind::Gz));
-        assert_eq!(ArchiveKind::from_head(b"PK\x03\x04rest", || None), Some(ArchiveKind::Zip));
-        assert_eq!(ArchiveKind::of(Path::new("/nowhere/missing.zip")), Some(ArchiveKind::Zip), "unreadable: the name decides");
+        assert_eq!(
+            ArchiveKind::from_head(b"PK\x03\x04rest", || None),
+            Some(ArchiveKind::Zip)
+        );
+        assert_eq!(
+            ArchiveKind::of(Path::new("/nowhere/missing.zip")),
+            Some(ArchiveKind::Zip),
+            "unreadable: the name decides"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -551,7 +617,12 @@ mod rar_tests {
     fn reads_a_given_archive() {
         let path = std::env::var("FILES_ARCHIVE_TEST").unwrap();
         let items = list_items(Path::new(&path)).unwrap();
-        println!("{:?}: {} items, first {:?}", ArchiveKind::of(Path::new(&path)), items.len(), items.first().map(|item| &item.name));
+        println!(
+            "{:?}: {} items, first {:?}",
+            ArchiveKind::of(Path::new(&path)),
+            items.len(),
+            items.first().map(|item| &item.name)
+        );
     }
 
     /// `solid.rar` comes from the unrar crate's own test data.
@@ -561,10 +632,16 @@ mod rar_tests {
 
     #[test]
     fn rar_archives_list_and_extract() {
-        assert_eq!(ArchiveKind::of(Path::new("Photos.RAR")), Some(ArchiveKind::Rar));
+        assert_eq!(
+            ArchiveKind::of(Path::new("Photos.RAR")),
+            Some(ArchiveKind::Rar)
+        );
         let items = list_items(&fixture()).unwrap();
         assert!(!items.is_empty(), "nothing listed");
-        assert!(items.iter().all(|item| item.modified.is_some()), "a RAR date did not parse");
+        assert!(
+            items.iter().all(|item| item.modified.is_some()),
+            "a RAR date did not parse"
+        );
 
         let target = std::env::temp_dir().join(format!("files-rar-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&target);

@@ -34,17 +34,27 @@ mod tests {
 
     impl PreviewProvider for Notes {
         fn handles(&self, path: &Path) -> bool {
-            path.extension().is_some_and(|extension| extension == "note")
+            path.extension()
+                .is_some_and(|extension| extension == "note")
         }
 
         fn preview(&self, _: &Path) -> io::Result<PreviewContent> {
-            Ok(PreviewContent::Text { text: "hello".into(), monospace: false })
+            Ok(PreviewContent::Text {
+                text: "hello".into(),
+                monospace: false,
+            })
         }
     }
 
     #[test]
     fn a_provider_says_what_it_previews() {
         assert!(Notes.handles(Path::new("a.note")) && !Notes.handles(Path::new("a.txt")));
-        assert_eq!(Notes.preview(Path::new("a.note")).unwrap(), PreviewContent::Text { text: "hello".into(), monospace: false });
+        assert_eq!(
+            Notes.preview(Path::new("a.note")).unwrap(),
+            PreviewContent::Text {
+                text: "hello".into(),
+                monospace: false
+            }
+        );
     }
 }

@@ -10,8 +10,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AppContext as _, Context, Entity, ImageSource, IntoElement, ObjectFit, ParentElement as _, Render, RenderImage, Styled as _,
-    StyledImage as _, Subscription, Window, div, img, px,
+    AppContext as _, Context, Entity, ImageSource, IntoElement, ObjectFit, ParentElement as _,
+    Render, RenderImage, Styled as _, StyledImage as _, Subscription, Window, div, img, px,
 };
 
 use crate::palette::Palette;
@@ -51,9 +51,15 @@ fn cover_image(path: &std::path::Path) -> Option<Arc<gpui_kit::Image>> {
 }
 
 impl VideoPlayer {
-    pub(crate) fn new(path: PathBuf, palette: Palette, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        path: PathBuf,
+        palette: Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let player = Player::open(&path);
-        let audio = files_ext_music::local::is_audio(&path).then(|| (files_ext_music::local::track(&path), cover_image(&path)));
+        let audio = files_ext_music::local::is_audio(&path)
+            .then(|| (files_ext_music::local::track(&path), cover_image(&path)));
         if let Ok(player) = &player {
             // Music previews use the Music volume and equalizer.
             if audio.is_some() {
@@ -62,21 +68,28 @@ impl VideoPlayer {
             player.play();
         }
         let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001));
-        let seek_events = cx.subscribe(&seek, |this: &mut Self, _, event: &SliderEvent, cx| match event {
-            SliderEvent::Change(_) => this.seeking = true,
-            SliderEvent::Release(value) => {
-                this.seeking = false;
-                if let Ok(player) = &this.player {
-                    player.seek(value.start());
-                }
-                cx.notify();
-            }
-        });
+        let seek_events =
+            cx.subscribe(
+                &seek,
+                |this: &mut Self, _, event: &SliderEvent, cx| match event {
+                    SliderEvent::Change(_) => this.seeking = true,
+                    SliderEvent::Release(value) => {
+                        this.seeking = false;
+                        if let Ok(player) = &this.player {
+                            player.seek(value.start());
+                        }
+                        cx.notify();
+                    }
+                },
+            );
         // Pull new pictures while the player is open; dropping it stops this.
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
-                if this.update_in(cx, |this, window, cx| this.tick(window, cx)).is_err() {
+                if this
+                    .update_in(cx, |this, window, cx| this.tick(window, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -102,9 +115,16 @@ impl VideoPlayer {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(player) = &self.player else { return };
         let fresh = {
-            let frame = player.frame.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            (frame.sequence != self.sequence && frame.width > 0)
-                .then(|| (frame.sequence, image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.clone())))
+            let frame = player
+                .frame
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (frame.sequence != self.sequence && frame.width > 0).then(|| {
+                (
+                    frame.sequence,
+                    image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.clone()),
+                )
+            })
         };
         let (position, length) = player.progress();
         let playing = player.is_playing();
@@ -122,7 +142,8 @@ impl VideoPlayer {
         self.playing = playing;
         if !self.seeking && length > 0 {
             let fraction = position as f32 / length as f32;
-            self.seek.update(cx, |seek, cx| seek.set_value(fraction, window, cx));
+            self.seek
+                .update(cx, |seek, cx| seek.set_value(fraction, window, cx));
         }
         if changed {
             cx.notify();
@@ -165,8 +186,20 @@ impl Render for VideoPlayer {
                 .justify_center()
                 .gap_3()
                 .child(Icon::new(IconName::Film).large().text_color(palette.video))
-                .child(div().text_sm().text_color(palette.text).child("Install VLC to play videos here"))
-                .child(div().max_w(px(420.)).text_xs().text_color(palette.faint).truncate().child(reason.clone()))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(palette.text)
+                        .child("Install VLC to play videos here"),
+                )
+                .child(
+                    div()
+                        .max_w(px(420.))
+                        .text_xs()
+                        .text_color(palette.faint)
+                        .truncate()
+                        .child(reason.clone()),
+                )
                 .child(
                     h_flex()
                         .gap_2()
@@ -178,9 +211,14 @@ impl Render for VideoPlayer {
                                 .label("Get VLC")
                                 .on_click(|_, _, cx| cx.open_url(crate::video::VLC_DOWNLOAD)),
                         )
-                        .child(Button::new("video-open-default").small().label("Open in player").on_click(move |_, _, cx| {
-                            cx.open_url(&format!("file://{}", path.display()));
-                        })),
+                        .child(
+                            Button::new("video-open-default")
+                                .small()
+                                .label("Open in player")
+                                .on_click(move |_, _, cx| {
+                                    cx.open_url(&format!("file://{}", path.display()));
+                                }),
+                        ),
                 )
                 .into_any_element();
         }
@@ -190,7 +228,11 @@ impl Render for VideoPlayer {
                 .items_center()
                 .gap_3()
                 .child(match cover {
-                    Some(cover) => img(cover.clone()).size(px(220.)).rounded_lg().object_fit(ObjectFit::Cover).into_any_element(),
+                    Some(cover) => img(cover.clone())
+                        .size(px(220.))
+                        .rounded_lg()
+                        .object_fit(ObjectFit::Cover)
+                        .into_any_element(),
                     None => div()
                         .size(px(220.))
                         .rounded_lg()
@@ -198,21 +240,55 @@ impl Render for VideoPlayer {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(Icon::new(IconName::Music).large().text_color(palette.accent))
+                        .child(
+                            Icon::new(IconName::Music)
+                                .large()
+                                .text_color(palette.accent),
+                        )
                         .into_any_element(),
                 })
-                .child(div().text_base().text_color(gpui_kit::white()).child(track.title.clone()))
-                .child(div().text_sm().text_color(palette.muted).child(
-                    [track.artist.as_str(), track.album.as_str()].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(" · "),
-                ))
+                .child(
+                    div()
+                        .text_base()
+                        .text_color(gpui_kit::white())
+                        .child(track.title.clone()),
+                )
+                .child(
+                    div().text_sm().text_color(palette.muted).child(
+                        [track.artist.as_str(), track.album.as_str()]
+                            .iter()
+                            .filter(|part| !part.is_empty())
+                            .copied()
+                            .collect::<Vec<_>>()
+                            .join(" · "),
+                    ),
+                )
                 .into_any_element(),
-            (Some(picture), None) => img(ImageSource::Render(picture.clone())).size_full().object_fit(ObjectFit::Contain).into_any_element(),
-            (None, None) => div().text_sm().text_color(palette.faint).child("Starting…").into_any_element(),
+            (Some(picture), None) => img(ImageSource::Render(picture.clone()))
+                .size_full()
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            (None, None) => div()
+                .text_sm()
+                .text_color(palette.faint)
+                .child("Starting…")
+                .into_any_element(),
         };
         v_flex()
             .size_full()
             .gap_2()
-            .child(div().flex_1().min_h_0().rounded_md().overflow_hidden().bg(gpui_kit::black()).flex().items_center().justify_center().child(picture))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .rounded_md()
+                    .overflow_hidden()
+                    .bg(gpui_kit::black())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(picture),
+            )
             .child(
                 h_flex()
                     .flex_shrink_0()
@@ -222,17 +298,31 @@ impl Render for VideoPlayer {
                         Button::new("video-play")
                             .ghost()
                             .small()
-                            .icon(if self.playing { IconName::Pause } else { IconName::Play })
+                            .icon(if self.playing {
+                                IconName::Pause
+                            } else {
+                                IconName::Play
+                            })
                             .tooltip(if self.playing { "Pause" } else { "Play" })
                             .on_click(cx.listener(|this, _, _, cx| this.toggle(cx))),
                     )
-                    .child(div().w(px(96.)).text_xs().text_color(palette.muted).child(format!("{} / {}", clock(self.position), clock(self.length))))
+                    .child(
+                        div()
+                            .w(px(96.))
+                            .text_xs()
+                            .text_color(palette.muted)
+                            .child(format!("{} / {}", clock(self.position), clock(self.length))),
+                    )
                     .child(div().flex_1().child(Slider::new(&self.seek).horizontal()))
                     .child(
                         Button::new("video-mute")
                             .ghost()
                             .small()
-                            .icon(if self.muted { IconName::VolumeOff } else { IconName::Volume2 })
+                            .icon(if self.muted {
+                                IconName::VolumeOff
+                            } else {
+                                IconName::Volume2
+                            })
                             .tooltip(if self.muted { "Sound on" } else { "Mute" })
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))),
                     ),

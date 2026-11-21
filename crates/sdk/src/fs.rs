@@ -32,8 +32,9 @@ pub fn is_online_only(path: &Path) -> bool {
         // OneDrive "online-only": RECALL_ON_DATA_ACCESS or OFFLINE.
         const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
         const OFFLINE: u32 = 0x0000_1000;
-        std::fs::symlink_metadata(path)
-            .is_ok_and(|metadata| metadata.file_attributes() & (RECALL_ON_DATA_ACCESS | OFFLINE) != 0)
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+            metadata.file_attributes() & (RECALL_ON_DATA_ACCESS | OFFLINE) != 0
+        })
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -50,7 +51,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "").unwrap();
         std::fs::write(dir.join("a (1).txt"), "").unwrap();
-        assert_eq!(super::unique_path(&dir.join("a.txt")), dir.join("a (2).txt"));
+        assert_eq!(
+            super::unique_path(&dir.join("a.txt")),
+            dir.join("a (2).txt")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

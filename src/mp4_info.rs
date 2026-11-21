@@ -23,7 +23,9 @@ fn boxes(file: &mut File, start: u64, end: u64) -> Vec<Box4> {
         if file.seek(SeekFrom::Start(at)).is_err() || file.read_exact(&mut header[..8]).is_err() {
             break;
         }
-        let mut size = u64::from(u32::from_be_bytes([header[0], header[1], header[2], header[3]]));
+        let mut size = u64::from(u32::from_be_bytes([
+            header[0], header[1], header[2], header[3],
+        ]));
         let kind = [header[4], header[5], header[6], header[7]];
         let mut content = at + 8;
         if size == 1 {
@@ -38,7 +40,11 @@ fn boxes(file: &mut File, start: u64, end: u64) -> Vec<Box4> {
         if size < content - at || at + size > end {
             break;
         }
-        found.push(Box4 { kind, start: content, end: at + size });
+        found.push(Box4 {
+            kind,
+            start: content,
+            end: at + size,
+        });
         at += size;
         // A file is scanned for its first fragment only, not every one.
         if found.len() > 4096 {
@@ -73,7 +79,10 @@ struct Track {
 }
 
 fn video_track(file: &mut File, moov: &Box4) -> Option<Track> {
-    for trak in boxes(file, moov.start, moov.end).iter().filter(|item| &item.kind == b"trak") {
+    for trak in boxes(file, moov.start, moov.end)
+        .iter()
+        .filter(|item| &item.kind == b"trak")
+    {
         let inside = boxes(file, trak.start, trak.end);
         let mdia = child(&inside, b"mdia")?;
         let media = boxes(file, mdia.start, mdia.end);
@@ -83,9 +92,17 @@ fn video_track(file: &mut File, moov: &Box4) -> Option<Track> {
         }
         let tkhd = read(file, child(&inside, b"tkhd")?, 24)?;
         // Version 1 has 64-bit times before the id.
-        let id = if tkhd[0] == 1 { be32(&tkhd, 20)? } else { be32(&tkhd, 12)? };
+        let id = if tkhd[0] == 1 {
+            be32(&tkhd, 20)?
+        } else {
+            be32(&tkhd, 12)?
+        };
         let mdhd = read(file, child(&media, b"mdhd")?, 32)?;
-        let timescale = if mdhd[0] == 1 { be32(&mdhd, 20)? } else { be32(&mdhd, 12)? };
+        let timescale = if mdhd[0] == 1 {
+            be32(&mdhd, 20)?
+        } else {
+            be32(&mdhd, 12)?
+        };
         let table = child(&media, b"minf")
             .map(|minf| boxes(file, minf.start, minf.end))
             .and_then(|minf| child(&minf, b"stbl").map(|stbl| boxes(file, stbl.start, stbl.end)))
@@ -100,7 +117,11 @@ fn video_track(file: &mut File, moov: &Box4) -> Option<Track> {
                 }
                 (frames > 0 && ticks > 0).then(|| ticks as f64 / frames as f64)
             });
-        return Some(Track { id, timescale, table });
+        return Some(Track {
+            id,
+            timescale,
+            table,
+        });
     }
     None
 }
@@ -113,14 +134,21 @@ fn fragment_duration(file: &mut File, top: &[Box4], moov: &Box4, track: u32) -> 
         .find(|item| &item.kind == b"mvex")
         .map(|mvex| boxes(file, mvex.start, mvex.end))
         .and_then(|mvex| {
-            mvex.iter().filter(|item| &item.kind == b"trex").find_map(|trex| {
-                let bytes = read(file, trex, 24)?;
-                (be32(&bytes, 4)? == track).then(|| be32(&bytes, 12)).flatten()
-            })
+            mvex.iter()
+                .filter(|item| &item.kind == b"trex")
+                .find_map(|trex| {
+                    let bytes = read(file, trex, 24)?;
+                    (be32(&bytes, 4)? == track)
+                        .then(|| be32(&bytes, 12))
+                        .flatten()
+                })
         })
         .filter(|duration| *duration > 0);
     let moof = top.iter().find(|item| &item.kind == b"moof")?;
-    for traf in boxes(file, moof.start, moof.end).iter().filter(|item| &item.kind == b"traf") {
+    for traf in boxes(file, moof.start, moof.end)
+        .iter()
+        .filter(|item| &item.kind == b"traf")
+    {
         let inside = boxes(file, traf.start, traf.end);
         let tfhd = read(file, child(&inside, b"tfhd")?, 64)?;
         if be32(&tfhd, 4)? != track {
@@ -134,18 +162,31 @@ fn fragment_duration(file: &mut File, top: &[Box4], moov: &Box4, track: u32) -> 
                 at += size;
             }
         }
-        let default = if flags & 0x08 != 0 { be32(&tfhd, at) } else { declared };
+        let default = if flags & 0x08 != 0 {
+            be32(&tfhd, at)
+        } else {
+            declared
+        };
         // trun with per-sample durations: their average.
-        if let Some(trun) = child(&inside, b"trun").and_then(|trun| read(file, trun, 8 + 16 * 4096)) {
+        if let Some(trun) = child(&inside, b"trun").and_then(|trun| read(file, trun, 8 + 16 * 4096))
+        {
             let flags = be32(&trun, 0)? & 0x00ff_ffff;
             let count = be32(&trun, 4)? as usize;
             if flags & 0x100 != 0 && count > 0 {
-                let mut at = 8 + if flags & 0x01 != 0 { 4 } else { 0 } + if flags & 0x04 != 0 { 4 } else { 0 };
-                let stride = [0x100, 0x200, 0x400, 0x800].iter().filter(|flag| flags & **flag != 0).count() * 4;
+                let mut at = 8
+                    + if flags & 0x01 != 0 { 4 } else { 0 }
+                    + if flags & 0x04 != 0 { 4 } else { 0 };
+                let stride = [0x100, 0x200, 0x400, 0x800]
+                    .iter()
+                    .filter(|flag| flags & **flag != 0)
+                    .count()
+                    * 4;
                 let mut ticks = 0u64;
                 let mut seen = 0u64;
                 for _ in 0..count.min(4096) {
-                    let Some(duration) = be32(&trun, at) else { break };
+                    let Some(duration) = be32(&trun, at) else {
+                        break;
+                    };
                     ticks += u64::from(duration);
                     seen += 1;
                     at += stride;
@@ -189,16 +230,39 @@ mod tests {
     /// A minimal fragmented MP4: video track 1 at 15360 ticks a second,
     /// an empty sample table, and a fragment of 256-tick frames (60 fps).
     fn fragmented(trun_durations: bool) -> Vec<u8> {
-        let tkhd = { let mut bytes = vec![0u8; 24]; bytes[12..16].copy_from_slice(&1u32.to_be_bytes()); bytes };
-        let mdhd = { let mut bytes = vec![0u8; 24]; bytes[12..16].copy_from_slice(&15_360u32.to_be_bytes()); bytes };
-        let hdlr = { let mut bytes = vec![0u8; 24]; bytes[8..12].copy_from_slice(b"vide"); bytes };
+        let tkhd = {
+            let mut bytes = vec![0u8; 24];
+            bytes[12..16].copy_from_slice(&1u32.to_be_bytes());
+            bytes
+        };
+        let mdhd = {
+            let mut bytes = vec![0u8; 24];
+            bytes[12..16].copy_from_slice(&15_360u32.to_be_bytes());
+            bytes
+        };
+        let hdlr = {
+            let mut bytes = vec![0u8; 24];
+            bytes[8..12].copy_from_slice(b"vide");
+            bytes
+        };
         let stts = vec![0u8; 8];
         let stbl = boxed(b"stbl", &boxed(b"stts", &stts));
         let minf = boxed(b"minf", &stbl);
-        let mdia = boxed(b"mdia", &[boxed(b"mdhd", &mdhd), boxed(b"hdlr", &hdlr), minf].concat());
+        let mdia = boxed(
+            b"mdia",
+            &[boxed(b"mdhd", &mdhd), boxed(b"hdlr", &hdlr), minf].concat(),
+        );
         let trak = boxed(b"trak", &[boxed(b"tkhd", &tkhd), mdia].concat());
-        let trex = { let mut bytes = vec![0u8; 24]; bytes[4..8].copy_from_slice(&1u32.to_be_bytes()); bytes[12..16].copy_from_slice(&512u32.to_be_bytes()); bytes };
-        let moov = boxed(b"moov", &[trak, boxed(b"mvex", &boxed(b"trex", &trex))].concat());
+        let trex = {
+            let mut bytes = vec![0u8; 24];
+            bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+            bytes[12..16].copy_from_slice(&512u32.to_be_bytes());
+            bytes
+        };
+        let moov = boxed(
+            b"moov",
+            &[trak, boxed(b"mvex", &boxed(b"trex", &trex))].concat(),
+        );
         let tfhd = [0u32.to_be_bytes(), 1u32.to_be_bytes()].concat();
         let trun = if trun_durations {
             let mut bytes = [0x100u32.to_be_bytes(), 3u32.to_be_bytes()].concat();
@@ -209,12 +273,25 @@ mod tests {
         } else {
             [0u32.to_be_bytes(), 3u32.to_be_bytes()].concat()
         };
-        let moof = boxed(b"moof", &boxed(b"traf", &[boxed(b"tfhd", &tfhd), boxed(b"trun", &trun)].concat()));
-        [boxed(b"ftyp", b"isom"), moov, moof, boxed(b"mdat", &[0u8; 16])].concat()
+        let moof = boxed(
+            b"moof",
+            &boxed(
+                b"traf",
+                &[boxed(b"tfhd", &tfhd), boxed(b"trun", &trun)].concat(),
+            ),
+        );
+        [
+            boxed(b"ftyp", b"isom"),
+            moov,
+            moof,
+            boxed(b"mdat", &[0u8; 16]),
+        ]
+        .concat()
     }
 
     fn rate_of(bytes: &[u8], name: &str) -> Option<f64> {
-        let path = std::env::temp_dir().join(format!("files-mp4-{}-{name}.mp4", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("files-mp4-{}-{name}.mp4", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         let rate = frame_rate(&path);
         let _ = std::fs::remove_file(&path);
@@ -223,8 +300,16 @@ mod tests {
 
     #[test]
     fn a_fragmented_mp4_has_its_frame_rate_in_its_fragments() {
-        assert_eq!(rate_of(&fragmented(true), "trun"), Some(60.0), "per-frame durations in the fragment");
-        assert_eq!(rate_of(&fragmented(false), "trex"), Some(30.0), "no durations there: the track's default");
+        assert_eq!(
+            rate_of(&fragmented(true), "trun"),
+            Some(60.0),
+            "per-frame durations in the fragment"
+        );
+        assert_eq!(
+            rate_of(&fragmented(false), "trex"),
+            Some(30.0),
+            "no durations there: the track's default"
+        );
         assert_eq!(rate_of(b"not a video at all", "junk"), None);
     }
 }

@@ -1,0 +1,10 @@
+[package]
+name = "files-ext-smart-folders"
+version = "1.0.0"
+edition = "2024"
+license = "FSL-1.1-MIT"
+
+[dependencies]
+dirs = "6"
+files-sdk = { path = "../sdk" }
+gpui-kit = "=0.8.1"

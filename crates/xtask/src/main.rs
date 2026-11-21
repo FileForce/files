@@ -38,7 +38,12 @@ struct Windows {
 
 impl Default for Windows {
     fn default() -> Self {
-        Self { msi: true, manufacturer: String::new(), upgrade_code: String::new(), timestamp_url: "http://timestamp.digicert.com".into() }
+        Self {
+            msi: true,
+            manufacturer: String::new(),
+            upgrade_code: String::new(),
+            timestamp_url: "http://timestamp.digicert.com".into(),
+        }
     }
 }
 
@@ -84,7 +89,9 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("icons") => load().and_then(|(root, config)| icons(&root, &config).map(drop)),
         // The .ico build.rs embeds into the Windows exe (taskbar, window, Explorer).
-        Some("windows-icon") => load().and_then(|(root, config)| windows_icon(&root, &config, &root.join("packaging/windows/icon.ico"))),
+        Some("windows-icon") => load().and_then(|(root, config)| {
+            windows_icon(&root, &config, &root.join("packaging/windows/icon.ico"))
+        }),
         Some("bundle") => load().and_then(|(root, config)| bundle(&root, config, &args[1..])),
         Some("doctor") => load().and_then(|(root, config)| doctor(&root, &config)),
         Some("license") => license(&workspace_root(), &args[1..]),
@@ -92,7 +99,9 @@ fn main() -> ExitCode {
         Some("updates") => updates(&workspace_root(), &args[1..]),
         // Copies the bundled VLC into a folder, to try the plugin list: `cargo xtask vlc DIR`.
         Some("vlc") => match args.get(1) {
-            Some(target) => vlc_source().ok_or_else(|| "VLC not found: set FILES_VLC_DIR".to_string()).and_then(|source| copy_vlc(&source, Path::new(target))),
+            Some(target) => vlc_source()
+                .ok_or_else(|| "VLC not found: set FILES_VLC_DIR".to_string())
+                .and_then(|source| copy_vlc(&source, Path::new(target))),
             None => Err("usage: cargo xtask vlc TARGET_DIR".to_string()),
         },
         _ => {
@@ -115,12 +124,17 @@ fn main() -> ExitCode {
 
 fn workspace_root() -> PathBuf {
     // crates/xtask → the workspace.
-    Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).expect("workspace").to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace")
+        .to_path_buf()
 }
 
 fn load() -> Result<(PathBuf, Config)> {
     let root = workspace_root();
-    let source = std::fs::read_to_string(root.join("Bundle.toml")).map_err(|error| format!("Bundle.toml: {error}"))?;
+    let source = std::fs::read_to_string(root.join("Bundle.toml"))
+        .map_err(|error| format!("Bundle.toml: {error}"))?;
     let config = toml::from_str(&source).map_err(|error| format!("Bundle.toml: {error}"))?;
     Ok((root, config))
 }
@@ -129,7 +143,8 @@ fn version(root: &Path, config: &Config) -> Result<String> {
     if config.app.version != "cargo" {
         return Ok(config.app.version.clone());
     }
-    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).map_err(|error| error.to_string())?;
+    let manifest =
+        std::fs::read_to_string(root.join("Cargo.toml")).map_err(|error| error.to_string())?;
     let value: toml::Value = toml::from_str(&manifest).map_err(|error| error.to_string())?;
     value
         .get("package")
@@ -142,29 +157,46 @@ fn version(root: &Path, config: &Config) -> Result<String> {
 fn run(command: &mut Command) -> Result {
     let line = format!("{command:?}");
     println!("  $ {}", line.replace('"', ""));
-    let status = command.status().map_err(|error| format!("{line}: {error}"))?;
-    if status.success() { Ok(()) } else { Err(format!("{line} exited with {status}")) }
+    let status = command
+        .status()
+        .map_err(|error| format!("{line}: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{line} exited with {status}"))
+    }
 }
 
 fn output(command: &mut Command) -> Option<String> {
     let output = command.output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 // ------------------------------------------------------------ icons
 
 /// Renders the SVG at `size`×`size` with transparency.
 fn render(svg: &[u8], size: u32, target: &Path) -> Result {
-    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).map_err(|error| format!("icon.svg: {error}"))?;
+    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default())
+        .map_err(|error| format!("icon.svg: {error}"))?;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size).ok_or("bad icon size")?;
     let scale = size as f32 / tree.size().width().max(tree.size().height());
-    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    pixmap.save_png(target).map_err(|error| format!("{}: {error}", target.display()))
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    pixmap
+        .save_png(target)
+        .map_err(|error| format!("{}: {error}", target.display()))
 }
 
 /// Every icon file the bundles need; returns the generated folder.
 fn icons(root: &Path, config: &Config) -> Result<PathBuf> {
-    let svg = std::fs::read(root.join(&config.app.icon)).map_err(|error| format!("{}: {error}", config.app.icon))?;
+    let svg = std::fs::read(root.join(&config.app.icon))
+        .map_err(|error| format!("{}: {error}", config.app.icon))?;
     let out = root.join("target/icons");
     let iconset = out.join("AppIcon.iconset");
     std::fs::create_dir_all(&iconset).map_err(|error| error.to_string())?;
@@ -188,7 +220,10 @@ fn icons(root: &Path, config: &Config) -> Result<PathBuf> {
         render(&svg, size, &out.join(format!("icon-{size}.png")))?;
     }
     if cfg!(target_os = "macos") {
-        run(Command::new("iconutil").args(["-c", "icns", "-o"]).arg(out.join("AppIcon.icns")).arg(&iconset))?;
+        run(Command::new("iconutil")
+            .args(["-c", "icns", "-o"])
+            .arg(out.join("AppIcon.icns"))
+            .arg(&iconset))?;
     }
     Ok(out)
 }
@@ -199,7 +234,10 @@ fn bundle(root: &Path, mut config: Config, flags: &[String]) -> Result {
     let mut iter = flags.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
-            "--sign" => config.macos.signing_identity = iter.next().ok_or("--sign needs an identity")?.clone(),
+            "--sign" => {
+                config.macos.signing_identity =
+                    iter.next().ok_or("--sign needs an identity")?.clone()
+            }
             "--notarize" => config.macos.notarize = true,
             "--no-dmg" => config.macos.dmg = false,
             other => return Err(format!("unknown flag {other}")),
@@ -210,7 +248,12 @@ fn bundle(root: &Path, mut config: Config, flags: &[String]) -> Result {
     }
     let version = version(root, &config)?;
     println!("Building {} {version} (release)…", config.app.name);
-    run(Command::new(env!("CARGO")).current_dir(root).args(["build", "--release", "--package", &config.app.binary]))?;
+    run(Command::new(env!("CARGO")).current_dir(root).args([
+        "build",
+        "--release",
+        "--package",
+        &config.app.binary,
+    ]))?;
     let icons = icons(root, &config)?;
     let dist = root.join("target/dist");
     std::fs::create_dir_all(&dist).map_err(|error| error.to_string())?;
@@ -248,7 +291,10 @@ fn write_ico(pngs: &[(u32, Vec<u8>)], target: &Path) -> Result {
 }
 
 fn escape_xml(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// The WiX v4+ source for the installer: Program Files, a Start menu entry,
@@ -305,23 +351,94 @@ fn wix_source(config: &Config, version: &str, exe: &str) -> String {
 /// (vmem), sound out, and the converters in between. About 20 MB of VLC's 80.
 const VLC_PLUGINS: &[&str] = &[
     // access and containers (http/https/tls: music streamed while it downloads)
-    "http", "https", "gnutls", "securetransport", "prefetch", "cache_read",
-    "filesystem", "mp4", "mkv", "avi", "es", "ps", "ts", "ogg", "wav", "avformat", "h26x", "mpgv",
+    "http",
+    "https",
+    "gnutls",
+    "securetransport",
+    "prefetch",
+    "cache_read",
+    "filesystem",
+    "mp4",
+    "mkv",
+    "avi",
+    "es",
+    "ps",
+    "ts",
+    "ogg",
+    "wav",
+    "avformat",
+    "h26x",
+    "mpgv",
     // decoders (hardware first)
-    "avcodec", "videotoolbox", "d3d11va", "dxva2", "faad", "mpg123", "vorbis", "opus", "flac", "araw", "lpcm", "a52", "dts",
+    "avcodec",
+    "videotoolbox",
+    "d3d11va",
+    "dxva2",
+    "faad",
+    "mpg123",
+    "vorbis",
+    "opus",
+    "flac",
+    "araw",
+    "lpcm",
+    "a52",
+    "dts",
     // packetizers
-    "packetizer_h264", "packetizer_hevc", "packetizer_mpeg4video", "packetizer_mpeg4audio", "packetizer_mpegaudio",
-    "packetizer_mpegvideo", "packetizer_av1", "packetizer_vc1", "packetizer_mlp", "packetizer_flac", "packetizer_a52",
-    "packetizer_dts", "packetizer_copy",
+    "packetizer_h264",
+    "packetizer_hevc",
+    "packetizer_mpeg4video",
+    "packetizer_mpeg4audio",
+    "packetizer_mpegaudio",
+    "packetizer_mpegvideo",
+    "packetizer_av1",
+    "packetizer_vc1",
+    "packetizer_mlp",
+    "packetizer_flac",
+    "packetizer_a52",
+    "packetizer_dts",
+    "packetizer_copy",
     // picture to the app, and pixel format conversion
-    "vmem", "swscale", "chroma_copy", "i420_rgb", "i420_yuy2", "i422_i420", "i422_yuy2", "yuy2_i420", "yuy2_i422",
-    "rv32", "grey_yuv", "yuvp", "cvpx", "chain", "deinterlace",
+    "vmem",
+    "swscale",
+    "chroma_copy",
+    "i420_rgb",
+    "i420_yuy2",
+    "i422_i420",
+    "i422_yuy2",
+    "yuy2_i420",
+    "yuy2_i422",
+    "rv32",
+    "grey_yuv",
+    "yuvp",
+    "cvpx",
+    "chain",
+    "deinterlace",
     // sound out and conversion
-    "auhal", "mmdevice", "wasapi", "directsound", "waveout", "pulse", "alsa", "audio_format", "float_mixer", "integer_mixer",
-    "ugly_resampler", "speex_resampler", "soxr", "samplerate", "simple_channel_mixer", "trivial_channel_mixer", "remap",
-    "scaletempo", "audio_volume", "equalizer",
+    "auhal",
+    "mmdevice",
+    "wasapi",
+    "directsound",
+    "waveout",
+    "pulse",
+    "alsa",
+    "audio_format",
+    "float_mixer",
+    "integer_mixer",
+    "ugly_resampler",
+    "speex_resampler",
+    "soxr",
+    "samplerate",
+    "simple_channel_mixer",
+    "trivial_channel_mixer",
+    "remap",
+    "scaletempo",
+    "audio_volume",
+    "equalizer",
     // misc that playback asks for
-    "console_logger", "xml", "inflate", "stats",
+    "console_logger",
+    "xml",
+    "inflate",
+    "stats",
 ];
 
 /// The VLC to copy from: FILES_VLC_DIR, or the installed one. On Linux the
@@ -333,17 +450,28 @@ fn vlc_source() -> Option<PathBuf> {
         cfg!(windows).then(|| PathBuf::from(r"C:\Program Files\VideoLAN\VLC")),
         cfg!(target_os = "linux").then(|| PathBuf::from("/usr/lib/x86_64-linux-gnu")),
     ];
-    candidates.into_iter().flatten().find(|dir| plugins_of(dir).is_dir())
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|dir| plugins_of(dir).is_dir())
 }
 
 /// Where a VLC keeps its plugins.
 fn plugins_of(source: &Path) -> PathBuf {
-    if cfg!(target_os = "linux") { source.join("vlc").join("plugins") } else { source.join("plugins") }
+    if cfg!(target_os = "linux") {
+        source.join("vlc").join("plugins")
+    } else {
+        source.join("plugins")
+    }
 }
 
 fn plugin_wanted(file_name: &str) -> bool {
     let stem = file_name.split('.').next().unwrap_or_default();
-    let name = stem.strip_prefix("lib").unwrap_or(stem).strip_suffix("_plugin").unwrap_or(stem);
+    let name = stem
+        .strip_prefix("lib")
+        .unwrap_or(stem)
+        .strip_suffix("_plugin")
+        .unwrap_or(stem);
     VLC_PLUGINS.contains(&name)
 }
 
@@ -367,19 +495,38 @@ fn copy_plugins(from: &Path, to: &Path, copied: &mut usize) -> Result {
 /// `lib/` + `plugins/` on macOS, the DLLs + `plugins\` on Windows.
 fn copy_vlc(source: &Path, target: &Path) -> Result {
     let _ = std::fs::remove_dir_all(target);
-    let (libraries, lib_dir, library_source): (&[&str], PathBuf, PathBuf) = if cfg!(target_os = "macos") {
-        (&["libvlc.dylib", "libvlc.5.dylib", "libvlccore.dylib", "libvlccore.9.dylib"], target.join("lib"), source.join("lib"))
-    } else if cfg!(windows) {
-        (&["libvlc.dll", "libvlccore.dll"], target.to_path_buf(), source.to_path_buf())
-    } else {
-        (&["libvlc.so.5", "libvlccore.so.9"], target.join("lib"), source.to_path_buf())
-    };
+    let (libraries, lib_dir, library_source): (&[&str], PathBuf, PathBuf) =
+        if cfg!(target_os = "macos") {
+            (
+                &[
+                    "libvlc.dylib",
+                    "libvlc.5.dylib",
+                    "libvlccore.dylib",
+                    "libvlccore.9.dylib",
+                ],
+                target.join("lib"),
+                source.join("lib"),
+            )
+        } else if cfg!(windows) {
+            (
+                &["libvlc.dll", "libvlccore.dll"],
+                target.to_path_buf(),
+                source.to_path_buf(),
+            )
+        } else {
+            (
+                &["libvlc.so.5", "libvlccore.so.9"],
+                target.join("lib"),
+                source.to_path_buf(),
+            )
+        };
     std::fs::create_dir_all(&lib_dir).map_err(|error| error.to_string())?;
     for library in libraries {
         let from = library_source.join(library);
         if from.exists() {
             // `fs::copy` follows links: the real file under the soname.
-            std::fs::copy(&from, lib_dir.join(library)).map_err(|error| format!("{library}: {error}"))?;
+            std::fs::copy(&from, lib_dir.join(library))
+                .map_err(|error| format!("{library}: {error}"))?;
         }
     }
     let mut copied = 0;
@@ -398,10 +545,36 @@ fn copy_vlc(source: &Path, target: &Path) -> Result {
 /// (the usual AppImage exclude list).
 #[cfg(target_os = "linux")]
 const SYSTEM_LIBRARIES: &[&str] = &[
-    "linux-vdso", "ld-linux", "libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so", "libresolv.so", "libutil.so",
-    "libgcc_s.so", "libstdc++.so", "libasound.so", "libGL", "libEGL", "libGLX", "libGLdispatch", "libX11", "libxcb", "libdrm",
-    "libgbm", "libfontconfig", "libfreetype", "libharfbuzz", "libz.so", "libexpat", "libdbus-1", "libsystemd", "libudev",
-    "libwayland", "libvulkan",
+    "linux-vdso",
+    "ld-linux",
+    "libc.so",
+    "libm.so",
+    "libdl.so",
+    "libpthread.so",
+    "librt.so",
+    "libresolv.so",
+    "libutil.so",
+    "libgcc_s.so",
+    "libstdc++.so",
+    "libasound.so",
+    "libGL",
+    "libEGL",
+    "libGLX",
+    "libGLdispatch",
+    "libX11",
+    "libxcb",
+    "libdrm",
+    "libgbm",
+    "libfontconfig",
+    "libfreetype",
+    "libharfbuzz",
+    "libz.so",
+    "libexpat",
+    "libdbus-1",
+    "libsystemd",
+    "libudev",
+    "libwayland",
+    "libvulkan",
 ];
 
 /// Copies what VLC and its plugins link against (except the system's), so
@@ -419,16 +592,35 @@ fn copy_linux_dependencies(target: &Path, lib_dir: &Path) -> Result {
             }
         }
     }
-    let ldd = |object: &Path| output(Command::new("ldd").arg(object).env("LD_LIBRARY_PATH", lib_dir)).unwrap_or_default();
+    let ldd = |object: &Path| {
+        output(
+            Command::new("ldd")
+                .arg(object)
+                .env("LD_LIBRARY_PATH", lib_dir),
+        )
+        .unwrap_or_default()
+    };
     let mut queue = Vec::new();
     objects(target, &mut queue);
     let mut seen = std::collections::BTreeSet::new();
     while let Some(object) = queue.pop() {
         for line in ldd(&object).lines() {
             // "libavcodec.so.60 => /lib/x86_64-linux-gnu/libavcodec.so.60 (0x…)"
-            let Some((name, rest)) = line.trim().split_once(" => ") else { continue };
-            let Some(path) = rest.split_whitespace().next().filter(|path| path.starts_with('/')) else { continue };
-            if SYSTEM_LIBRARIES.iter().any(|system| name.starts_with(system)) || !seen.insert(name.to_string()) {
+            let Some((name, rest)) = line.trim().split_once(" => ") else {
+                continue;
+            };
+            let Some(path) = rest
+                .split_whitespace()
+                .next()
+                .filter(|path| path.starts_with('/'))
+            else {
+                continue;
+            };
+            if SYSTEM_LIBRARIES
+                .iter()
+                .any(|system| name.starts_with(system))
+                || !seen.insert(name.to_string())
+            {
                 continue;
             }
             let copy = lib_dir.join(name);
@@ -442,7 +634,13 @@ fn copy_linux_dependencies(target: &Path, lib_dir: &Path) -> Result {
     objects(target, &mut all);
     let missing: Vec<String> = all
         .iter()
-        .flat_map(|object| ldd(object).lines().filter(|line| line.contains("not found")).map(|line| format!("{}: {}", object.display(), line.trim())).collect::<Vec<_>>())
+        .flat_map(|object| {
+            ldd(object)
+                .lines()
+                .filter(|line| line.contains("not found"))
+                .map(|line| format!("{}: {}", object.display(), line.trim()))
+                .collect::<Vec<_>>()
+        })
         .collect();
     if !missing.is_empty() {
         return Err(format!("bundled VLC cannot load:\n{}", missing.join("\n")));
@@ -455,7 +653,9 @@ fn copy_linux_dependencies(target: &Path, lib_dir: &Path) -> Result {
 fn bundle_vlc(target: &Path) -> Result {
     match vlc_source() {
         Some(source) => copy_vlc(&source, target),
-        None if std::env::var_os("FILES_REQUIRE_VLC").is_some() => Err("VLC not found to bundle (install it or set FILES_VLC_DIR)".to_string()),
+        None if std::env::var_os("FILES_REQUIRE_VLC").is_some() => {
+            Err("VLC not found to bundle (install it or set FILES_VLC_DIR)".to_string())
+        }
         None => {
             println!("VLC not found: videos will play only where VLC is installed");
             Ok(())
@@ -473,7 +673,10 @@ fn windows_icon(root: &Path, config: &Config, target: &Path) -> Result {
         .map(|size| {
             let path = scratch.join(format!("ico-{size}.png"));
             render(&svg, size, &path)?;
-            Ok((size, std::fs::read(&path).map_err(|error| error.to_string())?))
+            Ok((
+                size,
+                std::fs::read(&path).map_err(|error| error.to_string())?,
+            ))
         })
         .collect::<Result<Vec<_>>>()?;
     if let Some(parent) = target.parent() {
@@ -485,34 +688,54 @@ fn windows_icon(root: &Path, config: &Config, target: &Path) -> Result {
     Ok(())
 }
 
-fn bundle_windows(root: &Path, config: &Config, version: &str, icons: &Path, dist: &Path) -> Result {
+fn bundle_windows(
+    root: &Path,
+    config: &Config,
+    version: &str,
+    icons: &Path,
+    dist: &Path,
+) -> Result {
     if config.windows.upgrade_code.is_empty() {
-        return Err("set [windows] upgrade_code in Bundle.toml (a GUID that never changes)".to_string());
+        return Err(
+            "set [windows] upgrade_code in Bundle.toml (a GUID that never changes)".to_string(),
+        );
     }
     let staging = dist.join("msi");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
     let exe = format!("{}.exe", config.app.binary);
-    std::fs::copy(root.join("target/release").join(&exe), staging.join(&exe)).map_err(|error| format!("{exe}: {error}"))?;
+    std::fs::copy(root.join("target/release").join(&exe), staging.join(&exe))
+        .map_err(|error| format!("{exe}: {error}"))?;
     let pngs = [16, 32, 48, 256]
         .into_iter()
         .map(|size| {
             let path = icons.join(format!("ico-{size}.png"));
-            let svg = std::fs::read(root.join(&config.app.icon)).map_err(|error| error.to_string())?;
+            let svg =
+                std::fs::read(root.join(&config.app.icon)).map_err(|error| error.to_string())?;
             render(&svg, size, &path)?;
-            Ok((size, std::fs::read(&path).map_err(|error| error.to_string())?))
+            Ok((
+                size,
+                std::fs::read(&path).map_err(|error| error.to_string())?,
+            ))
         })
         .collect::<Result<Vec<_>>>()?;
     write_ico(&pngs, &staging.join("icon.ico"))?;
     sign_windows(config, &staging.join(&exe))?;
     bundle_vlc(&staging.join("vlc"))?;
-    std::fs::write(staging.join("Files.wxs"), wix_source(config, version, &exe)).map_err(|error| error.to_string())?;
+    std::fs::write(staging.join("Files.wxs"), wix_source(config, version, &exe))
+        .map_err(|error| error.to_string())?;
     if !config.windows.msi {
         return Ok(());
     }
     let msi = dist.join(format!("{}-{version}-x64.msi", config.app.name));
-    run(Command::new("wix").current_dir(&staging).args(["build", "-arch", "x64", "-o"]).arg(&msi).arg("Files.wxs"))
-        .map_err(|error| format!("{error} · install WiX 5: dotnet tool install --global wix --version 5.0.2"))?;
+    run(Command::new("wix")
+        .current_dir(&staging)
+        .args(["build", "-arch", "x64", "-o"])
+        .arg(&msi)
+        .arg("Files.wxs"))
+    .map_err(|error| {
+        format!("{error} · install WiX 5: dotnet tool install --global wix --version 5.0.2")
+    })?;
     sign_windows(config, &msi)?;
     println!("Installer → {}", msi.display());
     publish_update(config, version, &msi, "windows")
@@ -521,12 +744,27 @@ fn bundle_windows(root: &Path, config: &Config, version: &str, icons: &Path, dis
 /// signtool with the .pfx in FILES_WINDOWS_PFX (skipped when it is not set).
 fn sign_windows(config: &Config, file: &Path) -> Result {
     let Ok(pfx) = std::env::var("FILES_WINDOWS_PFX") else {
-        println!("Not signing {} (no FILES_WINDOWS_PFX): SmartScreen will warn on first run", file.display());
+        println!(
+            "Not signing {} (no FILES_WINDOWS_PFX): SmartScreen will warn on first run",
+            file.display()
+        );
         return Ok(());
     };
     let password = std::env::var("FILES_WINDOWS_PFX_PASSWORD").unwrap_or_default();
     run(Command::new("signtool")
-        .args(["sign", "/fd", "sha256", "/td", "sha256", "/tr", &config.windows.timestamp_url, "/f", &pfx, "/p", &password])
+        .args([
+            "sign",
+            "/fd",
+            "sha256",
+            "/td",
+            "sha256",
+            "/tr",
+            &config.windows.timestamp_url,
+            "/f",
+            &pfx,
+            "/p",
+            &password,
+        ])
         .arg(file))
 }
 
@@ -581,9 +819,15 @@ fn bundle_macos(root: &Path, config: &Config, version: &str, icons: &Path, dist:
         std::fs::create_dir_all(contents.join(dir)).map_err(|error| error.to_string())?;
     }
     let binary = root.join("target/release").join(&config.app.binary);
-    std::fs::copy(&binary, contents.join("MacOS").join(&config.app.binary)).map_err(|error| format!("{}: {error}", binary.display()))?;
-    std::fs::copy(icons.join("AppIcon.icns"), contents.join("Resources/AppIcon.icns")).map_err(|error| error.to_string())?;
-    std::fs::write(contents.join("Info.plist"), info_plist(config, version)).map_err(|error| error.to_string())?;
+    std::fs::copy(&binary, contents.join("MacOS").join(&config.app.binary))
+        .map_err(|error| format!("{}: {error}", binary.display()))?;
+    std::fs::copy(
+        icons.join("AppIcon.icns"),
+        contents.join("Resources/AppIcon.icns"),
+    )
+    .map_err(|error| error.to_string())?;
+    std::fs::write(contents.join("Info.plist"), info_plist(config, version))
+        .map_err(|error| error.to_string())?;
     std::fs::write(contents.join("PkgInfo"), "APPL????").map_err(|error| error.to_string())?;
     bundle_vlc(&contents.join("Frameworks").join("vlc"))?;
     println!("App → {}", app.display());
@@ -599,9 +843,13 @@ fn bundle_macos(root: &Path, config: &Config, version: &str, icons: &Path, dist:
     if config.macos.hardened_runtime {
         sign.args(["--options", "runtime"]);
     }
-    sign.arg("--entitlements").arg(root.join(&config.macos.entitlements)).arg(&app);
+    sign.arg("--entitlements")
+        .arg(root.join(&config.macos.entitlements))
+        .arg(&app);
     run(&mut sign)?;
-    run(Command::new("codesign").args(["--verify", "--deep", "--strict", "--verbose=2"]).arg(&app))?;
+    run(Command::new("codesign")
+        .args(["--verify", "--deep", "--strict", "--verbose=2"])
+        .arg(&app))?;
 
     if config.macos.notarize {
         if ad_hoc || !identity.starts_with("Developer ID Application") {
@@ -609,8 +857,14 @@ fn bundle_macos(root: &Path, config: &Config, version: &str, icons: &Path, dist:
         }
         println!("Notarizing (profile {})…", config.macos.notary_profile);
         let zip = dist.join(format!("{}-{version}.zip", config.app.name));
-        run(Command::new("ditto").args(["-c", "-k", "--keepParent"]).arg(&app).arg(&zip))?;
-        run(Command::new("xcrun").args(["notarytool", "submit"]).arg(&zip).args(["--keychain-profile", &config.macos.notary_profile, "--wait"]))?;
+        run(Command::new("ditto")
+            .args(["-c", "-k", "--keepParent"])
+            .arg(&app)
+            .arg(&zip))?;
+        run(Command::new("xcrun")
+            .args(["notarytool", "submit"])
+            .arg(&zip)
+            .args(["--keychain-profile", &config.macos.notary_profile, "--wait"]))?;
         run(Command::new("xcrun").args(["stapler", "staple"]).arg(&app))?;
         let _ = std::fs::remove_file(&zip);
     }
@@ -622,18 +876,36 @@ fn bundle_macos(root: &Path, config: &Config, version: &str, icons: &Path, dist:
         let staging = dist.join("dmg");
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
-        run(Command::new("ditto").arg(&app).arg(staging.join(format!("{}.app", config.app.name))))?;
+        run(Command::new("ditto")
+            .arg(&app)
+            .arg(staging.join(format!("{}.app", config.app.name))))?;
         #[cfg(unix)]
-        std::os::unix::fs::symlink("/Applications", staging.join("Applications")).map_err(|error| error.to_string())?;
+        std::os::unix::fs::symlink("/Applications", staging.join("Applications"))
+            .map_err(|error| error.to_string())?;
         run(Command::new("hdiutil")
-            .args(["create", "-volname", &config.app.name, "-fs", "HFS+", "-format", "UDZO", "-ov", "-srcfolder"])
+            .args([
+                "create",
+                "-volname",
+                &config.app.name,
+                "-fs",
+                "HFS+",
+                "-format",
+                "UDZO",
+                "-ov",
+                "-srcfolder",
+            ])
             .arg(&staging)
             .arg(&dmg))?;
         let _ = std::fs::remove_dir_all(&staging);
         if !ad_hoc {
-            run(Command::new("codesign").args(["--force", "--timestamp", "--sign", identity]).arg(&dmg))?;
+            run(Command::new("codesign")
+                .args(["--force", "--timestamp", "--sign", identity])
+                .arg(&dmg))?;
             if config.macos.notarize {
-                run(Command::new("xcrun").args(["notarytool", "submit"]).arg(&dmg).args(["--keychain-profile", &config.macos.notary_profile, "--wait"]))?;
+                run(Command::new("xcrun")
+                    .args(["notarytool", "submit"])
+                    .arg(&dmg)
+                    .args(["--keychain-profile", &config.macos.notary_profile, "--wait"]))?;
                 run(Command::new("xcrun").args(["stapler", "staple"]).arg(&dmg))?;
             }
         }
@@ -647,7 +919,9 @@ fn bundle_macos(root: &Path, config: &Config, version: &str, icons: &Path, dist:
 /// and writes `latest.json` next to it: upload both to the website.
 fn publish_update(config: &Config, version: &str, file: &Path, platform: &str) -> Result {
     let Ok(private) = read_update_key() else {
-        println!("No update key: the update is not signed, Files will only show a download link (cargo xtask updates keygen)");
+        println!(
+            "No update key: the update is not signed, Files will only show a download link (cargo xtask updates keygen)"
+        );
         return Ok(());
     };
     let bytes = std::fs::read(file).map_err(|error| error.to_string())?;
@@ -655,22 +929,41 @@ fn publish_update(config: &Config, version: &str, file: &Path, platform: &str) -
     let mut sig = file.as_os_str().to_owned();
     sig.push(".sig");
     std::fs::write(&sig, &signature).map_err(|error| error.to_string())?;
-    let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let base = config.updates.download_base.trim_end_matches('/');
     if base.is_empty() {
         println!("Set [updates] download_base in Bundle.toml to write latest.json");
         return Ok(());
     }
     let latest = file.with_file_name("latest.json");
-    let mut json: serde_json::Value = std::fs::read_to_string(&latest).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let mut json: serde_json::Value = std::fs::read_to_string(&latest)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
     // Keep the notes written by hand for this version.
     if json["version"].as_str() != Some(version) {
         json = serde_json::json!({ "version": version, "notes": "" });
     }
     json[platform] = serde_json::json!({ "url": format!("{base}/{name}"), "signature": signature });
-    json["published"] = serde_json::json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_secs()).to_string());
-    std::fs::write(&latest, serde_json::to_string_pretty(&json).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
-    println!("Update → {} (+ .sig) · upload it with {} to {base}/", latest.display(), name);
+    json["published"] = serde_json::json!(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.as_secs())
+            .to_string()
+    );
+    std::fs::write(
+        &latest,
+        serde_json::to_string_pretty(&json).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    println!(
+        "Update → {} (+ .sig) · upload it with {} to {base}/",
+        latest.display(),
+        name
+    );
     if config.updates.url.is_empty() {
         println!("Set [updates] url = \"{base}/latest.json\" so Files checks it");
     }
@@ -682,8 +975,13 @@ fn bundle_linux(root: &Path, config: &Config, version: &str, icons: &Path, dist:
     let _ = std::fs::remove_dir_all(&appdir);
     std::fs::create_dir_all(appdir.join("usr/bin")).map_err(|error| error.to_string())?;
     let binary = root.join("target/release").join(&config.app.binary);
-    std::fs::copy(&binary, appdir.join("usr/bin").join(&config.app.binary)).map_err(|error| error.to_string())?;
-    std::fs::copy(icons.join("icon-512.png"), appdir.join(format!("{}.png", config.app.identifier))).map_err(|error| error.to_string())?;
+    std::fs::copy(&binary, appdir.join("usr/bin").join(&config.app.binary))
+        .map_err(|error| error.to_string())?;
+    std::fs::copy(
+        icons.join("icon-512.png"),
+        appdir.join(format!("{}.png", config.app.identifier)),
+    )
+    .map_err(|error| error.to_string())?;
     std::fs::write(
         appdir.join(format!("{}.desktop", config.app.identifier)),
         format!(
@@ -706,18 +1004,22 @@ fn bundle_linux(root: &Path, config: &Config, version: &str, icons: &Path, dist:
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&app_run, std::fs::Permissions::from_mode(0o755)).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&app_run, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
     }
     println!("AppDir → {}", appdir.display());
     if config.linux.appimage {
         let image = dist.join(format!("{}-{version}-x86_64.AppImage", config.app.name));
         let mut tool = Command::new("appimagetool");
         // A runtime downloaded beforehand (CI): no network during the build.
-        if let Some(runtime) = std::env::var_os("APPIMAGE_RUNTIME").filter(|runtime| Path::new(runtime).is_file()) {
+        if let Some(runtime) =
+            std::env::var_os("APPIMAGE_RUNTIME").filter(|runtime| Path::new(runtime).is_file())
+        {
             tool.arg("--runtime-file").arg(runtime);
         }
-        run(tool.arg(&appdir).arg(&image))
-            .map_err(|error| format!("{error} · install appimagetool from https://github.com/AppImage/appimagetool"))?;
+        run(tool.arg(&appdir).arg(&image)).map_err(|error| {
+            format!("{error} · install appimagetool from https://github.com/AppImage/appimagetool")
+        })?;
         println!("AppImage → {}", image.display());
         publish_update(config, version, &image, "linux")?;
     }
@@ -728,7 +1030,9 @@ fn bundle_linux(root: &Path, config: &Config, version: &str, icons: &Path, dist:
 
 /// The publisher's private key: outside the repository, readable only by you.
 fn private_key_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
     home.join(".config/files-license/private.pk8")
 }
 
@@ -743,11 +1047,18 @@ fn read_update_key() -> Result<Vec<u8>> {
     use base64::Engine as _;
     if let Ok(encoded) = std::env::var("FILES_UPDATE_KEY") {
         if !encoded.trim().is_empty() {
-            return base64::engine::general_purpose::STANDARD.decode(encoded.trim()).map_err(|error| format!("FILES_UPDATE_KEY: {error}"));
+            return base64::engine::general_purpose::STANDARD
+                .decode(encoded.trim())
+                .map_err(|error| format!("FILES_UPDATE_KEY: {error}"));
         }
     }
     let path = update_key_path();
-    std::fs::read(&path).map_err(|_| format!("no update key at {} · run: cargo xtask updates keygen", path.display()))
+    std::fs::read(&path).map_err(|_| {
+        format!(
+            "no update key at {} · run: cargo xtask updates keygen",
+            path.display()
+        )
+    })
 }
 
 /// `cargo xtask updates keygen`: the update signing key pair.
@@ -757,15 +1068,20 @@ fn updates(root: &Path, args: &[String]) -> Result {
         Some("keygen") => {
             let path = update_key_path();
             if path.exists() {
-                return Err(format!("{} already exists · refusing to replace it (installed copies would refuse new updates)", path.display()));
+                return Err(format!(
+                    "{} already exists · refusing to replace it (installed copies would refuse new updates)",
+                    path.display()
+                ));
             }
             let (private, public) = files_sdk::license::generate_keys()?;
-            std::fs::create_dir_all(path.parent().expect("parent")).map_err(|error| error.to_string())?;
+            std::fs::create_dir_all(path.parent().expect("parent"))
+                .map_err(|error| error.to_string())?;
             std::fs::write(&path, &private).map_err(|error| error.to_string())?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt as _;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|error| error.to_string())?;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|error| error.to_string())?;
             }
             let keys = root.join("packaging/license/updates.keys");
             let mut text = std::fs::read_to_string(&keys).unwrap_or_default();
@@ -774,7 +1090,10 @@ fn updates(root: &Path, args: &[String]) -> Result {
             println!("Private key → {} (back it up)", path.display());
             println!("Public key  → {} (built into the app)", keys.display());
             println!("For CI: the base64 below goes into the FILES_UPDATE_KEY secret");
-            println!("{}", base64::engine::general_purpose::STANDARD.encode(&private));
+            println!(
+                "{}",
+                base64::engine::general_purpose::STANDARD.encode(&private)
+            );
             Ok(())
         }
         Some("sign") => {
@@ -791,7 +1110,12 @@ fn updates(root: &Path, args: &[String]) -> Result {
 
 fn read_private_key() -> Result<Vec<u8>> {
     let path = private_key_path();
-    std::fs::read(&path).map_err(|_| format!("no private key at {} · run: cargo xtask license keygen", path.display()))
+    std::fs::read(&path).map_err(|_| {
+        format!(
+            "no private key at {} · run: cargo xtask license keygen",
+            path.display()
+        )
+    })
 }
 
 fn license(root: &Path, args: &[String]) -> Result {
@@ -874,7 +1198,9 @@ fn license(root: &Path, args: &[String]) -> Result {
 /// Builds a plugin crate (release), reads its manifest, packs and signs it:
 /// `target/dist/extensions/<id>-<version>.filesext` + `.sig`.
 fn package_extension(root: &Path, args: &[String]) -> Result {
-    let krate = args.first().ok_or("usage: cargo xtask package-extension <crate> [--debug]")?;
+    let krate = args
+        .first()
+        .ok_or("usage: cargo xtask package-extension <crate> [--debug]")?;
     let debug = args.iter().any(|arg| arg == "--debug");
     let mut build = Command::new(env!("CARGO"));
     build.current_dir(root).args(["build", "--package", krate]);
@@ -885,14 +1211,24 @@ fn package_extension(root: &Path, args: &[String]) -> Result {
     let library = root
         .join("target")
         .join(if debug { "debug" } else { "release" })
-        .join(format!("{}{}{}", std::env::consts::DLL_PREFIX, krate.replace('-', "_"), std::env::consts::DLL_SUFFIX));
-    let bytes = std::fs::read(&library).map_err(|error| format!("{}: {error} (is it a cdylib?)", library.display()))?;
+        .join(format!(
+            "{}{}{}",
+            std::env::consts::DLL_PREFIX,
+            krate.replace('-', "_"),
+            std::env::consts::DLL_SUFFIX
+        ));
+    let bytes = std::fs::read(&library)
+        .map_err(|error| format!("{}: {error} (is it a cdylib?)", library.display()))?;
     // SAFETY: our own freshly built plugin; only its manifest export is called.
     let manifest: files_sdk::plugin::PluginManifest = unsafe {
         let loaded = libloading::Library::new(&library).map_err(|error| error.to_string())?;
         let manifest: libloading::Symbol<files_sdk::plugin::abi::ManifestJson> =
-            loaded.get(b"files_plugin_manifest").map_err(|_| "no files_plugin_manifest: add files_sdk::export_plugin!(…)".to_string())?;
-        let free: libloading::Symbol<files_sdk::plugin::abi::Free> = loaded.get(b"files_plugin_free").map_err(|error| error.to_string())?;
+            loaded.get(b"files_plugin_manifest").map_err(|_| {
+                "no files_plugin_manifest: add files_sdk::export_plugin!(…)".to_string()
+            })?;
+        let free: libloading::Symbol<files_sdk::plugin::abi::Free> = loaded
+            .get(b"files_plugin_free")
+            .map_err(|error| error.to_string())?;
         let raw = manifest();
         let json = files_sdk::plugin::abi::read(raw);
         free(raw);
@@ -904,9 +1240,24 @@ fn package_extension(root: &Path, args: &[String]) -> Result {
     std::fs::create_dir_all(&dist).map_err(|error| error.to_string())?;
     let target = dist.join(format!("{}-{}.filesext", manifest.id, manifest.version));
     std::fs::write(&target, &package).map_err(|error| error.to_string())?;
-    std::fs::write(dist.join(format!("{}-{}.filesext.sig", manifest.id, manifest.version)), &signature).map_err(|error| error.to_string())?;
-    println!("{} {} ({}) → {}", manifest.name, manifest.version, manifest.product.as_deref().map_or("free".to_string(), |product| format!("Pro: {product}")), target.display());
-    println!("Install: Settings → Extensions → Pro extensions → paste this path (the .sig must sit next to it)");
+    std::fs::write(
+        dist.join(format!("{}-{}.filesext.sig", manifest.id, manifest.version)),
+        &signature,
+    )
+    .map_err(|error| error.to_string())?;
+    println!(
+        "{} {} ({}) → {}",
+        manifest.name,
+        manifest.version,
+        manifest
+            .product
+            .as_deref()
+            .map_or("free".to_string(), |product| format!("Pro: {product}")),
+        target.display()
+    );
+    println!(
+        "Install: Settings → Extensions → Pro extensions → paste this path (the .sig must sit next to it)"
+    );
     Ok(())
 }
 
@@ -928,48 +1279,97 @@ fn doctor(root: &Path, config: &Config) -> Result {
         "Cargo.toml has a GitHub repository (update checks use its releases)",
         "add `repository = \"https://github.com/OWNER/REPO\"` under [package]",
     );
-    check(root.join("LICENSE").exists() || root.join("LICENSE-MIT").exists(), "a LICENSE file", "add LICENSE (the crates say MIT)");
-    check(root.join(&config.app.icon).exists(), "the icon source", &format!("add {}", config.app.icon));
-    let keys = std::fs::read_to_string(root.join("packaging/license/public.keys")).unwrap_or_default();
-    let private = std::fs::read(private_key_path()).ok().and_then(|key| files_sdk::license::public_key_of(&key).ok());
     check(
-        private.as_ref().is_some_and(|public| keys.lines().any(|line| line.trim() == public)),
+        root.join("LICENSE").exists() || root.join("LICENSE-MIT").exists(),
+        "a LICENSE file",
+        "add LICENSE (the crates say MIT)",
+    );
+    check(
+        root.join(&config.app.icon).exists(),
+        "the icon source",
+        &format!("add {}", config.app.icon),
+    );
+    let keys =
+        std::fs::read_to_string(root.join("packaging/license/public.keys")).unwrap_or_default();
+    let private = std::fs::read(private_key_path())
+        .ok()
+        .and_then(|key| files_sdk::license::public_key_of(&key).ok());
+    check(
+        private
+            .as_ref()
+            .is_some_and(|public| keys.lines().any(|line| line.trim() == public)),
         "a license signing key whose public key ships in the app",
         "cargo xtask license keygen (keep ~/.config/files-license/private.pk8 backed up and secret)",
     );
-    check(config.app.identifier.contains('.') && !config.app.identifier.ends_with('.'), "a reverse-DNS identifier", "set [app] identifier");
+    check(
+        config.app.identifier.contains('.') && !config.app.identifier.ends_with('.'),
+        "a reverse-DNS identifier",
+        "set [app] identifier",
+    );
     if cfg!(target_os = "macos") {
-        let identities = output(Command::new("security").args(["find-identity", "-v", "-p", "codesigning"])).unwrap_or_default();
-        let developer_id = identities.lines().find(|line| line.contains("Developer ID Application")).map(str::trim);
+        let identities =
+            output(Command::new("security").args(["find-identity", "-v", "-p", "codesigning"]))
+                .unwrap_or_default();
+        let developer_id = identities
+            .lines()
+            .find(|line| line.contains("Developer ID Application"))
+            .map(str::trim);
         check(
             developer_id.is_some(),
             "a \"Developer ID Application\" certificate (needed to run on other Macs)",
             "create it at developer.apple.com → Certificates (an \"Apple Development\" one only works on your Macs)",
         );
         check(
-            config.macos.signing_identity.starts_with("Developer ID Application"),
+            config
+                .macos
+                .signing_identity
+                .starts_with("Developer ID Application"),
             "Bundle.toml signs with that certificate",
             &format!(
                 "set [macos] signing_identity = \"{}\" (or FILES_SIGNING_IDENTITY)",
-                developer_id.and_then(|line| line.split('"').nth(1)).unwrap_or("Developer ID Application: Name (TEAMID)")
+                developer_id
+                    .and_then(|line| line.split('"').nth(1))
+                    .unwrap_or("Developer ID Application: Name (TEAMID)")
             ),
         );
-        let profile = output(Command::new("xcrun").args(["notarytool", "history", "--keychain-profile", &config.macos.notary_profile])).is_some();
+        let profile = output(Command::new("xcrun").args([
+            "notarytool",
+            "history",
+            "--keychain-profile",
+            &config.macos.notary_profile,
+        ]))
+        .is_some();
         check(
             profile,
-            &format!("a notarytool Keychain profile \"{}\"", config.macos.notary_profile),
-            &format!("xcrun notarytool store-credentials {} --apple-id YOU@MAIL --team-id TEAMID", config.macos.notary_profile),
+            &format!(
+                "a notarytool Keychain profile \"{}\"",
+                config.macos.notary_profile
+            ),
+            &format!(
+                "xcrun notarytool store-credentials {} --apple-id YOU@MAIL --team-id TEAMID",
+                config.macos.notary_profile
+            ),
         );
-        check(config.macos.notarize, "notarization is on", "set [macos] notarize = true (or pass --notarize)");
+        check(
+            config.macos.notarize,
+            "notarization is on",
+            "set [macos] notarize = true (or pass --notarize)",
+        );
     }
     if cfg!(target_os = "linux") {
-        check(output(Command::new("appimagetool").arg("--version")).is_some(), "appimagetool", "https://github.com/AppImage/appimagetool");
+        check(
+            output(Command::new("appimagetool").arg("--version")).is_some(),
+            "appimagetool",
+            "https://github.com/AppImage/appimagetool",
+        );
     }
     println!();
     if missing == 0 {
         println!("Ready: cargo xtask bundle");
     } else {
-        println!("{missing} thing(s) left before publishing. A local, ad-hoc signed build works now: cargo xtask bundle");
+        println!(
+            "{missing} thing(s) left before publishing. A local, ad-hoc signed build works now: cargo xtask bundle"
+        );
     }
     Ok(())
 }
@@ -982,21 +1382,54 @@ mod tests {
     fn mac_bundle_can_open_folders() {
         let (_, config) = load().unwrap();
         let plist = info_plist(&config, "1.2.3");
-        assert!(plist.contains("<string>public.folder</string>") && plist.contains("<string>Viewer</string>"), "{plist}");
+        assert!(
+            plist.contains("<string>public.folder</string>")
+                && plist.contains("<string>Viewer</string>"),
+            "{plist}"
+        );
     }
 
     #[test]
     fn windows_installer_source_and_icon() {
         let (root, config) = load().unwrap();
         let wxs = wix_source(&config, "1.2.3", "file-force.exe");
-        assert!(wxs.contains(r#"Version="1.2.3""#) && wxs.contains(&config.windows.upgrade_code), "{wxs}");
-        assert!(wxs.contains(r#"Source="file-force.exe""#) && wxs.contains("ProgramFiles64Folder") && wxs.contains("MajorUpgrade"));
-        assert!(wxs.contains(r#"Key="Software\Classes\Directory\shell\openinfiles" Action="removeOnUninstall""#), "uninstalling gives folders back to Explorer");
-        assert!(wxs.contains(&format!(r#"Key="System.AppUserModel.ID" Value="{}""#, config.app.identifier)), "toasts need the shortcut's AppUserModelID");
-        assert!(wxs.contains(r#"<Directory Id="VLCFOLDER" Name="vlc" />"#) && wxs.contains(r#"Include="vlc\**""#), "VLC goes into the MSI");
+        assert!(
+            wxs.contains(r#"Version="1.2.3""#) && wxs.contains(&config.windows.upgrade_code),
+            "{wxs}"
+        );
+        assert!(
+            wxs.contains(r#"Source="file-force.exe""#)
+                && wxs.contains("ProgramFiles64Folder")
+                && wxs.contains("MajorUpgrade")
+        );
+        assert!(
+            wxs.contains(
+                r#"Key="Software\Classes\Directory\shell\openinfiles" Action="removeOnUninstall""#
+            ),
+            "uninstalling gives folders back to Explorer"
+        );
+        assert!(
+            wxs.contains(&format!(
+                r#"Key="System.AppUserModel.ID" Value="{}""#,
+                config.app.identifier
+            )),
+            "toasts need the shortcut's AppUserModelID"
+        );
+        assert!(
+            wxs.contains(r#"<Directory Id="VLCFOLDER" Name="vlc" />"#)
+                && wxs.contains(r#"Include="vlc\**""#),
+            "VLC goes into the MSI"
+        );
         // The VLC plugin list matches both systems' file names.
-        assert!(plugin_wanted("libavcodec_plugin.dylib") && plugin_wanted("libvmem_plugin.dll") && plugin_wanted("libmmdevice_plugin.dll"));
-        assert!(!plugin_wanted("libaccess_srt_plugin.dylib") && !plugin_wanted("libqt_plugin.dll"), "players' UIs and streaming stay out");
+        assert!(
+            plugin_wanted("libavcodec_plugin.dylib")
+                && plugin_wanted("libvmem_plugin.dll")
+                && plugin_wanted("libmmdevice_plugin.dll")
+        );
+        assert!(
+            !plugin_wanted("libaccess_srt_plugin.dylib") && !plugin_wanted("libqt_plugin.dll"),
+            "players' UIs and streaming stay out"
+        );
         let svg = std::fs::read(root.join(&config.app.icon)).unwrap();
         let dir = std::env::temp_dir().join(format!("xtask-ico-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1022,7 +1455,10 @@ mod tests {
         let (root, config) = load().unwrap();
         assert_eq!(config.app.name, "Files");
         let plist = info_plist(&config, "1.2.3");
-        assert!(plist.contains("<string>dev.fileforce.files</string>") && plist.contains("<string>1.2.3</string>"));
+        assert!(
+            plist.contains("<string>dev.fileforce.files</string>")
+                && plist.contains("<string>1.2.3</string>")
+        );
         let svg = std::fs::read(root.join(&config.app.icon)).unwrap();
         let target = std::env::temp_dir().join(format!("xtask-icon-{}.png", std::process::id()));
         render(&svg, 64, &target).unwrap();

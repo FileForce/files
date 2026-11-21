@@ -11,7 +11,9 @@ fn main() {
         println!("cargo:rerun-if-changed=packaging/windows/icon.ico");
         let mut resource = winresource::WindowsResource::new();
         resource.set_icon_with_id("packaging/windows/icon.ico", "1");
-        resource.compile().expect("embedding the Windows icon (needs the Windows SDK's rc.exe)");
+        resource
+            .compile()
+            .expect("embedding the Windows icon (needs the Windows SDK's rc.exe)");
     }
     let source = std::fs::read_to_string("Bundle.toml").unwrap_or_default();
     // A tiny reader for `key = "value"` under `[section]`: build scripts
@@ -24,7 +26,10 @@ fn main() {
             section = line.trim_matches(['[', ']']).to_string();
         } else if let Some((key, value)) = line.split_once('=') {
             let value = value.trim();
-            if let Some(value) = value.strip_prefix('"').and_then(|value| value.split('"').next()) {
+            if let Some(value) = value
+                .strip_prefix('"')
+                .and_then(|value| value.split('"').next())
+            {
                 values.insert(format!("{section}.{}", key.trim()), value.to_string());
             }
         }
@@ -36,6 +41,9 @@ fn main() {
         ("FILES_APP_NAME", "app.name"),
         ("FILES_SPOTIFY_CLIENT_ID", "music.spotify_client_id"),
     ] {
-        println!("cargo:rustc-env={env}={}", values.get(key).cloned().unwrap_or_default());
+        println!(
+            "cargo:rustc-env={env}={}",
+            values.get(key).cloned().unwrap_or_default()
+        );
     }
 }

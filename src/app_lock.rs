@@ -20,7 +20,12 @@ pub struct LockSettings {
 
 impl Default for LockSettings {
     fn default() -> Self {
-        Self { enabled: false, on_launch: true, on_screen_lock: true, idle_minutes: 15 }
+        Self {
+            enabled: false,
+            on_launch: true,
+            on_screen_lock: true,
+            idle_minutes: 15,
+        }
     }
 }
 
@@ -111,12 +116,17 @@ fn watch() {
                 let slept = wall_passed > steady.elapsed() + Duration::from_secs(30);
                 (wall, steady) = (SystemTime::now(), Instant::now());
                 let screen_locked = ON_SCREEN_LOCK.load(Ordering::SeqCst) && screen_is_locked();
-                if (screen_locked && !screen_was_locked) || (slept && ON_SCREEN_LOCK.load(Ordering::SeqCst)) {
+                if (screen_locked && !screen_was_locked)
+                    || (slept && ON_SCREEN_LOCK.load(Ordering::SeqCst))
+                {
                     lock();
                 }
                 screen_was_locked = screen_locked;
                 let idle = IDLE_MINUTES.load(Ordering::SeqCst);
-                let since = started().elapsed().as_secs().saturating_sub(LAST_USE.load(Ordering::Relaxed));
+                let since = started()
+                    .elapsed()
+                    .as_secs()
+                    .saturating_sub(LAST_USE.load(Ordering::Relaxed));
                 if idle > 0 && since >= u64::from(idle) * 60 {
                     lock();
                 }
@@ -140,6 +150,13 @@ pub fn check(reason: String, done: impl FnOnce(Result<bool, String>) + Send + 's
         CHECKING.store(false, Ordering::SeqCst);
         done(result);
     });
+}
+
+/// Whether a lock screen may ask by itself for lock `generation`: the first
+/// window to ask takes it, so a cancel is not answered by another window asking.
+pub fn auto_ask(generation: u64) -> bool {
+    static ASKED: AtomicU64 = AtomicU64::new(u64::MAX);
+    ASKED.swap(generation, Ordering::SeqCst) != generation
 }
 
 pub fn checking() -> bool {
@@ -170,7 +187,11 @@ mod platform {
 
     pub fn available() -> bool {
         // SAFETY: a fresh context, asked and dropped here.
-        unsafe { LAContext::new().canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthentication).is_ok() }
+        unsafe {
+            LAContext::new()
+                .canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthentication)
+                .is_ok()
+        }
     }
 
     pub fn authenticate(reason: &str) -> Result<bool, String> {
@@ -186,13 +207,25 @@ mod platform {
                 // SAFETY: LocalAuthentication hands a live NSError on failure.
                 let error = unsafe { &*error };
                 // LAErrorUserCancel (-2), SystemCancel (-4), AppCancel (-9): not a failure.
-                if matches!(error.code(), -2 | -4 | -9) { Ok(false) } else { Err(error.localizedDescription().to_string()) }
+                if matches!(error.code(), -2 | -4 | -9) {
+                    Ok(false)
+                } else {
+                    Err(error.localizedDescription().to_string())
+                }
             };
             let _ = sender.send(outcome);
         });
         // SAFETY: the reply block is retained by LocalAuthentication until called.
-        unsafe { context.evaluatePolicy_localizedReason_reply(LAPolicy::DeviceOwnerAuthentication, &NSString::from_str(reason), &reply) };
-        receiver.recv().unwrap_or_else(|_| Err("No answer from the system".into()))
+        unsafe {
+            context.evaluatePolicy_localizedReason_reply(
+                LAPolicy::DeviceOwnerAuthentication,
+                &NSString::from_str(reason),
+                &reply,
+            )
+        };
+        receiver
+            .recv()
+            .unwrap_or_else(|_| Err("No answer from the system".into()))
     }
 
     #[link(name = "CoreGraphics", kind = "framework")]
@@ -209,10 +242,14 @@ mod platform {
             if raw.is_null() {
                 return false;
             }
-            let session: core_foundation::dictionary::CFDictionary<core_foundation::string::CFString, core_foundation::base::CFType> =
-                core_foundation::dictionary::CFDictionary::wrap_under_create_rule(raw);
+            let session: core_foundation::dictionary::CFDictionary<
+                core_foundation::string::CFString,
+                core_foundation::base::CFType,
+            > = core_foundation::dictionary::CFDictionary::wrap_under_create_rule(raw);
             session
-                .find(core_foundation::string::CFString::from_static_string("CGSSessionScreenIsLocked"))
+                .find(core_foundation::string::CFString::from_static_string(
+                    "CGSSessionScreenIsLocked",
+                ))
                 .and_then(|value| value.downcast::<core_foundation::boolean::CFBoolean>())
                 .is_some_and(bool::from)
         }
@@ -221,7 +258,9 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
-    use windows::Security::Credentials::UI::{UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability};
+    use windows::Security::Credentials::UI::{
+        UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
+    };
     use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
     use windows::core::{HSTRING, factory};
 
@@ -235,12 +274,16 @@ mod platform {
         // SAFETY: plain Win32 / WinRT calls; the window is the one in front (ours: it was just clicked).
         unsafe {
             let window = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
-            let interop: IUserConsentVerifierInterop = factory::<UserConsentVerifier, IUserConsentVerifierInterop>().map_err(|error| error.to_string())?;
-            let operation: windows_future::IAsyncOperation<UserConsentVerificationResult> =
-                interop.RequestVerificationForWindowAsync(window, &HSTRING::from(reason)).map_err(|error| error.to_string())?;
+            let interop: IUserConsentVerifierInterop =
+                factory::<UserConsentVerifier, IUserConsentVerifierInterop>()
+                    .map_err(|error| error.to_string())?;
+            let operation: windows_future::IAsyncOperation<UserConsentVerificationResult> = interop
+                .RequestVerificationForWindowAsync(window, &HSTRING::from(reason))
+                .map_err(|error| error.to_string())?;
             match operation.join().map_err(|error| error.to_string())? {
                 UserConsentVerificationResult::Verified => Ok(true),
-                UserConsentVerificationResult::Canceled | UserConsentVerificationResult::RetriesExhausted => Ok(false),
+                UserConsentVerificationResult::Canceled
+                | UserConsentVerificationResult::RetriesExhausted => Ok(false),
                 other => Err(format!("Windows Hello: {other:?}")),
             }
         }
@@ -248,7 +291,9 @@ mod platform {
 
     /// The secure desktop of a locked session takes the input desktop away.
     pub fn screen_is_locked() -> bool {
-        use windows_sys::Win32::System::StationsAndDesktops::{CloseDesktop, DESKTOP_SWITCHDESKTOP, OpenInputDesktop, SwitchDesktop};
+        use windows_sys::Win32::System::StationsAndDesktops::{
+            CloseDesktop, DESKTOP_SWITCHDESKTOP, OpenInputDesktop, SwitchDesktop,
+        };
         // SAFETY: the desktop handle is closed right after the test.
         unsafe {
             let desktop = OpenInputDesktop(0, 0, DESKTOP_SWITCHDESKTOP);
@@ -270,11 +315,15 @@ mod platform {
     }
 
     fn which(program: &str) -> bool {
-        std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+        std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
     }
 
     pub fn authenticate(_reason: &str) -> Result<bool, String> {
-        let status = std::process::Command::new("pkexec").arg("true").status().map_err(|error| error.to_string())?;
+        let status = std::process::Command::new("pkexec")
+            .arg("true")
+            .status()
+            .map_err(|error| error.to_string())?;
         // 126: the dialog was dismissed; 127: not authorized.
         match status.code() {
             Some(0) => Ok(true),
@@ -306,8 +355,24 @@ mod tests {
         let before = generation();
         lock();
         assert!(locked() && generation() > before, "on: locks and redraws");
-        configure(&LockSettings { enabled: false, ..Default::default() }, false);
+        configure(
+            &LockSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            false,
+        );
         assert!(!locked(), "turning it off opens up");
+    }
+
+    #[test]
+    fn a_lock_asks_by_itself_once_and_then_waits_for_unlock() {
+        assert!(auto_ask(1_000), "the first lock screen asks at once");
+        assert!(
+            !auto_ask(1_000),
+            "after a cancel: no second prompt for the same lock"
+        );
+        assert!(auto_ask(1_001), "the next lock asks again");
     }
 }
 
@@ -317,6 +382,10 @@ mod system {
     #[test]
     #[ignore]
     fn reports_the_system_check() {
-        println!("available: {}, screen locked: {}", super::available(), super::screen_is_locked());
+        println!(
+            "available: {}, screen locked: {}",
+            super::available(),
+            super::screen_is_locked()
+        );
     }
 }

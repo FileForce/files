@@ -26,7 +26,12 @@ pub static MANIFEST: Manifest = Manifest {
         "Mail window: read, reply, write, save attachments",
         "Global search → email:text, email:from:name, email:to:address",
     ],
-    permissions: &[Permission::Network, Permission::Secrets, Permission::ReadFiles, Permission::WriteFiles],
+    permissions: &[
+        Permission::Network,
+        Permission::Secrets,
+        Permission::ReadFiles,
+        Permission::WriteFiles,
+    ],
     commands: &[],
     menu: &[],
     sidebar: &[],
@@ -84,7 +89,8 @@ impl Provider {
         let domain = email.rsplit('@').next().unwrap_or_default().to_lowercase();
         match domain.as_str() {
             "gmail.com" | "googlemail.com" => Self::Gmail,
-            "ya.ru" | "yandex.ru" | "yandex.com" | "yandex.by" | "yandex.kz" | "yandex.ua" | "narod.ru" => Self::Yandex,
+            "ya.ru" | "yandex.ru" | "yandex.com" | "yandex.by" | "yandex.kz" | "yandex.ua"
+            | "narod.ru" => Self::Yandex,
             _ => Self::Other,
         }
     }
@@ -92,8 +98,14 @@ impl Provider {
     /// IMAP and SMTP over implicit TLS.
     pub fn servers(self) -> Option<(Server, Server)> {
         match self {
-            Self::Gmail => Some((Server::new("imap.gmail.com", 993), Server::new("smtp.gmail.com", 465))),
-            Self::Yandex => Some((Server::new("imap.yandex.com", 993), Server::new("smtp.yandex.com", 465))),
+            Self::Gmail => Some((
+                Server::new("imap.gmail.com", 993),
+                Server::new("smtp.gmail.com", 465),
+            )),
+            Self::Yandex => Some((
+                Server::new("imap.yandex.com", 993),
+                Server::new("smtp.yandex.com", 465),
+            )),
             Self::Other => None,
         }
     }
@@ -116,7 +128,10 @@ pub struct Server {
 
 impl Server {
     pub fn new(host: &str, port: u16) -> Self {
-        Self { host: host.to_string(), port }
+        Self {
+            host: host.to_string(),
+            port,
+        }
     }
 }
 
@@ -137,11 +152,21 @@ impl Account {
     /// An account on a known provider, or `None` for "Other" (enter servers).
     pub fn for_provider(email: &str, name: &str, provider: Provider) -> Option<Self> {
         let (imap, smtp) = provider.servers()?;
-        Some(Self { email: email.trim().to_string(), name: name.trim().to_string(), provider, imap, smtp })
+        Some(Self {
+            email: email.trim().to_string(),
+            name: name.trim().to_string(),
+            provider,
+            imap,
+            smtp,
+        })
     }
 
     fn mailbox(&self) -> String {
-        if self.name.is_empty() { self.email.clone() } else { format!("{} <{}>", self.name, self.email) }
+        if self.name.is_empty() {
+            self.email.clone()
+        } else {
+            format!("{} <{}>", self.name, self.email)
+        }
     }
 }
 
@@ -176,27 +201,47 @@ fn save(accounts: Vec<Account>) -> io::Result<()> {
 /// Checks the password against the server, then remembers the account.
 pub fn add_account(account: Account, password: &str) -> io::Result<()> {
     if !account.email.contains('@') {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Enter the full address, e.g. you@gmail.com"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Enter the full address, e.g. you@gmail.com",
+        ));
     }
     let password: String = password.chars().filter(|c| !c.is_whitespace()).collect();
     // Google shows app passwords in groups of four: spaces are not part of it.
     login(&account, &password)?.logout().ok();
     files_sdk::secrets::set(MANIFEST.id, &account.email, &password)?;
-    let mut all: Vec<_> = accounts().into_iter().filter(|known| known.email != account.email).collect();
+    let mut all: Vec<_> = accounts()
+        .into_iter()
+        .filter(|known| known.email != account.email)
+        .collect();
     all.push(account.clone());
     save(all)?;
-    files_sdk::log::record(MANIFEST.id, files_sdk::log::Kind::Network, format!("Mail account added: {}", account.email), None);
+    files_sdk::log::record(
+        MANIFEST.id,
+        files_sdk::log::Kind::Network,
+        format!("Mail account added: {}", account.email),
+        None,
+    );
     Ok(())
 }
 
 pub fn remove_account(email: &str) -> io::Result<()> {
     let _ = files_sdk::secrets::delete(MANIFEST.id, email);
-    save(accounts().into_iter().filter(|account| account.email != email).collect())
+    save(
+        accounts()
+            .into_iter()
+            .filter(|account| account.email != email)
+            .collect(),
+    )
 }
 
 fn password(account: &Account) -> io::Result<String> {
-    files_sdk::secrets::get(MANIFEST.id, &account.email)?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, format!("No password saved for {}", account.email)))
+    files_sdk::secrets::get(MANIFEST.id, &account.email)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("No password saved for {}", account.email),
+        )
+    })
 }
 
 // ------------------------------------------------------------------- TLS
@@ -207,7 +252,9 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
     static CONFIG: std::sync::OnceLock<Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+            let roots = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
             let provider = Arc::new(rustls::crypto::ring::default_provider());
             Arc::new(
                 rustls::ClientConfig::builder_with_provider(provider)
@@ -224,9 +271,14 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
 /// resolve IPv6 but cannot reach it ("Network is unreachable").
 fn connect_tcp(server: &Server) -> io::Result<TcpStream> {
     use std::net::ToSocketAddrs as _;
-    let mut addresses: Vec<_> = (server.host.as_str(), server.port).to_socket_addrs()?.collect();
+    let mut addresses: Vec<_> = (server.host.as_str(), server.port)
+        .to_socket_addrs()?
+        .collect();
     addresses.sort_by_key(|address| address.is_ipv6());
-    let mut last = io::Error::new(io::ErrorKind::NotFound, format!("{} not found", server.host));
+    let mut last = io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("{} not found", server.host),
+    );
     for address in addresses {
         match TcpStream::connect_timeout(&address, Duration::from_secs(10)) {
             Ok(tcp) => return Ok(tcp),
@@ -245,7 +297,8 @@ fn connect_tls(server: &Server) -> io::Result<Tls> {
     let tcp = connect_tcp(server)?;
     tcp.set_read_timeout(Some(TIMEOUT))?;
     tcp.set_write_timeout(Some(TIMEOUT))?;
-    let name = rustls::pki_types::ServerName::try_from(server.host.clone()).map_err(io::Error::other)?;
+    let name =
+        rustls::pki_types::ServerName::try_from(server.host.clone()).map_err(io::Error::other)?;
     let connection = rustls::ClientConnection::new(tls_config(), name).map_err(io::Error::other)?;
     Ok(rustls::StreamOwned::new(connection, tcp))
 }
@@ -257,8 +310,14 @@ type Session = imap::Session<Tls>;
 fn imap_error(error: imap::Error) -> io::Error {
     match error {
         imap::Error::Io(error) => error,
-        imap::Error::No(response) => io::Error::new(io::ErrorKind::PermissionDenied, format!("The server refused: {}", response.information)),
-        imap::Error::Bad(response) => io::Error::new(io::ErrorKind::PermissionDenied, format!("The server refused: {}", response.information)),
+        imap::Error::No(response) => io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("The server refused: {}", response.information),
+        ),
+        imap::Error::Bad(response) => io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("The server refused: {}", response.information),
+        ),
         other => io::Error::other(other.to_string()),
     }
 }
@@ -268,19 +327,32 @@ fn login(account: &Account, password: &str) -> io::Result<Session> {
     let stream = connect_tls(&account.imap)?;
     let mut client = imap::Client::new(stream);
     client.read_greeting().map_err(imap_error)?;
-    let session = client.login(&account.email, password).map_err(|(error, _)| {
-        let error = imap_error(error);
-        if error.kind() == io::ErrorKind::PermissionDenied {
-            let hint = account.provider.app_password_url().map_or(String::new(), |url| format!(" Use an app password from {url}"));
-            io::Error::new(io::ErrorKind::PermissionDenied, format!("Wrong address or password.{hint}"))
-        } else {
-            error
-        }
-    })?;
+    let session = client
+        .login(&account.email, password)
+        .map_err(|(error, _)| {
+            let error = imap_error(error);
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                let hint = account
+                    .provider
+                    .app_password_url()
+                    .map_or(String::new(), |url| {
+                        format!(" Use an app password from {url}")
+                    });
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("Wrong address or password.{hint}"),
+                )
+            } else {
+                error
+            }
+        })?;
     files_sdk::log::record(
         MANIFEST.id,
         files_sdk::log::Kind::Network,
-        format!("IMAP {} · signed in as {}", account.imap.host, account.email),
+        format!(
+            "IMAP {} · signed in as {}",
+            account.imap.host, account.email
+        ),
         Some(format!("{} ms", started.elapsed().as_millis())),
     );
     Ok(session)
@@ -289,11 +361,17 @@ fn login(account: &Account, password: &str) -> io::Result<Session> {
 // One signed-in connection per account, reused: signing in takes longer
 // than reading a message. A broken connection is replaced once.
 fn pool() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, Session>> {
-    static POOL: std::sync::OnceLock<Mutex<std::collections::HashMap<String, Session>>> = std::sync::OnceLock::new();
-    POOL.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    static POOL: std::sync::OnceLock<Mutex<std::collections::HashMap<String, Session>>> =
+        std::sync::OnceLock::new();
+    POOL.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn with_session<T>(account: &Account, mut run: impl FnMut(&mut Session) -> imap::Result<T>) -> io::Result<T> {
+fn with_session<T>(
+    account: &Account,
+    mut run: impl FnMut(&mut Session) -> imap::Result<T>,
+) -> io::Result<T> {
     let pooled = pool().remove(&account.email);
     let reused = pooled.is_some();
     let mut session = match pooled {
@@ -318,7 +396,9 @@ fn with_session<T>(account: &Account, mut run: impl FnMut(&mut Session) -> imap:
 }
 
 /// Folders with a role (RFC 6154), in the order they are listed.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Special {
     Inbox,
@@ -334,8 +414,17 @@ pub enum Special {
 }
 
 impl Special {
-    pub const ALL: [Self; 9] =
-        [Self::Inbox, Self::Flagged, Self::Drafts, Self::Sent, Self::Scheduled, Self::Archive, Self::All, Self::Junk, Self::Trash];
+    pub const ALL: [Self; 9] = [
+        Self::Inbox,
+        Self::Flagged,
+        Self::Drafts,
+        Self::Sent,
+        Self::Scheduled,
+        Self::Archive,
+        Self::All,
+        Self::Junk,
+        Self::Trash,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -385,11 +474,16 @@ impl Special {
             };
             return Some(special);
         }
-        let last = name.rsplit(['/', '.', '|']).next().unwrap_or(name).to_lowercase();
+        let last = name
+            .rsplit(['/', '.', '|'])
+            .next()
+            .unwrap_or(name)
+            .to_lowercase();
         Some(match last.as_str() {
             "sent" | "sent items" | "sent mail" | "отправленные" => Self::Sent,
             "drafts" | "черновики" => Self::Drafts,
-            "trash" | "deleted" | "deleted items" | "bin" | "удаленные" | "удалённые" | "корзина" => Self::Trash,
+            "trash" | "deleted" | "deleted items" | "bin" | "удаленные" | "удалённые"
+            | "корзина" => Self::Trash,
             "spam" | "junk" | "спам" => Self::Junk,
             "archive" | "архив" => Self::Archive,
             _ => return None,
@@ -413,17 +507,41 @@ pub fn folders(account: &Account) -> io::Result<Vec<Folder>> {
         Ok(session
             .list(Some(""), Some("*"))?
             .iter()
-            .filter(|name| !name.attributes().iter().any(|attribute| matches!(attribute, imap_proto::NameAttribute::NoSelect)))
+            .filter(|name| {
+                !name
+                    .attributes()
+                    .iter()
+                    .any(|attribute| matches!(attribute, imap_proto::NameAttribute::NoSelect))
+            })
             .map(|name| {
                 let delimiter = name.delimiter().unwrap_or("/");
                 let special = Special::of(name.name(), name.attributes());
-                let label = name.name().rsplit(delimiter).next().unwrap_or(name.name()).to_string();
-                Folder { name: name.name().to_string(), label: if special == Some(Special::Inbox) { "Inbox".into() } else { label }, special }
+                let label = name
+                    .name()
+                    .rsplit(delimiter)
+                    .next()
+                    .unwrap_or(name.name())
+                    .to_string();
+                Folder {
+                    name: name.name().to_string(),
+                    label: if special == Some(Special::Inbox) {
+                        "Inbox".into()
+                    } else {
+                        label
+                    },
+                    special,
+                }
             })
             .collect::<Vec<_>>())
     })?;
     let mut folders = names;
-    folders.sort_by(|a, b| (a.special.is_none(), a.special, a.label.to_lowercase()).cmp(&(b.special.is_none(), b.special, b.label.to_lowercase())));
+    folders.sort_by(|a, b| {
+        (a.special.is_none(), a.special, a.label.to_lowercase()).cmp(&(
+            b.special.is_none(),
+            b.special,
+            b.label.to_lowercase(),
+        ))
+    });
     Ok(folders)
 }
 
@@ -455,7 +573,10 @@ const CACHED_BODIES: usize = 400;
 
 fn cache() -> std::sync::MutexGuard<'static, Cache> {
     static CACHE: std::sync::OnceLock<Mutex<Cache>> = std::sync::OnceLock::new();
-    CACHE.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// (messages in memory, bytes of their text and attachments), for the developer tools.
@@ -464,30 +585,53 @@ pub fn cache_stats() -> (usize, u64) {
     let bytes = cache
         .bodies
         .values()
-        .map(|message| (message.body.len() + message.html.as_ref().map_or(0, String::len) + message.attachments.iter().map(|attachment| attachment.bytes.len()).sum::<usize>()) as u64)
+        .map(|message| {
+            (message.body.len()
+                + message.html.as_ref().map_or(0, String::len)
+                + message
+                    .attachments
+                    .iter()
+                    .map(|attachment| attachment.bytes.len())
+                    .sum::<usize>()) as u64
+        })
         .sum();
     (cache.bodies.len(), bytes)
 }
 
 /// The last list read for `folder`, shown at once while it is refreshed.
 pub fn cached_messages(account: &Account, folder: &str) -> Option<Vec<Summary>> {
-    cache().lists.get(&(account.email.clone(), folder.to_string())).cloned()
+    cache()
+        .lists
+        .get(&(account.email.clone(), folder.to_string()))
+        .cloned()
 }
 
 pub fn cached_message(account: &Account, folder: &str, uid: u32) -> Option<Message> {
-    cache().bodies.get(&(account.email.clone(), folder.to_string(), uid)).cloned()
+    cache()
+        .bodies
+        .get(&(account.email.clone(), folder.to_string(), uid))
+        .cloned()
 }
 
-const SUMMARY_FIELDS: &str = "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE)])";
+const SUMMARY_FIELDS: &str =
+    "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE)])";
 
 fn summaries(fetched: &imap::types::Fetches) -> Vec<Summary> {
     let mut list: Vec<Summary> = fetched
         .iter()
         .filter_map(|message| {
-            let header = parse_summary(message.header().or_else(|| message.body()).unwrap_or_default());
+            let header = parse_summary(
+                message
+                    .header()
+                    .or_else(|| message.body())
+                    .unwrap_or_default(),
+            );
             Some(Summary {
                 uid: message.uid?,
-                seen: message.flags().iter().any(|flag| matches!(flag, imap::types::Flag::Seen)),
+                seen: message
+                    .flags()
+                    .iter()
+                    .any(|flag| matches!(flag, imap::types::Flag::Seen)),
                 size: message.size.unwrap_or(0),
                 ..header
             })
@@ -505,27 +649,52 @@ pub fn messages(account: &Account, folder: &str) -> io::Result<Vec<Summary>> {
             return Ok(Vec::new());
         }
         let first = mailbox.exists.saturating_sub(PAGE - 1).max(1);
-        Ok(summaries(&session.fetch(format!("{first}:{}", mailbox.exists), SUMMARY_FIELDS)?))
+        Ok(summaries(&session.fetch(
+            format!("{first}:{}", mailbox.exists),
+            SUMMARY_FIELDS,
+        )?))
     })?;
-    cache().lists.insert((account.email.clone(), folder.to_string()), list.clone());
+    cache()
+        .lists
+        .insert((account.email.clone(), folder.to_string()), list.clone());
     Ok(list)
 }
 
 /// From, subject and date out of raw header lines (MIME words decoded).
 pub fn parse_summary(header: &[u8]) -> Summary {
     let parsed = mail_parser::MessageParser::default().parse_headers(header);
-    let sender = parsed.as_ref().and_then(|message| message.from()).and_then(|from| from.first());
-    let address = sender.as_ref().and_then(|sender| sender.address()).unwrap_or_default().to_string();
-    let from = sender.as_ref().and_then(|sender| sender.name()).map_or_else(|| address.clone(), str::to_string);
+    let sender = parsed
+        .as_ref()
+        .and_then(|message| message.from())
+        .and_then(|from| from.first());
+    let address = sender
+        .as_ref()
+        .and_then(|sender| sender.address())
+        .unwrap_or_default()
+        .to_string();
+    let from = sender
+        .as_ref()
+        .and_then(|sender| sender.name())
+        .map_or_else(|| address.clone(), str::to_string);
     let to = parsed
         .as_ref()
         .and_then(|message| message.to())
-        .map(|list| list.mailboxes().filter_map(|address| address.address()).collect::<Vec<_>>().join(", "))
+        .map(|list| {
+            list.mailboxes()
+                .filter_map(|address| address.address())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
         .unwrap_or_default();
     let cc = parsed
         .as_ref()
         .and_then(|message| message.cc())
-        .map(|list| list.mailboxes().filter_map(|address| address.address()).collect::<Vec<_>>().join(", "))
+        .map(|list| {
+            list.mailboxes()
+                .filter_map(|address| address.address())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
         .unwrap_or_default();
     Summary {
         uid: 0,
@@ -533,8 +702,15 @@ pub fn parse_summary(header: &[u8]) -> Summary {
         address,
         to,
         cc,
-        subject: parsed.as_ref().and_then(|message| message.subject()).unwrap_or("(no subject)").to_string(),
-        date: parsed.as_ref().and_then(|message| message.date()).map(|date| date.to_timestamp()),
+        subject: parsed
+            .as_ref()
+            .and_then(|message| message.subject())
+            .unwrap_or("(no subject)")
+            .to_string(),
+        date: parsed
+            .as_ref()
+            .and_then(|message| message.date())
+            .map(|date| date.to_timestamp()),
         seen: false,
         size: 0,
     }
@@ -592,10 +768,18 @@ pub struct Details {
 /// An IPv4 or IPv6 address in brackets or after "from", that is not private.
 fn public_ip(text: &str) -> Option<String> {
     text.split(|c: char| matches!(c, '[' | ']' | '(' | ')' | ' ' | ';' | '\t'))
-        .filter_map(|word| word.trim_start_matches("IPv6:").parse::<std::net::IpAddr>().ok())
+        .filter_map(|word| {
+            word.trim_start_matches("IPv6:")
+                .parse::<std::net::IpAddr>()
+                .ok()
+        })
         .find(|ip| match ip {
-            std::net::IpAddr::V4(v4) => !(v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()),
-            std::net::IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00),
+            std::net::IpAddr::V4(v4) => {
+                !(v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified())
+            }
+            std::net::IpAddr::V6(v6) => {
+                !(v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00)
+            }
         })
         .map(|ip| ip.to_string())
 }
@@ -606,28 +790,58 @@ fn details_of(parsed: &mail_parser::Message, raw_size: usize) -> Details {
         .headers()
         .iter()
         .map(|header| {
-            let value = String::from_utf8_lossy(header.raw_value()).split_whitespace().collect::<Vec<_>>().join(" ");
+            let value = String::from_utf8_lossy(header.raw_value())
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             (header.raw_name().to_string(), value)
         })
         .collect();
-    let find = |name: &str| headers.iter().find(|(header, _)| header.eq_ignore_ascii_case(name)).map(|(_, value)| value.clone());
+    let find = |name: &str| {
+        headers
+            .iter()
+            .find(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.clone())
+    };
     // Received lines are newest first: the sender's is the last one.
-    let received: Vec<&String> = headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("received")).map(|(_, value)| value).collect();
+    let received: Vec<&String> = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("received"))
+        .map(|(_, value)| value)
+        .collect();
     let hops: Vec<String> = received
         .iter()
         .rev()
-        .filter_map(|line| line.strip_prefix("from ").and_then(|rest| rest.split_whitespace().next()).map(str::to_string))
+        .filter_map(|line| {
+            line.strip_prefix("from ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(str::to_string)
+        })
         .collect();
     let sender_ip = find("x-originating-ip")
         .and_then(|value| public_ip(&value))
-        .or_else(|| received.iter().rev().find_map(|line| public_ip(line.split(" by ").next().unwrap_or(line))));
+        .or_else(|| {
+            received
+                .iter()
+                .rev()
+                .find_map(|line| public_ip(line.split(" by ").next().unwrap_or(line)))
+        });
     let type_of = |part: &mail_parser::MessagePart| {
-        part.content_type().map_or_else(|| "text/plain".to_string(), |kind| format!("{}/{}", kind.ctype(), kind.subtype().unwrap_or("*")))
+        part.content_type().map_or_else(
+            || "text/plain".to_string(),
+            |kind| format!("{}/{}", kind.ctype(), kind.subtype().unwrap_or("*")),
+        )
     };
     let parts = parsed
         .parts()
         .filter(|part| !part.is_multipart())
-        .map(|part| (type_of(&part), part.attachment_name().map(str::to_string), part.decoded_len()))
+        .map(|part| {
+            (
+                type_of(&part),
+                part.attachment_name().map(str::to_string),
+                part.decoded_len(),
+            )
+        })
         .collect();
     Details {
         message_id: parsed.message_id().map(str::to_string),
@@ -653,17 +867,25 @@ pub fn message(account: &Account, folder: &str, uid: u32) -> io::Result<Message>
     let raw = with_session(account, |session| {
         session.select(folder)?;
         let fetched = session.uid_fetch(uid.to_string(), "BODY[]")?;
-        Ok(fetched.iter().find_map(|message| message.body().map(<[u8]>::to_vec)))
+        Ok(fetched
+            .iter()
+            .find_map(|message| message.body().map(<[u8]>::to_vec)))
     })?
     .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "The message is gone"))?;
-    let mut message = parse_message(&raw).ok_or_else(|| io::Error::other("This message cannot be read"))?;
+    let mut message =
+        parse_message(&raw).ok_or_else(|| io::Error::other("This message cannot be read"))?;
     message.uid = uid;
     let mut cache = cache();
     if cache.bodies.len() >= CACHED_BODIES {
         cache.bodies.clear();
     }
-    cache.bodies.insert((account.email.clone(), folder.to_string(), uid), message.clone());
-    if let Some(list) = cache.lists.get_mut(&(account.email.clone(), folder.to_string()))
+    cache.bodies.insert(
+        (account.email.clone(), folder.to_string(), uid),
+        message.clone(),
+    );
+    if let Some(list) = cache
+        .lists
+        .get_mut(&(account.email.clone(), folder.to_string()))
         && let Some(summary) = list.iter_mut().find(|summary| summary.uid == uid)
     {
         summary.seen = true;
@@ -674,7 +896,8 @@ pub fn message(account: &Account, folder: &str, uid: u32) -> io::Result<Message>
 /// Reads the newest messages ahead, so opening them is instant.
 pub fn prefetch(account: &Account, folder: &str, uids: &[u32]) {
     for &uid in uids {
-        if cached_message(account, folder, uid).is_none() && message(account, folder, uid).is_err() {
+        if cached_message(account, folder, uid).is_none() && message(account, folder, uid).is_err()
+        {
             break;
         }
     }
@@ -697,13 +920,18 @@ pub fn set_flagged(account: &Account, folder: &str, uid: u32, flagged: bool) -> 
 fn store_flag(account: &Account, folder: &str, uid: u32, flag: &str, on: bool) -> io::Result<()> {
     with_session(account, |session| {
         session.select(folder)?;
-        session.uid_store(uid.to_string(), format!("{}FLAGS ({flag})", if on { "+" } else { "-" }))?;
+        session.uid_store(
+            uid.to_string(),
+            format!("{}FLAGS ({flag})", if on { "+" } else { "-" }),
+        )?;
         Ok(())
     })
 }
 
 fn update_cached(account: &Account, folder: &str, uid: u32, change: impl Fn(&mut Summary)) {
-    if let Some(list) = cache().lists.get_mut(&(account.email.clone(), folder.to_string()))
+    if let Some(list) = cache()
+        .lists
+        .get_mut(&(account.email.clone(), folder.to_string()))
         && let Some(summary) = list.iter_mut().find(|summary| summary.uid == uid)
     {
         change(summary);
@@ -712,17 +940,25 @@ fn update_cached(account: &Account, folder: &str, uid: u32, change: impl Fn(&mut
 
 fn forget(account: &Account, folder: &str, uid: u32) {
     let mut cache = cache();
-    if let Some(list) = cache.lists.get_mut(&(account.email.clone(), folder.to_string())) {
+    if let Some(list) = cache
+        .lists
+        .get_mut(&(account.email.clone(), folder.to_string()))
+    {
         list.retain(|summary| summary.uid != uid);
     }
-    cache.bodies.remove(&(account.email.clone(), folder.to_string(), uid));
+    cache
+        .bodies
+        .remove(&(account.email.clone(), folder.to_string(), uid));
 }
 
 /// Moves a message into `target` (MOVE, or copy + delete on old servers).
 pub fn move_to(account: &Account, folder: &str, uid: u32, target: &str) -> io::Result<()> {
     with_session(account, |session| {
         session.select(folder)?;
-        let can_move = session.capabilities().map(|capabilities| capabilities.has_str("MOVE")).unwrap_or(false);
+        let can_move = session
+            .capabilities()
+            .map(|capabilities| capabilities.has_str("MOVE"))
+            .unwrap_or(false);
         if can_move {
             session.uid_mv(uid.to_string(), target)?;
         } else {
@@ -811,7 +1047,9 @@ impl Search {
                         index += 2;
                     }
                     None => {
-                        search.criteria.push(format!("TEXT {}", quoted(parts[index])));
+                        search
+                            .criteria
+                            .push(format!("TEXT {}", quoted(parts[index])));
                         index += 1;
                     }
                 }
@@ -837,7 +1075,11 @@ pub fn search(account: &Account, folder: &str, search: &Search) -> io::Result<Ve
     if search.criteria.is_empty() && search.addresses.is_empty() {
         return messages(account, folder);
     }
-    let query = if search.criteria.is_empty() { "ALL".to_string() } else { search.criteria.join(" ") };
+    let query = if search.criteria.is_empty() {
+        "ALL".to_string()
+    } else {
+        search.criteria.join(" ")
+    };
     let mut found = with_session(account, |session| {
         session.examine(folder)?;
         let mut uids: Vec<u32> = session.uid_search(&query)?.into_iter().collect();
@@ -848,7 +1090,11 @@ pub fn search(account: &Account, folder: &str, search: &Search) -> io::Result<Ve
         if uids.is_empty() {
             return Ok(Vec::new());
         }
-        let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let set = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         Ok(summaries(&session.uid_fetch(set, SUMMARY_FIELDS)?))
     })?;
     found.retain(|summary| search.matches(summary));
@@ -877,11 +1123,18 @@ pub fn global_search(query: &str) -> io::Result<Vec<MailResult>> {
                 continue;
             }
         };
-        for folder in folders.into_iter().filter(|folder| folder.special != Some(Special::All)) {
+        for folder in folders
+            .into_iter()
+            .filter(|folder| folder.special != Some(Special::All))
+        {
             match self::search(&account, &folder.name, &search) {
                 Ok(messages) => {
                     loaded = true;
-                    found.extend(messages.into_iter().map(|summary| MailResult { account: account.clone(), folder: folder.clone(), summary }));
+                    found.extend(messages.into_iter().map(|summary| MailResult {
+                        account: account.clone(),
+                        folder: folder.clone(),
+                        summary,
+                    }));
                 }
                 Err(error) => {
                     first_error.get_or_insert(error);
@@ -889,12 +1142,18 @@ pub fn global_search(query: &str) -> io::Result<Vec<MailResult>> {
             }
         }
     }
-    if !loaded && found.is_empty()
+    if !loaded
+        && found.is_empty()
         && let Some(error) = first_error
     {
         return Err(error);
     }
-    found.sort_by(|a, b| b.summary.date.unwrap_or(0).cmp(&a.summary.date.unwrap_or(0)));
+    found.sort_by(|a, b| {
+        b.summary
+            .date
+            .unwrap_or(0)
+            .cmp(&a.summary.date.unwrap_or(0))
+    });
     found.truncate(PAGE as usize);
     Ok(found)
 }
@@ -905,34 +1164,56 @@ pub fn parse_message(raw: &[u8]) -> Option<Message> {
     let from = parsed.from().and_then(|list| list.first());
     let to = parsed
         .to()
-        .map(|list| list.mailboxes().filter_map(|address| address.address()).collect::<Vec<_>>().join(", "))
+        .map(|list| {
+            list.mailboxes()
+                .filter_map(|address| address.address())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
         .unwrap_or_default();
     let cc = parsed
         .cc()
-        .map(|list| list.mailboxes().filter_map(|address| address.address()).collect::<Vec<_>>().join(", "))
+        .map(|list| {
+            list.mailboxes()
+                .filter_map(|address| address.address())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
         .unwrap_or_default();
-    let reply = parsed.reply_to().and_then(|list| list.first()).or_else(|| from.clone());
+    let reply = parsed
+        .reply_to()
+        .and_then(|list| list.first())
+        .or_else(|| from.clone());
     let attachments = parsed
         .attachments()
         .map(|part| Attachment {
-            name: part.attachment_name().map_or_else(|| "attachment".to_string(), safe_name),
+            name: part
+                .attachment_name()
+                .map_or_else(|| "attachment".to_string(), safe_name),
             bytes: part.decoded().into_owned(),
         })
         .collect();
     Some(Message {
         uid: 0,
-        from: from.as_ref().map_or_else(String::new, |address| match (address.name(), address.address()) {
-            (Some(name), Some(email)) => format!("{name} <{email}>"),
-            (_, Some(email)) => email.to_string(),
-            (Some(name), None) => name.to_string(),
-            _ => String::new(),
+        from: from.as_ref().map_or_else(String::new, |address| {
+            match (address.name(), address.address()) {
+                (Some(name), Some(email)) => format!("{name} <{email}>"),
+                (_, Some(email)) => email.to_string(),
+                (Some(name), None) => name.to_string(),
+                _ => String::new(),
+            }
         }),
         cc,
-        reply_to: reply.and_then(|address| address.address().map(str::to_string)).unwrap_or_default(),
+        reply_to: reply
+            .and_then(|address| address.address().map(str::to_string))
+            .unwrap_or_default(),
         to,
         subject: parsed.subject().unwrap_or("(no subject)").to_string(),
         date: parsed.date().map(|date| date.to_timestamp()),
-        body: parsed.body_text(0).map(|text| text.trim().to_string()).unwrap_or_default(),
+        body: parsed
+            .body_text(0)
+            .map(|text| text.trim().to_string())
+            .unwrap_or_default(),
         html: parsed
             .html_body()
             .any(|part| part.is_content_type("text", "html"))
@@ -946,8 +1227,15 @@ pub fn parse_message(raw: &[u8]) -> Option<Message> {
 /// An attachment's name with no folders in it, so saving stays in the folder.
 fn safe_name(name: &str) -> String {
     let name = name.rsplit(['/', '\\']).next().unwrap_or_default().trim();
-    let name: String = name.chars().filter(|c| !c.is_control() && !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|')).collect();
-    if name.is_empty() || name == "." || name == ".." { "attachment".to_string() } else { name }
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    if name.is_empty() || name == "." || name == ".." {
+        "attachment".to_string()
+    } else {
+        name
+    }
 }
 
 /// Writes an attachment into `folder`, never over an existing file.
@@ -959,8 +1247,7 @@ pub fn save_attachment(attachment: &Attachment, folder: &Path) -> io::Result<Pat
 
 // ------------------------------------------------------------------ SMTP
 
-#[derive(Clone, Debug, Default, PartialEq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Draft {
     /// Comma-separated addresses.
     pub to: String,
@@ -976,14 +1263,32 @@ pub struct Draft {
 
 /// Turns a draft into a MIME message from `account` (no network).
 pub fn build(account: &Account, draft: &Draft) -> io::Result<lettre::Message> {
-    use lettre::message::{Attachment as Part, Mailbox, MultiPart, SinglePart, header::ContentType};
-    let invalid = |what: &str, error: &dyn std::fmt::Display| io::Error::new(io::ErrorKind::InvalidInput, format!("{what}: {error}"));
-    let from: Mailbox = account.mailbox().parse().map_err(|error| invalid("Sender", &error))?;
-    let mut builder = lettre::Message::builder().from(from).subject(draft.subject.trim());
-    let list = |text: &str| text.split([',', ';']).map(str::trim).filter(|address| !address.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    use lettre::message::{
+        Attachment as Part, Mailbox, MultiPart, SinglePart, header::ContentType,
+    };
+    let invalid = |what: &str, error: &dyn std::fmt::Display| {
+        io::Error::new(io::ErrorKind::InvalidInput, format!("{what}: {error}"))
+    };
+    let from: Mailbox = account
+        .mailbox()
+        .parse()
+        .map_err(|error| invalid("Sender", &error))?;
+    let mut builder = lettre::Message::builder()
+        .from(from)
+        .subject(draft.subject.trim());
+    let list = |text: &str| {
+        text.split([',', ';'])
+            .map(str::trim)
+            .filter(|address| !address.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
     let (to, cc, bcc) = (list(&draft.to), list(&draft.cc), list(&draft.bcc));
     if to.is_empty() && cc.is_empty() && bcc.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Add at least one recipient"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Add at least one recipient",
+        ));
     }
     for address in &to {
         builder = builder.to(address.parse().map_err(|error| invalid(address, &error))?);
@@ -1001,9 +1306,16 @@ pub fn build(account: &Account, draft: &Draft) -> io::Result<lettre::Message> {
     } else {
         let mut parts = MultiPart::mixed().singlepart(text);
         for path in &draft.attachments {
-            let name = path.file_name().map_or_else(|| "attachment".to_string(), |name| name.to_string_lossy().into_owned());
-            let bytes = std::fs::read(path).map_err(|error| io::Error::new(error.kind(), format!("{name}: {error}")))?;
-            parts = parts.singlepart(Part::new(name).body(bytes, ContentType::parse("application/octet-stream").expect("valid type")));
+            let name = path.file_name().map_or_else(
+                || "attachment".to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            let bytes = std::fs::read(path)
+                .map_err(|error| io::Error::new(error.kind(), format!("{name}: {error}")))?;
+            parts = parts.singlepart(Part::new(name).body(
+                bytes,
+                ContentType::parse("application/octet-stream").expect("valid type"),
+            ));
         }
         builder.multipart(parts)
     };
@@ -1036,16 +1348,32 @@ pub fn send(account: &Account, draft: &Draft) -> io::Result<()> {
     let tls = TlsParameters::new(server.host.clone()).map_err(io::Error::other)?;
     let transport = lettre::SmtpTransport::builder_dangerous(ip.to_string())
         .port(server.port)
-        .tls(if server.port == 587 { SmtpTls::Required(tls) } else { SmtpTls::Wrapper(tls) })
+        .tls(if server.port == 587 {
+            SmtpTls::Required(tls)
+        } else {
+            SmtpTls::Wrapper(tls)
+        })
         .timeout(Some(TIMEOUT))
-        .credentials(lettre::transport::smtp::authentication::Credentials::new(account.email.clone(), password))
+        .credentials(lettre::transport::smtp::authentication::Credentials::new(
+            account.email.clone(),
+            password,
+        ))
         .build();
-    transport.send(&message).map_err(|error| io::Error::other(format!("Not sent: {error}")))?;
+    transport
+        .send(&message)
+        .map_err(|error| io::Error::other(format!("Not sent: {error}")))?;
     files_sdk::log::record(
         MANIFEST.id,
         files_sdk::log::Kind::Network,
-        format!("SMTP {} · sent \"{}\" to {}", account.smtp.host, draft.subject, draft.to),
-        Some(format!("{} attachment(s) · {} ms", draft.attachments.len(), started.elapsed().as_millis())),
+        format!(
+            "SMTP {} · sent \"{}\" to {}",
+            account.smtp.host, draft.subject, draft.to
+        ),
+        Some(format!(
+            "{} attachment(s) · {} ms",
+            draft.attachments.len(),
+            started.elapsed().as_millis()
+        )),
     );
     Ok(())
 }
@@ -1092,7 +1420,10 @@ fn read_outbox() -> Vec<Scheduled> {
 fn write_outbox(messages: Vec<Scheduled>) -> io::Result<()> {
     let dir = outbox_dir().ok_or_else(|| io::Error::other("no settings folder"))?;
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("outbox.toml"), toml::to_string_pretty(&Outbox { messages }).map_err(io::Error::other)?)
+    std::fs::write(
+        dir.join("outbox.toml"),
+        toml::to_string_pretty(&Outbox { messages }).map_err(io::Error::other)?,
+    )
 }
 
 /// Every scheduled message, soonest first.
@@ -1107,8 +1438,12 @@ pub fn scheduled() -> Vec<Scheduled> {
 pub fn schedule(account: &Account, draft: &Draft, send_at: i64) -> io::Result<Scheduled> {
     build(account, draft)?;
     let _lock = outbox_lock();
-    let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos() as u64);
-    let folder = outbox_dir().ok_or_else(|| io::Error::other("no settings folder"))?.join(id.to_string());
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos() as u64);
+    let folder = outbox_dir()
+        .ok_or_else(|| io::Error::other("no settings folder"))?
+        .join(id.to_string());
     std::fs::create_dir_all(&folder)?;
     let mut copy = draft.clone();
     copy.attachments = draft
@@ -1119,7 +1454,13 @@ pub fn schedule(account: &Account, draft: &Draft, send_at: i64) -> io::Result<Sc
             std::fs::copy(path, &target).map(|_| target)
         })
         .collect::<io::Result<_>>()?;
-    let message = Scheduled { id, account: account.email.clone(), send_at, draft: copy, error: None };
+    let message = Scheduled {
+        id,
+        account: account.email.clone(),
+        send_at,
+        draft: copy,
+        error: None,
+    };
     let mut messages = read_outbox();
     messages.push(message.clone());
     write_outbox(messages)?;
@@ -1129,7 +1470,12 @@ pub fn schedule(account: &Account, draft: &Draft, send_at: i64) -> io::Result<Sc
 /// Removes a scheduled message (and its copied files) without sending it.
 pub fn cancel(id: u64) -> io::Result<()> {
     let _lock = outbox_lock();
-    write_outbox(read_outbox().into_iter().filter(|message| message.id != id).collect())?;
+    write_outbox(
+        read_outbox()
+            .into_iter()
+            .filter(|message| message.id != id)
+            .collect(),
+    )?;
     if let Some(dir) = outbox_dir() {
         let _ = std::fs::remove_dir_all(dir.join(id.to_string()));
     }
@@ -1139,13 +1485,22 @@ pub fn cancel(id: u64) -> io::Result<()> {
 /// Sends what is due by `now`. Returns what went out and what failed (a
 /// failed one stays queued and is tried again next time).
 pub fn send_due(now: i64) -> Vec<(Scheduled, io::Result<()>)> {
-    let due: Vec<Scheduled> = scheduled().into_iter().filter(|message| message.send_at <= now).collect();
+    let due: Vec<Scheduled> = scheduled()
+        .into_iter()
+        .filter(|message| message.send_at <= now)
+        .collect();
     let accounts = accounts();
     let mut results = Vec::new();
     for message in due {
-        let result = match accounts.iter().find(|account| account.email == message.account) {
+        let result = match accounts
+            .iter()
+            .find(|account| account.email == message.account)
+        {
             Some(account) => send(account, &message.draft),
-            None => Err(io::Error::new(io::ErrorKind::NotFound, format!("The account {} was removed", message.account))),
+            None => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("The account {} was removed", message.account),
+            )),
         };
         if result.is_ok() {
             let _ = cancel(message.id);
@@ -1188,8 +1543,14 @@ mod tests {
         assert_eq!(Provider::of("ivan@ya.ru"), Provider::Yandex);
         assert_eq!(Provider::of("me@example.org"), Provider::Other);
         let account = account();
-        assert_eq!((account.imap.host.as_str(), account.imap.port), ("imap.gmail.com", 993));
-        assert_eq!((account.smtp.host.as_str(), account.smtp.port), ("smtp.gmail.com", 465));
+        assert_eq!(
+            (account.imap.host.as_str(), account.imap.port),
+            ("imap.gmail.com", 993)
+        );
+        assert_eq!(
+            (account.smtp.host.as_str(), account.smtp.port),
+            ("smtp.gmail.com", 465)
+        );
         assert!(Account::for_provider("me@example.org", "", Provider::Other).is_none());
     }
 
@@ -1199,7 +1560,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("отчёт.pdf");
         std::fs::write(&file, b"%PDF-1.4 hello").unwrap();
-        let draft = Draft { to: "bob@example.com; eve@example.com".into(), subject: "Report".into(), body: "See attached".into(), attachments: vec![file], ..Default::default() };
+        let draft = Draft {
+            to: "bob@example.com; eve@example.com".into(),
+            subject: "Report".into(),
+            body: "See attached".into(),
+            attachments: vec![file],
+            ..Default::default()
+        };
         let raw = build(&account(), &draft).unwrap().formatted();
         let parsed = parse_message(&raw).unwrap();
         assert_eq!(parsed.subject, "Report");
@@ -1215,7 +1582,10 @@ mod tests {
         assert_ne!(saved, again, "an existing file is never overwritten");
         std::fs::remove_dir_all(&dir).unwrap();
 
-        let empty = Draft { to: " ".into(), ..Default::default() };
+        let empty = Draft {
+            to: " ".into(),
+            ..Default::default()
+        };
         assert!(build(&account(), &empty).is_err(), "no recipient");
     }
 
@@ -1253,11 +1623,23 @@ mod more_tests {
 
     #[test]
     fn search_reads_filters_and_the_chained_account() {
-        let search = Search::parse("email:Vitalicset@gmail.com:to:someone@qwe.com invoice from:ann is:unread");
+        let search = Search::parse(
+            "email:Vitalicset@gmail.com:to:someone@qwe.com invoice from:ann is:unread",
+        );
         assert_eq!(search.account.as_deref(), Some("vitalicset@gmail.com"));
         assert_eq!(search.criteria, ["TEXT \"invoice\"", "UNSEEN"]);
-        assert_eq!(search.addresses, [(Address::To, "someone@qwe.com".into()), (Address::From, "ann".into())]);
-        assert_eq!(Search::parse("subject:\"x").criteria, ["SUBJECT \"\\\"x\""], "quotes are escaped");
+        assert_eq!(
+            search.addresses,
+            [
+                (Address::To, "someone@qwe.com".into()),
+                (Address::From, "ann".into())
+            ]
+        );
+        assert_eq!(
+            Search::parse("subject:\"x").criteria,
+            ["SUBJECT \"\\\"x\""],
+            "quotes are escaped"
+        );
         assert!(Search::parse("").criteria.is_empty());
     }
 
@@ -1274,7 +1656,11 @@ mod more_tests {
         assert!(Search::parse("cc:vitalicset").matches(&summary));
         assert!(!Search::parse("to:missing").matches(&summary));
         let combined = Search::parse("to:vitalicset is:unread");
-        assert_eq!(combined.criteria, ["UNSEEN"], "only the non-address filters are sent to IMAP");
+        assert_eq!(
+            combined.criteria,
+            ["UNSEEN"],
+            "only the non-address filters are sent to IMAP"
+        );
         assert!(combined.matches(&summary));
     }
 
@@ -1283,10 +1669,18 @@ mod more_tests {
         let raw = b"From: Ann <ann@x.com>\r\nSubject: News\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nHello\r\n--b\r\nContent-Type: text/html\r\n\r\n<p><b>Hello</b> <a href=\"https://x.com\">x</a></p>\r\n--b--\r\n";
         let message = parse_message(raw).unwrap();
         assert_eq!(message.body, "Hello");
-        assert!(message.html.as_deref().is_some_and(|html| html.contains("<b>Hello</b>")));
+        assert!(
+            message
+                .html
+                .as_deref()
+                .is_some_and(|html| html.contains("<b>Hello</b>"))
+        );
         let plain = parse_message(b"From: ann@x.com\r\nSubject: Hi\r\n\r\nJust text\r\n").unwrap();
         assert_eq!(plain.html, None);
-        assert_eq!(parse_summary(b"From: Ann Lee <ann@x.com>\r\n\r\n").address, "ann@x.com");
+        assert_eq!(
+            parse_summary(b"From: Ann Lee <ann@x.com>\r\n\r\n").address,
+            "ann@x.com"
+        );
     }
 
     #[test]
@@ -1306,14 +1700,33 @@ mod more_tests {
             "--b--\r\n"
         );
         let details = parse_message(raw.as_bytes()).unwrap().details;
-        assert_eq!(details.sender_ip.as_deref(), Some("203.0.113.7"), "the first public address, not the private one");
-        assert_eq!(details.hops, ["[192.168.1.20]", "mx.google.com"], "the sender's server first");
+        assert_eq!(
+            details.sender_ip.as_deref(),
+            Some("203.0.113.7"),
+            "the first public address, not the private one"
+        );
+        assert_eq!(
+            details.hops,
+            ["[192.168.1.20]", "mx.google.com"],
+            "the sender's server first"
+        );
         assert_eq!(details.client.as_deref(), Some("Apple Mail (2.3774)"));
-        assert!(details.authentication.as_deref().is_some_and(|checks| checks.contains("spf=pass") && checks.contains("dkim=pass")));
+        assert!(
+            details
+                .authentication
+                .as_deref()
+                .is_some_and(|checks| checks.contains("spf=pass") && checks.contains("dkim=pass"))
+        );
         assert_eq!(details.mime, "multipart/mixed");
         assert_eq!(details.message_id.as_deref(), Some("abc@x.com"));
         assert_eq!(details.return_path.as_deref(), Some("ann@x.com"));
-        assert!(details.parts.iter().any(|(kind, name, _)| kind == "application/pdf" && name.as_deref() == Some("report.pdf")));
+        assert!(
+            details
+                .parts
+                .iter()
+                .any(|(kind, name, _)| kind == "application/pdf"
+                    && name.as_deref() == Some("report.pdf"))
+        );
         assert!(details.headers.iter().any(|(name, _)| name == "X-Mailer"));
         assert_eq!(details.size, raw.len());
     }
@@ -1322,7 +1735,10 @@ mod more_tests {
     fn special_folders_are_found_by_flag_or_name() {
         use imap_proto::NameAttribute as A;
         assert_eq!(Special::of("INBOX", &[]), Some(Special::Inbox));
-        assert_eq!(Special::of("[Gmail]/Bin", &[A::Trash]), Some(Special::Trash));
+        assert_eq!(
+            Special::of("[Gmail]/Bin", &[A::Trash]),
+            Some(Special::Trash)
+        );
         assert_eq!(Special::of("Отправленные", &[]), Some(Special::Sent));
         assert_eq!(Special::of("Projects", &[]), None);
     }
@@ -1330,13 +1746,27 @@ mod more_tests {
     #[test]
     fn bcc_recipients_get_mail_but_stay_hidden() {
         let account = Account::for_provider("ann@gmail.com", "", Provider::Gmail).unwrap();
-        let draft = Draft { to: "bob@x.com".into(), cc: "carol@x.com".into(), bcc: "secret@x.com".into(), subject: "Hi".into(), ..Default::default() };
+        let draft = Draft {
+            to: "bob@x.com".into(),
+            cc: "carol@x.com".into(),
+            bcc: "secret@x.com".into(),
+            subject: "Hi".into(),
+            ..Default::default()
+        };
         let message = build(&account, &draft).unwrap();
-        let recipients: Vec<String> = message.envelope().to().iter().map(ToString::to_string).collect();
+        let recipients: Vec<String> = message
+            .envelope()
+            .to()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         assert_eq!(recipients, ["bob@x.com", "carol@x.com", "secret@x.com"]);
         let text = String::from_utf8(message.formatted()).unwrap();
         assert!(text.contains("Cc: carol@x.com"), "{text}");
-        assert!(!text.contains("secret@x.com"), "Bcc leaked into the headers");
+        assert!(
+            !text.contains("secret@x.com"),
+            "Bcc leaked into the headers"
+        );
         assert_eq!(parse_message(text.as_bytes()).unwrap().cc, "carol@x.com");
     }
 
@@ -1349,11 +1779,20 @@ mod more_tests {
         let file = dir.join("plan.txt");
         std::fs::write(&file, "v1").unwrap();
         let account = Account::for_provider("ann@gmail.com", "", Provider::Gmail).unwrap();
-        let draft = Draft { to: "bob@x.com".into(), subject: "Later".into(), attachments: vec![file.clone()], ..Default::default() };
+        let draft = Draft {
+            to: "bob@x.com".into(),
+            subject: "Later".into(),
+            attachments: vec![file.clone()],
+            ..Default::default()
+        };
         let queued = schedule(&account, &draft, 2_000_000_000).unwrap();
         std::fs::write(&file, "v2 changed after scheduling").unwrap();
         let copy = &queued.draft.attachments[0];
-        assert_eq!(std::fs::read_to_string(copy).unwrap(), "v1", "the file is kept as it was");
+        assert_eq!(
+            std::fs::read_to_string(copy).unwrap(),
+            "v1",
+            "the file is kept as it was"
+        );
         assert_eq!(scheduled().len(), 1);
         // Not due yet: nothing is sent.
         assert!(send_due(1_000_000_000).is_empty());
@@ -1361,7 +1800,12 @@ mod more_tests {
         let results = send_due(2_000_000_001);
         assert_eq!(results.len(), 1);
         assert!(results[0].1.is_err());
-        assert!(scheduled()[0].error.as_deref().is_some_and(|error| error.contains("removed")));
+        assert!(
+            scheduled()[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("removed"))
+        );
         cancel(queued.id).unwrap();
         assert!(scheduled().is_empty());
         assert!(!copy.exists(), "its copied files go too");
@@ -1380,13 +1824,14 @@ mod network {
         for provider in [Provider::Gmail, Provider::Yandex] {
             let (imap, _) = provider.servers().unwrap();
             let mut client = imap::Client::new(connect_tls(&imap).unwrap());
-            client.read_greeting().unwrap_or_else(|error| panic!("{}: {error}", imap.host));
+            client
+                .read_greeting()
+                .unwrap_or_else(|error| panic!("{}: {error}", imap.host));
             let wrong = client.login("nobody@example.com", "wrong");
             assert!(wrong.is_err(), "{} accepted a wrong password", imap.host);
         }
     }
 }
-
 
 #[cfg(test)]
 mod smtp_network {
@@ -1402,9 +1847,15 @@ mod smtp_network {
             let ip = reachable_ip(&smtp).unwrap();
             let transport = lettre::SmtpTransport::builder_dangerous(ip.to_string())
                 .port(smtp.port)
-                .tls(SmtpTls::Wrapper(TlsParameters::new(smtp.host.clone()).unwrap()))
+                .tls(SmtpTls::Wrapper(
+                    TlsParameters::new(smtp.host.clone()).unwrap(),
+                ))
                 .build();
-            assert!(transport.test_connection().unwrap(), "{} did not answer", smtp.host);
+            assert!(
+                transport.test_connection().unwrap(),
+                "{} did not answer",
+                smtp.host
+            );
         }
     }
 }

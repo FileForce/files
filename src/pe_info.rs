@@ -14,7 +14,10 @@ use crate::media_info::Section;
 pub fn applies(path: &Path) -> bool {
     path.extension().is_some_and(|extension| {
         let extension = extension.to_string_lossy().to_ascii_lowercase();
-        matches!(extension.as_str(), "exe" | "dll" | "scr" | "cpl" | "ocx" | "sys" | "efi")
+        matches!(
+            extension.as_str(),
+            "exe" | "dll" | "scr" | "cpl" | "ocx" | "sys" | "efi"
+        )
     })
 }
 
@@ -32,14 +35,25 @@ pub fn save_icon(path: &Path, target: &Path, size: u32) -> io::Result<()> {
     let file = pelite::PeFile::from_bytes(&map).map_err(invalid)?;
     let resources = file.resources().map_err(invalid)?;
     // The first group is the one Explorer shows.
-    let (_, group) = resources.icons().find_map(Result::ok).ok_or_else(|| invalid("no icon"))?;
+    let (_, group) = resources
+        .icons()
+        .find_map(Result::ok)
+        .ok_or_else(|| invalid("no icon"))?;
     let mut ico = Vec::new();
     group.write(&mut ico)?;
     // The ICO decoder picks the largest image in the group.
-    let picture = image::load_from_memory_with_format(&ico, image::ImageFormat::Ico).map_err(invalid)?;
-    let picture = if picture.width() > size { picture.resize(size, size, image::imageops::FilterType::Lanczos3) } else { picture };
+    let picture =
+        image::load_from_memory_with_format(&ico, image::ImageFormat::Ico).map_err(invalid)?;
+    let picture = if picture.width() > size {
+        picture.resize(size, size, image::imageops::FilterType::Lanczos3)
+    } else {
+        picture
+    };
     let partial = target.with_extension("partial.png");
-    picture.to_rgba8().save_with_format(&partial, image::ImageFormat::Png).map_err(invalid)?;
+    picture
+        .to_rgba8()
+        .save_with_format(&partial, image::ImageFormat::Png)
+        .map_err(invalid)?;
     std::fs::rename(&partial, target)
 }
 
@@ -71,7 +85,10 @@ pub fn sections(path: &Path) -> Vec<Section> {
         let file = pelite::PeFile::from_bytes(&map).map_err(|error| error.to_string())?;
         let mut sections = Vec::new();
         // VERSIONINFO: what Explorer shows under Properties → Details.
-        if let Ok(version) = file.resources().and_then(|resources| resources.version_info().map_err(|_| pelite::Error::Invalid)) {
+        if let Ok(version) = file
+            .resources()
+            .and_then(|resources| resources.version_info().map_err(|_| pelite::Error::Invalid))
+        {
             let mut rows = Vec::new();
             if let Some(language) = version.translation().first().copied() {
                 for (label, key) in [
@@ -85,7 +102,11 @@ pub fn sections(path: &Path) -> Vec<Section> {
                     ("Internal name", "InternalName"),
                     ("Comments", "Comments"),
                 ] {
-                    if let Some(value) = version.value(language, key).map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
+                    if let Some(value) = version
+                        .value(language, key)
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                    {
                         rows.push((label.to_string(), value));
                     }
                 }
@@ -94,10 +115,16 @@ pub fn sections(path: &Path) -> Vec<Section> {
                 && let Some(fixed) = version.fixed()
             {
                 let v = fixed.dwFileVersion;
-                rows.push(("File version".into(), format!("{}.{}.{}.{}", v.Major, v.Minor, v.Patch, v.Build)));
+                rows.push((
+                    "File version".into(),
+                    format!("{}.{}.{}.{}", v.Major, v.Minor, v.Patch, v.Build),
+                ));
             }
             if !rows.is_empty() {
-                sections.push(Section { title: "APPLICATION", rows });
+                sections.push(Section {
+                    title: "APPLICATION",
+                    rows,
+                });
             }
         }
         let header = file.file_header();
@@ -106,9 +133,24 @@ pub fn sections(path: &Path) -> Vec<Section> {
             Wrap::T64(optional) => (optional.Subsystem, true),
         };
         let directories = file.data_directory();
-        let directory = |index: usize| directories.get(index).is_some_and(|entry| entry.VirtualAddress != 0 && entry.Size != 0);
-        let mut rows = vec![("Built for".to_string(), format!("{} · {}", machine(header.Machine), if large_address { "64-bit" } else { "32-bit" }))];
-        let kind = if header.Characteristics & 0x2000 != 0 { "Library (DLL)" } else { subsystem(subsystem_code) };
+        let directory = |index: usize| {
+            directories
+                .get(index)
+                .is_some_and(|entry| entry.VirtualAddress != 0 && entry.Size != 0)
+        };
+        let mut rows = vec![(
+            "Built for".to_string(),
+            format!(
+                "{} · {}",
+                machine(header.Machine),
+                if large_address { "64-bit" } else { "32-bit" }
+            ),
+        )];
+        let kind = if header.Characteristics & 0x2000 != 0 {
+            "Library (DLL)"
+        } else {
+            subsystem(subsystem_code)
+        };
         if !kind.is_empty() {
             rows.push(("Type".to_string(), kind.to_string()));
         }
@@ -116,16 +158,37 @@ pub fn sections(path: &Path) -> Vec<Section> {
         if directory(14) {
             rows.push(("Runtime".to_string(), ".NET".to_string()));
         }
-        rows.push(("Signed".to_string(), if directory(4) { "Yes (Authenticode)".to_string() } else { "No".to_string() }));
+        rows.push((
+            "Signed".to_string(),
+            if directory(4) {
+                "Yes (Authenticode)".to_string()
+            } else {
+                "No".to_string()
+            },
+        ));
         if header.TimeDateStamp != 0
             && let Some(time) = chrono::DateTime::from_timestamp(i64::from(header.TimeDateStamp), 0)
         {
-            rows.push(("Built".to_string(), time.format("%Y-%m-%d %H:%M UTC").to_string()));
+            rows.push((
+                "Built".to_string(),
+                time.format("%Y-%m-%d %H:%M UTC").to_string(),
+            ));
         }
-        sections.push(Section { title: "PROGRAM", rows });
+        sections.push(Section {
+            title: "PROGRAM",
+            rows,
+        });
         Ok(sections)
     };
-    read().unwrap_or_else(|error| vec![Section { title: "PROGRAM", rows: vec![("Error".into(), format!("Not a readable Windows program: {error}"))] }])
+    read().unwrap_or_else(|error| {
+        vec![Section {
+            title: "PROGRAM",
+            rows: vec![(
+                "Error".into(),
+                format!("Not a readable Windows program: {error}"),
+            )],
+        }]
+    })
 }
 
 #[cfg(test)]
@@ -141,7 +204,12 @@ mod tests {
         let junk = std::env::temp_dir().join(format!("file-force-pe-{}.exe", std::process::id()));
         std::fs::write(&junk, b"MZ not really").unwrap();
         let sections = sections(&junk);
-        assert!(sections[0].rows[0].1.starts_with("Not a readable Windows program"), "a broken file says so");
+        assert!(
+            sections[0].rows[0]
+                .1
+                .starts_with("Not a readable Windows program"),
+            "a broken file says so"
+        );
         let _ = std::fs::remove_file(&junk);
     }
 }

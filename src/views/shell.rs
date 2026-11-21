@@ -1,14 +1,15 @@
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Disableable as _, Icon, Selectable as _, Sizable as _, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{MouseButton, 
-    AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
+use gpui_kit::{
+    AnimationExt as _, AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Transformation, div, percentage, px,
 };
 
 use crate::app::FileExplorer;
@@ -21,7 +22,6 @@ impl FileExplorer {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-
         TitleBar::new()
             .h(px(46.))
             .bg(palette.sidebar)
@@ -117,24 +117,49 @@ impl FileExplorer {
                             ),
                     )
                     .child(
-                        div().flex_1().min_w(px(160.)).max_w(px(500.)).occlude().child(
-                            Input::new(&self.search)
-                                .small()
-                                .cleanable(true)
-                                .prefix(
-                                    Icon::new(IconName::Search)
-                                        .small()
-                                        .text_color(palette.muted),
-                                )
-                                .suffix(div().text_xs().text_color(palette.faint).child(format!(
-                                    "Nucleo · {}",
-                                    if cfg!(target_os = "macos") {
-                                        "⌘F"
+                        div()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .max_w(px(500.))
+                            .occlude()
+                            .child(
+                                Input::new(&self.search)
+                                    .small()
+                                    .cleanable(true)
+                                    .prefix(if self.filtering {
+                                        Icon::new(IconName::LoaderCircle)
+                                            .small()
+                                            .text_color(palette.accent)
+                                            .with_animation(
+                                                "folder-search-spin",
+                                                crate::settings::animation(
+                                                    std::time::Duration::from_secs(1),
+                                                )
+                                                .repeat(),
+                                                |icon, delta| {
+                                                    icon.transform(Transformation::rotate(
+                                                        percentage(delta),
+                                                    ))
+                                                },
+                                            )
+                                            .into_any_element()
                                     } else {
-                                        "Ctrl F"
-                                    }
-                                ))),
-                        ),
+                                        Icon::new(IconName::Search)
+                                            .small()
+                                            .text_color(palette.muted)
+                                            .into_any_element()
+                                    })
+                                    .suffix(div().text_xs().text_color(palette.faint).child(
+                                        format!(
+                                            "Nucleo · {}",
+                                            if cfg!(target_os = "macos") {
+                                                "⌘F"
+                                            } else {
+                                                "Ctrl F"
+                                            }
+                                        ),
+                                    )),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -171,29 +196,37 @@ impl FileExplorer {
                                         this.open_new_window(cx);
                                     })),
                             )
-                            .child(div().debug_selector(|| "toggle-inspector".into()).child(
-                                Button::new("toggle-inspector")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(if self.show_inspector {
-                                        IconName::PanelRightClose
-                                    } else {
-                                        IconName::PanelRightOpen
-                                    })
-                                    .toggled(self.show_inspector && self.mode != ViewMode::Dual)
-                                    .disabled(self.mode == ViewMode::Dual)
-                                    .tooltip("Toggle inspector")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.show_inspector = !this.show_inspector;
-                                        files_sdk::log::record(
-                                            "files",
-                                            files_sdk::log::Kind::Setting,
-                                            format!("inspector: {}", if this.show_inspector { "shown" } else { "hidden" }),
-                                            None,
-                                        );
-                                        cx.notify();
-                                    })),
-                            )),
+                            .child(
+                                div().debug_selector(|| "toggle-inspector".into()).child(
+                                    Button::new("toggle-inspector")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(if self.show_inspector {
+                                            IconName::PanelRightClose
+                                        } else {
+                                            IconName::PanelRightOpen
+                                        })
+                                        .toggled(self.show_inspector)
+                                        .tooltip("Toggle inspector")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.show_inspector = !this.show_inspector;
+                                            files_sdk::log::record(
+                                                "files",
+                                                files_sdk::log::Kind::Setting,
+                                                format!(
+                                                    "inspector: {}",
+                                                    if this.show_inspector {
+                                                        "shown"
+                                                    } else {
+                                                        "hidden"
+                                                    }
+                                                ),
+                                                None,
+                                            );
+                                            cx.notify();
+                                        })),
+                                ),
+                            ),
                     ),
             )
             .into_any_element()
@@ -250,9 +283,19 @@ impl FileExplorer {
                         v_flex()
                             .gap_0p5()
                             .min_w_0()
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(crate::model::user_name()))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(crate::model::user_name()),
+                            )
                             .child(div().text_xs().text_color(palette.muted).child(
-                                crate::settings::localized(settings.language, "Local workspace", "Локальная рабочая область"),
+                                crate::settings::localized(
+                                    settings.language,
+                                    "Local workspace",
+                                    "Локальная рабочая область",
+                                ),
                             )),
                     )
                     .child(div().flex_1())
@@ -262,12 +305,19 @@ impl FileExplorer {
                             .xsmall()
                             .icon(IconName::Bug)
                             .tooltip("Report a bug")
-                            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::menus::ReportBug), cx)),
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(crate::menus::ReportBug), cx)
+                            }),
                     )
                     .child(
                         // Middle-click (like a folder): Settings in a tab.
                         div()
-                            .on_mouse_up(gpui_kit::MouseButton::Middle, cx.listener(|this, _, window, cx| this.open_settings_tab(window, cx)))
+                            .on_mouse_up(
+                                gpui_kit::MouseButton::Middle,
+                                cx.listener(|this, _, window, cx| {
+                                    this.open_settings_tab(window, cx)
+                                }),
+                            )
                             .child(
                                 Button::new("settings")
                                     .ghost()
@@ -278,8 +328,11 @@ impl FileExplorer {
                                     } else {
                                         "Settings · Ctrl+, · middle-click: in a tab"
                                     })
-                                    .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::ShowSettings), cx))),
-                            )
+                                    .on_click(cx.listener(|_, _, window, cx| {
+                                        window
+                                            .dispatch_action(Box::new(crate::app::ShowSettings), cx)
+                                    })),
+                            ),
                     ),
             )
             .child(
@@ -292,61 +345,71 @@ impl FileExplorer {
                     .overflow_y_scroll()
                     .track_scroll(&self.sidebar_scroll)
                     .child(
-                v_flex()
-                    .pr_1()
-                    .pb_3()
-                    .gap_4()
-                    .child(
                         v_flex()
-                            .gap_1()
-                            .child(self.section_header(
-                                "favorites",
-                                crate::settings::localized(
-                                    settings.language,
-                                    "FAVORITES",
-                                    "ИЗБРАННОЕ",
-                                ),
-                                palette,
-                                cx,
-                            ))
-                            .when(!self.section_collapsed("favorites", cx), |this| {
-                                this.child(favorite_items).children(
-                                    settings
-                                        .sidebar
-                                        .favorites
-                                        .clone()
-                                        .into_iter()
-                                        .map(|path| self.custom_favorite_item(path, active, palette, cx))
-                                        .collect::<Vec<_>>(),
-                                )
-                            }),
-                    )
-                    .children(self.render_agents_section(palette, cx))
-                    .children(self.render_forks(active, palette, cx))
-                    .children(self.render_finder_tags(active, palette, cx))
-                    .children(self.render_mail_section(palette, cx))
-                    .children(self.render_music_section(palette, cx))
-                    .children(self.render_extension_sections(palette, cx))
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(self.section_header(
-                                "connected",
-                                crate::settings::localized(
-                                    settings.language,
-                                    "CONNECTED",
-                                    "ПОДКЛЮЧЕНИЯ",
-                                ),
-                                palette,
-                                cx,
-                            ))
-                            .when(!self.section_collapsed("connected", cx), |this| this
-                            .children(self.volume_items(active, palette, cx))
-                            .when(settings.extensions.ssh, |this| {
-                                this.children(self.ssh_items(palette, cx))
-                                    .children(self.saved_ssh_items(palette, cx))
-                            })),
-                    ),
+                            .pr_1()
+                            .pb_3()
+                            .gap_4()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(self.section_header(
+                                        "favorites",
+                                        crate::settings::localized(
+                                            settings.language,
+                                            "FAVORITES",
+                                            "ИЗБРАННОЕ",
+                                        ),
+                                        palette,
+                                        cx,
+                                    ))
+                                    .when(!self.section_collapsed("favorites", cx), |this| {
+                                        this.child(favorite_items).children(
+                                            settings
+                                                .sidebar
+                                                .favorites
+                                                .clone()
+                                                .into_iter()
+                                                .map(|path| {
+                                                    self.custom_favorite_item(
+                                                        path, active, palette, cx,
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>(),
+                                        )
+                                    }),
+                            )
+                            .children(self.render_agents_section(palette, cx))
+                            .children(self.render_forks(active, palette, cx))
+                            .children(self.render_finder_tags(active, palette, cx))
+                            .when(settings.extensions.smart_folders, |this| {
+                                this.child(self.render_smart_folders(active, palette, cx))
+                            })
+                            .children(self.render_mail_section(palette, cx))
+                            .children(self.render_music_section(palette, cx))
+                            .children(self.render_extension_sections(palette, cx))
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(self.section_header(
+                                        "connected",
+                                        crate::settings::localized(
+                                            settings.language,
+                                            "CONNECTED",
+                                            "ПОДКЛЮЧЕНИЯ",
+                                        ),
+                                        palette,
+                                        cx,
+                                    ))
+                                    .when(!self.section_collapsed("connected", cx), |this| {
+                                        this.children(self.volume_items(active, palette, cx)).when(
+                                            settings.extensions.ssh,
+                                            |this| {
+                                                this.children(self.ssh_items(palette, cx))
+                                                    .children(self.saved_ssh_items(palette, cx))
+                                            },
+                                        )
+                                    }),
+                            ),
                     )
                     // After the content, so it paints on top of the rows.
                     .vertical_scrollbar(&self.sidebar_scroll),
@@ -363,11 +426,18 @@ impl FileExplorer {
     /// The volume of the active folder (home for Recents and Remote).
     /// Which disk the carousel shows: the one picked, or else the one
     /// holding the active folder.
-    fn disk_carousel_index(&self, disks: &[(std::path::PathBuf, crate::model::DiskUsage)]) -> usize {
+    fn disk_carousel_index(
+        &self,
+        disks: &[(std::path::PathBuf, crate::model::DiskUsage)],
+    ) -> usize {
         if let Some(index) = self.disk_index.filter(|index| *index < disks.len()) {
             return index;
         }
-        let path = self.active_location().path().or_else(|| Location::Home.path()).unwrap_or_default();
+        let path = self
+            .active_location()
+            .path()
+            .or_else(|| Location::Home.path())
+            .unwrap_or_default();
         disks
             .iter()
             .enumerate()
@@ -399,7 +469,11 @@ impl FileExplorer {
         let (mount, disk) = disks[index].clone();
         let many = disks.len() > 1;
         let human = self.appearance.read(cx).human_sizes;
-        let fraction = if disk.total > 0 { disk.used() as f32 / disk.total as f32 } else { 0. };
+        let fraction = if disk.total > 0 {
+            disk.used() as f32 / disk.total as f32
+        } else {
+            0.
+        };
         let format = |bytes| crate::settings::format_size(bytes, human);
         let location = Location::from_path(&mount);
         let arrow = |id: &'static str, icon: IconName, delta: isize, cx: &mut Context<Self>| {
@@ -407,7 +481,11 @@ impl FileExplorer {
                 .ghost()
                 .xsmall()
                 .icon(icon)
-                .tooltip(if delta < 0 { "Previous disk" } else { "Next disk" })
+                .tooltip(if delta < 0 {
+                    "Previous disk"
+                } else {
+                    "Next disk"
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.step_disk(delta, cx);
@@ -416,21 +494,35 @@ impl FileExplorer {
         let body = v_flex()
             .gap_2()
             .child(
-                div().w_full().h(px(3.)).rounded_full().bg(palette.border).child(
-                    div()
-                        .w(gpui_kit::relative(fraction.clamp(0., 1.)))
-                        .h_full()
-                        .rounded_full()
-                        // Nearly full disks are flagged like Finder does.
-                        .bg(if fraction > 0.9 { palette.video } else { palette.accent }),
-                ),
+                div()
+                    .w_full()
+                    .h(px(3.))
+                    .rounded_full()
+                    .bg(palette.border)
+                    .child(
+                        div()
+                            .w(gpui_kit::relative(fraction.clamp(0., 1.)))
+                            .h_full()
+                            .rounded_full()
+                            // Nearly full disks are flagged like Finder does.
+                            .bg(if fraction > 0.9 {
+                                palette.video
+                            } else {
+                                palette.accent
+                            }),
+                    ),
             )
-            .child(div().text_size(px(10.)).text_color(palette.muted).child(format!(
-                "{} of {} used · {} free",
-                format(disk.used()),
-                format(disk.total),
-                format(disk.available)
-            )));
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(palette.muted)
+                    .child(format!(
+                        "{} of {} used · {} free",
+                        format(disk.used()),
+                        format(disk.total),
+                        format(disk.available)
+                    )),
+            );
         // The new disk slides in from the side it was swiped from.
         let direction = self.disk_direction;
         let animated = gpui_kit::AnimationExt::with_animation(
@@ -440,13 +532,29 @@ impl FileExplorer {
                     h_flex()
                         .items_center()
                         .gap_2()
-                        .child(Icon::new(IconName::HardDrive).small().text_color(palette.muted))
-                        .child(div().flex_1().min_w_0().truncate().text_xs().font_weight(FontWeight::MEDIUM).child(disk.name.clone())),
+                        .child(
+                            Icon::new(IconName::HardDrive)
+                                .small()
+                                .text_color(palette.muted),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(disk.name.clone()),
+                        ),
                 )
                 .child(body),
             ("disk-slide", index),
-            gpui_kit::Animation::new(std::time::Duration::from_millis(220)).with_easing(gpui_kit::ease_out_quint()),
-            move |card, delta| card.ml(px((1. - delta) * 24. * direction)).opacity(0.3 + 0.7 * delta),
+            crate::settings::animation(std::time::Duration::from_millis(220))
+                .with_easing(gpui_kit::ease_out_quint()),
+            move |card, delta| {
+                card.ml(px((1. - delta) * 24. * direction))
+                    .opacity(0.3 + 0.7 * delta)
+            },
         );
         let card = v_flex()
             .id("disk-carousel")
@@ -459,9 +567,19 @@ impl FileExplorer {
             .border_color(palette.border)
             .cursor_pointer()
             .overflow_hidden()
-            .aria_label(format!("Disk {} of {}: {}", index + 1, disks.len(), disk.name))
-            .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
-            .on_click(cx.listener(move |this, _, window, cx| this.show_location(location, window, cx)))
+            .aria_label(format!(
+                "Disk {} of {}: {}",
+                index + 1,
+                disks.len(),
+                disk.name
+            ))
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)),
+            )
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.show_location(location, window, cx)),
+            )
             // Two-finger swipes (or shift + wheel): one disk per ~60 px.
             .on_scroll(cx.listener(|this, event: &gpui_kit::ScrollEvent, _, cx| {
                 let delta = event.delta.pixel_delta(px(16.));
@@ -479,30 +597,48 @@ impl FileExplorer {
                 h_flex()
                     .items_center()
                     .gap_1()
-                    .when(many, |row| row.child(arrow("disk-previous", IconName::ChevronLeft, -1, cx)))
+                    .when(many, |row| {
+                        row.child(arrow("disk-previous", IconName::ChevronLeft, -1, cx))
+                    })
                     .child(div().flex_1().min_w_0().child(animated))
-                    .when(many, |row| row.child(arrow("disk-next", IconName::ChevronRight, 1, cx))),
+                    .when(many, |row| {
+                        row.child(arrow("disk-next", IconName::ChevronRight, 1, cx))
+                    }),
             )
             .when(many, |card| {
-                card.child(h_flex().justify_center().gap_1p5().children((0..disks.len()).map(|dot| {
-                    let dot_view = div()
-                        .id(("disk-dot", dot))
-                        .size(px(if dot == index { 7. } else { 5. }))
-                        .rounded_full()
-                        .bg(if dot == index { palette.accent } else { palette.border })
-                        .cursor_pointer()
-                        .hover(|style| style.bg(palette.muted))
-                        .aria_label(format!("Disk {}", dot + 1))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.disk_direction = if dot > this.disk_index.unwrap_or(0) { 1. } else { -1. };
-                            this.disk_index = Some(dot);
-                            cx.notify();
-                        }));
-                    #[cfg(test)]
-                    let dot_view = dot_view.debug_selector(move || format!("disk-dot-{dot}"));
-                    dot_view
-                })))
+                card.child(
+                    h_flex()
+                        .justify_center()
+                        .gap_1p5()
+                        .children((0..disks.len()).map(|dot| {
+                            let dot_view = div()
+                                .id(("disk-dot", dot))
+                                .size(px(if dot == index { 7. } else { 5. }))
+                                .rounded_full()
+                                .bg(if dot == index {
+                                    palette.accent
+                                } else {
+                                    palette.border
+                                })
+                                .cursor_pointer()
+                                .hover(|style| style.bg(palette.muted))
+                                .aria_label(format!("Disk {}", dot + 1))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.disk_direction = if dot > this.disk_index.unwrap_or(0) {
+                                        1.
+                                    } else {
+                                        -1.
+                                    };
+                                    this.disk_index = Some(dot);
+                                    cx.notify();
+                                }));
+                            #[cfg(test)]
+                            let dot_view =
+                                dot_view.debug_selector(move || format!("disk-dot-{dot}"));
+                            dot_view
+                        })),
+                )
             });
         Some(card.into_any_element())
     }
@@ -523,7 +659,9 @@ impl FileExplorer {
     ) -> AnyElement {
         let collapsed = self.section_collapsed(key, cx);
         h_flex()
-            .id(gpui_kit::ElementId::Name(format!("sidebar-section-{key}").into()))
+            .id(gpui_kit::ElementId::Name(
+                format!("sidebar-section-{key}").into(),
+            ))
             .px_2()
             .py_0p5()
             .gap_1()
@@ -537,9 +675,13 @@ impl FileExplorer {
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_section(key, cx)))
             .child(div().flex_1().child(label))
             .child(
-                Icon::new(if collapsed { IconName::ChevronRight } else { IconName::ChevronDown })
-                    .xsmall()
-                    .text_color(palette.faint),
+                Icon::new(if collapsed {
+                    IconName::ChevronRight
+                } else {
+                    IconName::ChevronDown
+                })
+                .xsmall()
+                .text_color(palette.faint),
             )
             .into_any_element()
     }
@@ -560,10 +702,20 @@ impl FileExplorer {
         let view = cx.entity();
         let remove = path.clone();
         let (open, reveal) = (path.clone(), path.clone());
-        let name = path.file_name().map_or_else(|| location.label().to_string(), |name| name.to_string_lossy().into_owned());
+        let name = path.file_name().map_or_else(
+            || location.label().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         let icon = match crate::model::entry_at(&path).filter(|_| file) {
             Some(entry) => crate::views::files::file_icon_or_app(&entry, palette, 14.),
-            None => Icon::new(IconName::Folder).small().text_color(if selected { palette.accent } else { palette.folder }).into_any_element(),
+            None => Icon::new(IconName::Folder)
+                .small()
+                .text_color(if selected {
+                    palette.accent
+                } else {
+                    palette.folder
+                })
+                .into_any_element(),
         };
         let item = div();
         #[cfg(test)]
@@ -571,70 +723,98 @@ impl FileExplorer {
             let probe = format!("favorite-probe-{}", path.display());
             item.debug_selector(move || probe.clone())
         };
-        item
-            .id(gpui_kit::ElementId::Name(format!("favorite-{}", path.display()).into()))
-            .h(px(31.))
-            .px_2()
-            .rounded_md()
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_sm()
-            .text_color(if selected { palette.text } else { palette.muted })
-            .bg(if selected { palette.selection } else { palette.sidebar })
-            .when(missing, |this| this.opacity(0.5))
-            .hover(|style| style.bg(palette.hover).text_color(palette.text))
-            .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
+        item.id(gpui_kit::ElementId::Name(
+            format!("favorite-{}", path.display()).into(),
+        ))
+        .h(px(31.))
+        .px_2()
+        .rounded_md()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_sm()
+        .text_color(if selected {
+            palette.text
+        } else {
+            palette.muted
+        })
+        .bg(if selected {
+            palette.selection
+        } else {
+            palette.sidebar
+        })
+        .when(missing, |this| this.opacity(0.5))
+        .hover(|style| style.bg(palette.hover).text_color(palette.text))
+        .on_mouse_up(
+            MouseButton::Middle,
+            cx.listener(move |this, _, window, cx| {
                 if file {
                     this.reveal_path(&reveal, window, cx);
                 } else {
                     this.open_in_new_tab(location, window, cx);
                 }
-            }))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if missing {
-                    return;
+            }),
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            if missing {
+                return;
+            }
+            if file {
+                if let Some(entry) = crate::model::entry_at(&open) {
+                    this.open_entry(&entry.id, window, cx);
                 }
-                if file {
-                    if let Some(entry) = crate::model::entry_at(&open) {
-                        this.open_entry(&entry.id, window, cx);
-                    }
-                } else {
-                    this.show_location(location, window, cx);
-                }
-            }))
-            .child(icon)
-            .child(div().flex_1().min_w_0().truncate().child(if file { name } else { location.label().to_string() }))
-            .context_menu(move |menu, window, _| {
-                let remove = remove.clone();
-                let show = remove.clone();
-                let menu = if file {
-                    menu.item(PopupMenuItem::new("Show in Folder").icon(IconName::FolderOpen).on_click(window.listener_for(&view, move |this, _, window, cx| {
-                        this.reveal_path(&show, window, cx);
-                    })))
-                } else {
-                    menu
-                };
+            } else {
+                this.show_location(location, window, cx);
+            }
+        }))
+        .child(icon)
+        .child(div().flex_1().min_w_0().truncate().child(if file {
+            name
+        } else {
+            location.label().to_string()
+        }))
+        .context_menu(move |menu, window, _| {
+            let remove = remove.clone();
+            let show = remove.clone();
+            let menu = if file {
                 menu.item(
-                    PopupMenuItem::new("Remove from Favorites")
-                        .icon(IconName::X)
-                        .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                            this.remove_favorite(&remove, cx);
+                    PopupMenuItem::new("Show in Folder")
+                        .icon(IconName::FolderOpen)
+                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                            this.reveal_path(&show, window, cx);
                         })),
                 )
-            })
-            .into_any_element()
+            } else {
+                menu
+            };
+            menu.item(
+                PopupMenuItem::new("Remove from Favorites")
+                    .icon(IconName::X)
+                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                        this.remove_favorite(&remove, cx);
+                    })),
+            )
+        })
+        .into_any_element()
     }
 
     /// Mounted disks and network shares (USB drives, SMB/NFS, disk images).
-    fn volume_items(&self, active: Location, palette: Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn volume_items(
+        &self,
+        active: Location,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         crate::model::mounted_volumes()
             .into_iter()
             .enumerate()
             .map(|(index, path)| {
                 let location = Location::from_path(&path);
                 let selected = active == location;
-                let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
                 let (eject_path, menu_path) = (path.clone(), path.clone());
                 let view = cx.entity();
                 let group = gpui_kit::SharedString::from(format!("volume-{index}"));
@@ -647,44 +827,103 @@ impl FileExplorer {
                     .gap_2()
                     .rounded_md()
                     .text_sm()
-                    .bg(if selected { palette.selection } else { palette.sidebar })
-                    .text_color(if selected { palette.text } else { palette.muted })
+                    .bg(if selected {
+                        palette.selection
+                    } else {
+                        palette.sidebar
+                    })
+                    .text_color(if selected {
+                        palette.text
+                    } else {
+                        palette.muted
+                    })
                     .hover(|style| style.bg(palette.hover).text_color(palette.text))
-                    .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
-                    .on_click(cx.listener(move |this, _, window, cx| this.show_location(location, window, cx)))
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_in_new_tab(location, window, cx)
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show_location(location, window, cx)
+                    }))
                     .child(Icon::new(IconName::HardDrive).small())
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     // ⏏ on hover, like Finder.
                     .child(
-                        div().invisible().group_hover(group, |style| style.visible()).child(
-                            Button::new(("volume-eject", index)).ghost().xsmall().icon(IconName::Eject).tooltip("Eject").on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.eject_volume(eject_path.clone(), window, cx);
-                                },
-                            )),
-                        ),
+                        div()
+                            .invisible()
+                            .group_hover(group, |style| style.visible())
+                            .child(
+                                Button::new(("volume-eject", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Eject)
+                                    .tooltip("Eject")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.eject_volume(eject_path.clone(), window, cx);
+                                    })),
+                            ),
                     )
                     .context_menu(move |menu, window, _| {
-                        let (open, tab, copy, info, eject) = (menu_path.clone(), menu_path.clone(), menu_path.clone(), menu_path.clone(), menu_path.clone());
-                        menu.item(PopupMenuItem::new("Open").icon(IconName::FolderOpen).on_click(window.listener_for(&view, move |this, _, window, cx| {
-                            this.show_location(Location::from_path(&open), window, cx);
-                        })))
-                        .item(PopupMenuItem::new("Open in New Tab").icon(IconName::PanelTop).on_click(window.listener_for(&view, move |this, _, window, cx| {
-                            this.new_tab(window, cx);
-                            this.show_location(Location::from_path(&tab), window, cx);
-                        })))
-                        .item(PopupMenuItem::new("Copy Path").icon(IconName::Copy).on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.display().to_string()));
-                        }))
-                        .item(PopupMenuItem::new("Properties").icon(IconName::Info).on_click(window.listener_for(&view, move |this, _, _, cx| {
-                            let location = Location::from_path(&info);
-                            this.run_folder_command(crate::commands::FolderCommand::Properties, location, cx);
-                        })))
+                        let (open, tab, copy, info, eject) = (
+                            menu_path.clone(),
+                            menu_path.clone(),
+                            menu_path.clone(),
+                            menu_path.clone(),
+                            menu_path.clone(),
+                        );
+                        menu.item(
+                            PopupMenuItem::new("Open")
+                                .icon(IconName::FolderOpen)
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        this.show_location(Location::from_path(&open), window, cx);
+                                    },
+                                )),
+                        )
+                        .item(
+                            PopupMenuItem::new("Open in New Tab")
+                                .icon(IconName::PanelTop)
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        this.new_tab(window, cx);
+                                        this.show_location(Location::from_path(&tab), window, cx);
+                                    },
+                                )),
+                        )
+                        .item(
+                            PopupMenuItem::new("Copy Path")
+                                .icon(IconName::Copy)
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                        copy.display().to_string(),
+                                    ));
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new("Properties")
+                                .icon(IconName::Info)
+                                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                    let location = Location::from_path(&info);
+                                    this.run_folder_command(
+                                        crate::commands::FolderCommand::Properties,
+                                        location,
+                                        cx,
+                                    );
+                                })),
+                        )
                         .separator()
-                        .item(PopupMenuItem::new("Eject").icon(IconName::Eject).on_click(window.listener_for(&view, move |this, _, window, cx| {
-                            this.eject_volume(eject.clone(), window, cx);
-                        })))
+                        .item(
+                            PopupMenuItem::new("Eject").icon(IconName::Eject).on_click(
+                                window.listener_for(&view, move |this, _, window, cx| {
+                                    this.eject_volume(eject.clone(), window, cx);
+                                }),
+                            ),
+                        )
                     })
                     .into_any_element()
             })
@@ -694,11 +933,17 @@ impl FileExplorer {
     /// Mounts a disk image in the background and opens it in a new tab; it
     /// shows in CONNECTED, where Eject unmounts it.
     pub(crate) fn mount_image(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         self.notice = Some(format!("Mounting {name}…"));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let mounted = cx.background_executor().spawn(async move { crate::model::mount_image(&path) }).await;
+            let mounted = cx
+                .background_executor()
+                .spawn(async move { crate::model::mount_image(&path) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 match mounted {
                     Ok(target) => {
@@ -706,7 +951,12 @@ impl FileExplorer {
                         crate::desktop::opened_from_system(vec![target.display().to_string()]);
                     }
                     Err(error) => {
-                        files_sdk::log::notify("files", files_sdk::log::Level::Error, format!("{name} was not mounted"), Some(error.to_string()));
+                        files_sdk::log::notify(
+                            "files",
+                            files_sdk::log::Level::Error,
+                            format!("{name} was not mounted"),
+                            Some(error.to_string()),
+                        );
                         this.notice = Some(format!("{name} was not mounted: {error}"));
                     }
                 }
@@ -717,20 +967,40 @@ impl FileExplorer {
     }
 
     /// Ejects in the background; leaves the disk first if it is open.
-    pub(crate) fn eject_volume(&mut self, path: std::path::PathBuf, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
-        if self.active_location().path().is_some_and(|open| open.starts_with(&path)) {
+    pub(crate) fn eject_volume(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .active_location()
+            .path()
+            .is_some_and(|open| open.starts_with(&path))
+        {
             self.navigate(Location::Home, window, cx);
         }
-        let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         self.notice = Some(format!("Ejecting {name}…"));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let ejected = cx.background_executor().spawn(async move { crate::model::eject(&path) }).await;
+            let ejected = cx
+                .background_executor()
+                .spawn(async move { crate::model::eject(&path) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.notice = Some(match ejected {
                     Ok(()) => format!("{name} ejected: safe to remove"),
                     Err(error) => {
-                        files_sdk::log::notify("files", files_sdk::log::Level::Error, format!("{name} was not ejected"), Some(error.to_string()));
+                        files_sdk::log::notify(
+                            "files",
+                            files_sdk::log::Level::Error,
+                            format!("{name} was not ejected"),
+                            Some(error.to_string()),
+                        );
                         format!("{name} was not ejected: {error}")
                     }
                 });
@@ -742,7 +1012,11 @@ impl FileExplorer {
 
     /// Servers connected before: one click reconnects.
     fn saved_ssh_items(&self, palette: Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let connected: Vec<String> = self.ssh_sessions.iter().map(|session| session.connection.address()).collect();
+        let connected: Vec<String> = self
+            .ssh_sessions
+            .iter()
+            .map(|session| session.connection.address())
+            .collect();
         let saved = self.appearance.read(cx).sidebar.ssh.clone();
         saved
             .into_iter()
@@ -762,7 +1036,9 @@ impl FileExplorer {
                     .text_sm()
                     .text_color(palette.muted)
                     .hover(|style| style.bg(palette.hover).text_color(palette.text))
-                    .on_click(cx.listener(move |this, _, window, cx| this.connect_saved_ssh(&connect, window, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.connect_saved_ssh(&connect, window, cx)
+                    }))
                     .child(Icon::new(IconName::Cloud).small().text_color(palette.faint))
                     .child(div().flex_1().min_w_0().truncate().child(address))
                     .child(
@@ -779,17 +1055,30 @@ impl FileExplorer {
                     .context_menu({
                         let (view, address) = (cx.entity(), menu_address);
                         move |menu, window, _| {
-                            let (connect, copy, forget) = (address.clone(), address.clone(), address.clone());
-                            menu.item(PopupMenuItem::new("Connect").icon(IconName::Plug).on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                this.connect_saved_ssh(&connect, window, cx);
-                            })))
-                            .item(PopupMenuItem::new("Copy Address").icon(IconName::Copy).on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
-                            }))
+                            let (connect, copy, forget) =
+                                (address.clone(), address.clone(), address.clone());
+                            menu.item(PopupMenuItem::new("Connect").icon(IconName::Plug).on_click(
+                                window.listener_for(&view, move |this, _, window, cx| {
+                                    this.connect_saved_ssh(&connect, window, cx);
+                                }),
+                            ))
+                            .item(
+                                PopupMenuItem::new("Copy Address")
+                                    .icon(IconName::Copy)
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                            copy.clone(),
+                                        ));
+                                    }),
+                            )
                             .separator()
-                            .item(PopupMenuItem::new("Forget Server").icon(IconName::Trash).on_click(window.listener_for(&view, move |this, _, _, cx| {
-                                this.forget_saved_ssh(&forget, cx);
-                            })))
+                            .item(
+                                PopupMenuItem::new("Forget Server")
+                                    .icon(IconName::Trash)
+                                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                        this.forget_saved_ssh(&forget, cx);
+                                    })),
+                            )
                         }
                     })
                     .into_any_element()
@@ -805,77 +1094,105 @@ impl FileExplorer {
             .iter()
             .enumerate()
             .map(|(index, session)| {
-            let address = session.connection.address();
-            let active = in_front == Some(address.as_str());
-            let home = session.home;
-            h_flex()
-                .id(("ssh-connection", index))
-                .min_h(px(40.))
-                .px_2()
-                .items_center()
-                .gap_2()
-                .rounded_md()
-                .bg(if active {
-                    palette.selection
-                } else {
-                    palette.sidebar
-                })
-                .text_color(if active { palette.text } else { palette.muted })
-                .hover(|style| style.bg(palette.hover))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.show_location(home, window, cx);
-                }))
-                .child(
-                    Icon::new(IconName::Cloud)
-                        .small()
-                        .text_color(palette.accent),
-                )
-                .child(
-                    v_flex()
-                        .min_w_0()
-                        .child(div().text_xs().child(address.clone()))
-                        .child(
-                            div()
-                                .text_size(px(9.))
-                                .text_color(palette.faint)
-                                .child("Connected · SSH"),
-                        ),
-                )
-                .child(div().flex_1())
-                .child(
-                    Button::new(("disconnect-ssh", index))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::X)
-                        .tooltip("Disconnect")
-                        .on_click(cx.listener({
-                            let address = address.clone();
-                            move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.disconnect_ssh(&address, window, cx);
-                            }
-                        })),
-                )
-                .context_menu({
-                    let (view, copy, gone) = (cx.entity(), address.clone(), address.clone());
-                    move |menu, window, _| {
-                        let (copy, gone) = (copy.clone(), gone.clone());
-                        menu.item(PopupMenuItem::new("Open Home Folder").icon(IconName::House).on_click(window.listener_for(&view, move |this, _, window, cx| {
-                            this.open_in_new_tab(home, window, cx);
-                        })))
-                        .item(PopupMenuItem::new("Open in Terminal").icon(IconName::SquareTerminal).on_click(window.listener_for(&view, move |this, _, _, cx| {
-                            this.run_folder_command(crate::commands::FolderCommand::OpenTerminal, home, cx);
-                        })))
-                        .item(PopupMenuItem::new("Copy Address").icon(IconName::Copy).on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
-                        }))
-                        .separator()
-                        .item(PopupMenuItem::new("Disconnect").icon(IconName::Unplug).on_click(window.listener_for(&view, move |this, _, window, cx| {
-                            this.disconnect_ssh(&gone, window, cx);
-                        })))
-                    }
-                })
-                .into_any_element()
+                let address = session.connection.address();
+                let active = in_front == Some(address.as_str());
+                let home = session.home;
+                h_flex()
+                    .id(("ssh-connection", index))
+                    .min_h(px(40.))
+                    .px_2()
+                    .items_center()
+                    .gap_2()
+                    .rounded_md()
+                    .bg(if active {
+                        palette.selection
+                    } else {
+                        palette.sidebar
+                    })
+                    .text_color(if active { palette.text } else { palette.muted })
+                    .hover(|style| style.bg(palette.hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show_location(home, window, cx);
+                    }))
+                    .child(
+                        Icon::new(IconName::Cloud)
+                            .small()
+                            .text_color(palette.accent),
+                    )
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .child(div().text_xs().child(address.clone()))
+                            .child(
+                                div()
+                                    .text_size(px(9.))
+                                    .text_color(palette.faint)
+                                    .child("Connected · SSH"),
+                            ),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new(("disconnect-ssh", index))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::X)
+                            .tooltip("Disconnect")
+                            .on_click(cx.listener({
+                                let address = address.clone();
+                                move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.disconnect_ssh(&address, window, cx);
+                                }
+                            })),
+                    )
+                    .context_menu({
+                        let (view, copy, gone) = (cx.entity(), address.clone(), address.clone());
+                        move |menu, window, _| {
+                            let (copy, gone) = (copy.clone(), gone.clone());
+                            menu.item(
+                                PopupMenuItem::new("Open Home Folder")
+                                    .icon(IconName::House)
+                                    .on_click(window.listener_for(
+                                        &view,
+                                        move |this, _, window, cx| {
+                                            this.open_in_new_tab(home, window, cx);
+                                        },
+                                    )),
+                            )
+                            .item(
+                                PopupMenuItem::new("Open in Terminal")
+                                    .icon(IconName::SquareTerminal)
+                                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                        this.run_folder_command(
+                                            crate::commands::FolderCommand::OpenTerminal,
+                                            home,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .item(
+                                PopupMenuItem::new("Copy Address")
+                                    .icon(IconName::Copy)
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                            copy.clone(),
+                                        ));
+                                    }),
+                            )
+                            .separator()
+                            .item(
+                                PopupMenuItem::new("Disconnect")
+                                    .icon(IconName::Unplug)
+                                    .on_click(window.listener_for(
+                                        &view,
+                                        move |this, _, window, cx| {
+                                            this.disconnect_ssh(&gone, window, cx);
+                                        },
+                                    )),
+                            )
+                        }
+                    })
+                    .into_any_element()
             })
             .collect();
         items.push(
@@ -895,7 +1212,13 @@ impl FileExplorer {
                 .child(Icon::new(IconName::Cloud).small())
                 .child("SSH")
                 .child(div().flex_1())
-                .child(div().text_xs().text_color(palette.faint).child(if self.ssh_sessions.is_empty() { "New…" } else { "Another…" }))
+                .child(div().text_xs().text_color(palette.faint).child(
+                    if self.ssh_sessions.is_empty() {
+                        "New…"
+                    } else {
+                        "Another…"
+                    },
+                ))
                 .into_any_element(),
         );
         items
@@ -931,7 +1254,10 @@ impl FileExplorer {
                 palette.sidebar
             })
             .hover(|style| style.bg(palette.hover).text_color(palette.text))
-            .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)),
+            )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.show_location(location, window, cx);
             }))
@@ -950,22 +1276,22 @@ impl FileExplorer {
         }
         let view = cx.entity();
         item.context_menu(move |menu, window, _| {
-                    menu.min_w(px(200.))
-                        .item(
-                            PopupMenuItem::new("Open")
-                                .icon(IconName::FolderOpen)
-                                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                    this.show_location(Location::Trash, window, cx);
-                                })),
-                        )
-                        .separator()
-                        .item(
-                            PopupMenuItem::new("Empty Trash…")
-                                .icon(IconName::Trash)
-                                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                    this.open_empty_trash_dialog(window, cx);
-                                })),
-                        )
+            menu.min_w(px(200.))
+                .item(
+                    PopupMenuItem::new("Open")
+                        .icon(IconName::FolderOpen)
+                        .on_click(window.listener_for(&view, |this, _, window, cx| {
+                            this.show_location(Location::Trash, window, cx);
+                        })),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("Empty Trash…")
+                        .icon(IconName::Trash)
+                        .on_click(window.listener_for(&view, |this, _, window, cx| {
+                            this.open_empty_trash_dialog(window, cx);
+                        })),
+                )
         })
         .into_any_element()
     }
@@ -981,7 +1307,10 @@ impl FileExplorer {
         if self.mode == ViewMode::Dual {
             return None;
         }
-        if let Some(fork) = location.path().and_then(|path| crate::forks::fork_of(&path)) {
+        if let Some(fork) = location
+            .path()
+            .and_then(|path| crate::forks::fork_of(&path))
+        {
             return self.fork_actions(fork, cx);
         }
         match location {
@@ -1000,6 +1329,37 @@ impl FileExplorer {
             ),
             _ => None,
         }
+    }
+
+    /// Every video, photo, script, application and duplicate, gathered in the background.
+    fn render_smart_folders(
+        &self,
+        active: Location,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let language = self.appearance.read(cx).language;
+        let section = v_flex().gap_0p5().child(self.section_header(
+            "smart",
+            crate::settings::localized(language, "SMART FOLDERS", "УМНЫЕ ПАПКИ"),
+            palette,
+            cx,
+        ));
+        if self.section_collapsed("smart", cx) {
+            return section.into_any_element();
+        }
+        files_ext_smart_folders::SmartFolder::ALL
+            .into_iter()
+            .fold(section, |section, folder| {
+                section.child(self.sidebar_item(
+                    Location::Smart(folder),
+                    folder.icon(),
+                    active,
+                    palette,
+                    cx,
+                ))
+            })
+            .into_any_element()
     }
 
     /// macOS-only: the Finder tags in use, imported through Spotlight.
@@ -1034,7 +1394,10 @@ impl FileExplorer {
             section = section.child(div().px_2().text_xs().child(if loading {
                 crate::views::text_fx::shimmer("tags-loading", text, palette.faint, palette)
             } else {
-                div().text_color(palette.faint).child(text).into_any_element()
+                div()
+                    .text_color(palette.faint)
+                    .child(text)
+                    .into_any_element()
             }));
         }
         for tag in tags {
@@ -1043,7 +1406,9 @@ impl FileExplorer {
             let color = tag.color.hsla();
             section = section.child(
                 div()
-                    .id(gpui_kit::ElementId::Name(format!("finder-tag-{}", tag.name).into()))
+                    .id(gpui_kit::ElementId::Name(
+                        format!("finder-tag-{}", tag.name).into(),
+                    ))
                     .h(px(30.))
                     .px_2()
                     .rounded_md()
@@ -1051,10 +1416,23 @@ impl FileExplorer {
                     .items_center()
                     .gap_2()
                     .text_sm()
-                    .text_color(if selected { palette.text } else { palette.muted })
-                    .bg(if selected { palette.selection } else { palette.sidebar })
+                    .text_color(if selected {
+                        palette.text
+                    } else {
+                        palette.muted
+                    })
+                    .bg(if selected {
+                        palette.selection
+                    } else {
+                        palette.sidebar
+                    })
                     .hover(|style| style.bg(palette.hover).text_color(palette.text))
-                    .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_in_new_tab(location, window, cx)
+                        }),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.show_location(location, window, cx);
                     }))
@@ -1186,17 +1564,30 @@ impl FileExplorer {
                     .id(("breadcrumb", index))
                     .px_1()
                     .rounded_sm()
-                    .text_color(if index == last { palette.text } else { palette.muted });
+                    .text_color(if index == last {
+                        palette.text
+                    } else {
+                        palette.muted
+                    });
                 #[cfg(test)]
                 let crumb = crumb.debug_selector(move || format!("breadcrumb-{index}"));
                 breadcrumbs = breadcrumbs.child(if index == last {
-                    crumb.child(crate::views::text_fx::outlined(label, palette)).into_any_element()
+                    crumb
+                        .child(crate::views::text_fx::outlined(label, palette))
+                        .into_any_element()
                 } else {
                     crumb
                         .cursor_pointer()
                         .hover(|style| style.bg(palette.hover).text_color(palette.text))
-                        .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.open_in_new_tab(location, window, cx)))
-                        .on_click(cx.listener(move |this, _, window, cx| this.show_location(location, window, cx)))
+                        .on_mouse_up(
+                            MouseButton::Middle,
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_in_new_tab(location, window, cx)
+                            }),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.show_location(location, window, cx)
+                        }))
                         .child(crate::views::text_fx::outlined(label, palette))
                         .into_any_element()
                 });
@@ -1251,7 +1642,9 @@ impl FileExplorer {
         self.journal_notice();
         let (console, bell) = self.footer_buttons(palette, cx);
         let language = self.appearance.read(cx).language;
-        let selected = self.active_selection().and_then(|id| crate::model::entry(&id));
+        let selected = self
+            .active_selection()
+            .and_then(|id| crate::model::entry(&id));
         let count = if self.mode == ViewMode::Dual {
             self.entries_for(self.left.location).len() + self.entries_for(self.right.location).len()
         } else {
@@ -1287,7 +1680,9 @@ impl FileExplorer {
             .text_size(px(10.))
             .text_color(palette.muted)
             // The console is opt-in: Settings → Developer → Show Console.
-            .when(self.appearance.read(cx).developer.show_console, |bar| bar.child(console))
+            .when(self.appearance.read(cx).developer.show_console, |bar| {
+                bar.child(console)
+            })
             .child(div().size(px(5.)).rounded_full().bg(palette.code))
             .child(div().min_w_0().truncate().child(status))
             .child(div().text_color(palette.faint).child("•"))

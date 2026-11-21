@@ -7,6 +7,16 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.33
+
+- **Smart Folders** is now a built-in extension: Videos, Photos, Executables, Applications and Duplicates are gathered in the background and shown in the sidebar. It can be turned off in Settings → Extensions.
+- Quick Actions: **Convert Video…** (MP4, MOV or WebM), **Compress Video…**, **Convert Photos to PDF** (one page per selected photo) and **Compress PDF…** with a quality choice. Video actions use FFmpeg, PDF compression uses Ghostscript; Photos to PDF is built in.
+- Settings → General → **Frame rate**: 24, 30, 45, 60, 90 or 120 FPS. Settings → Developer → **Show FPS counter** shows the actual frame rate in DevTools. On high-refresh-rate displays, Files now draws on every display frame instead of letting a timer skip frames.
+- **DevTools can be detached** into its own window and put back into the bottom panel. The main, DevTools and Music windows no longer fall back to 30 FPS when inactive.
+- Music → **Show audio channels in DevTools**: a live Audio view with the level of every output channel in RMS and dB. Video previews no longer inherit VLC's spatial-audio filter and its missing-SOFA-HRTF warning.
+- Clicking the Settings gear while a Settings tab is open brings that tab to the front instead of opening another one.
+- Smart Duplicates keeps its loading animation running while the index is built, including with power saving and Reduce Motion off.
+
 ## 0.1.32
 
 - **Lock** (Settings → General, off by default): every Files window hides behind a lock screen — when Files starts, after a while without use (1–60 min), or when the computer locks its screen or sleeps — and opens again with the system's own check: Touch ID or the Mac's password, Windows Hello, your account's password through polkit on Linux. Files keeps no password of its own; where the system has no such check, the lock cannot be turned on.

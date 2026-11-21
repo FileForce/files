@@ -1,8 +1,8 @@
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Icon, InteractiveElementExt as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -80,7 +80,11 @@ impl FileExplorer {
         let files = self.entries_for(location);
         let settings = self.appearance.read(cx).clone();
         let source_window = cx.entity_id();
-        let scope = if pane == Pane::Left { "dual-left" } else { "dual-right" };
+        let scope = if pane == Pane::Left {
+            "dual-left"
+        } else {
+            "dual-right"
+        };
         let [name_header, modified_header, size_header] = [
             crate::model::SortKey::Name,
             crate::model::SortKey::Modified,
@@ -94,9 +98,17 @@ impl FileExplorer {
                 .id(entry.id.clone())
                 // Middle click on a folder: open it in a new tab, like a browser.
                 .when(entry.is_folder(), |this| {
-                    this.on_mouse_up(MouseButton::Middle, { let entry = entry.clone(); cx.listener(move |this, _, window, cx| this.open_entry_in_new_tab(entry.clone(), window, cx)) })
+                    this.on_mouse_up(MouseButton::Middle, {
+                        let entry = entry.clone();
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_entry_in_new_tab(entry.clone(), window, cx)
+                        })
+                    })
                 })
-                .when(entry.path.as_deref().is_some_and(crate::transfer::is_cut), |this| this.opacity(0.45))
+                .when(
+                    entry.path.as_deref().is_some_and(crate::transfer::is_cut),
+                    |this| this.opacity(0.45),
+                )
                 .h(px(34.))
                 .px_3()
                 .items_center()
@@ -109,15 +121,25 @@ impl FileExplorer {
                     transparent_black()
                 })
                 .hover(|style| style.bg(palette.hover))
-                .on_click({ let id = id.clone(); cx.listener(move |this, _, window, cx| {
-                    this.focus_main(window, cx);
-                    this.select_in_pane(pane, &id, cx);
-                }) })
-                .on_double_click({ let id = id.clone(); cx.listener(move |this, _, window, cx| {
-                    this.focus_main(window, cx);
-                    this.active_pane = pane;
-                    this.open_entry(&id, window, cx);
-                }) })
+                .on_click({
+                    let id = id.clone();
+                    cx.listener(move |this, _, window, cx| {
+                        this.focus_main(window, cx);
+                        this.select_in_pane(pane, &id, cx);
+                    })
+                })
+                .on_double_click({
+                    let id = id.clone();
+                    cx.listener(move |this, _, window, cx| {
+                        this.focus_main(window, cx);
+                        this.active_pane = pane;
+                        this.open_entry(&id, window, cx);
+                    })
+                })
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _, _, _| this.row_pressed = true),
+                )
                 .when(entry.path.is_some(), |this| {
                     this.on_drag(
                         crate::views::drag_drop::DraggedFile {
@@ -133,13 +155,13 @@ impl FileExplorer {
                     )
                     .external_drag_payload(crate::views::drag_drop::native_payload)
                 })
-                .on_mouse_down(
-                    MouseButton::Right,
-                    { let id = id.clone(); cx.listener(move |this, _, window, cx| {
+                .on_mouse_down(MouseButton::Right, {
+                    let id = id.clone();
+                    cx.listener(move |this, _, window, cx| {
                         this.focus_main(window, cx);
                         this.select_in_pane(pane, &id, cx);
-                    }) },
-                )
+                    })
+                })
                 .context_menu(file_context_menu(entry.clone(), cx.entity()))
                 .child(
                     h_flex()
@@ -148,9 +170,12 @@ impl FileExplorer {
                         .items_center()
                         .gap_2()
                         .child(file_icon(&entry, palette, 15.))
-                        .child(div().text_xs().min_w_0().child(
-                            crate::views::files::name_with_badges(&entry, 36, palette),
-                        )),
+                        .child(
+                            div()
+                                .text_xs()
+                                .min_w_0()
+                                .child(crate::views::files::name_with_badges(&entry, 36, palette)),
+                        ),
                 )
                 .child(
                     div()
@@ -255,16 +280,20 @@ impl FileExplorer {
             // Each pane is its own drop target: files dropped here land in
             // this pane's folder, whichever pane they were dragged from.
             .drag_over::<DraggedFile>(move |style, _, _, _| style.bg(palette.accent_soft))
-            .drag_over::<gpui_kit::ExternalPaths>(move |style, _, _, _| style.bg(palette.accent_soft))
+            .drag_over::<gpui_kit::ExternalPaths>(move |style, _, _, _| {
+                style.bg(palette.accent_soft)
+            })
             .on_drop(cx.listener(move |this, drag: &DraggedFile, window, cx| {
                 cx.stop_propagation();
                 this.drop_dragged(pane, drag, window, cx);
             }))
-            .on_drop(cx.listener(move |this, paths: &gpui_kit::ExternalPaths, window, cx| {
-                cx.stop_propagation();
-                this.drop_active = false;
-                this.drop_into_pane(pane, paths.paths().to_vec(), window, cx);
-            }))
+            .on_drop(
+                cx.listener(move |this, paths: &gpui_kit::ExternalPaths, window, cx| {
+                    cx.stop_propagation();
+                    this.drop_active = false;
+                    this.drop_into_pane(pane, paths.paths().to_vec(), window, cx);
+                }),
+            )
             .context_menu(folder_context_menu(location, cx.entity()))
             .child(header)
             .child(
@@ -315,7 +344,8 @@ impl FileExplorer {
             let files = if drag.source.entity_id() == cx.entity_id() {
                 self.remote_drag_entries(drag.entry.clone())
             } else {
-                drag.source.update(cx, |source, _| source.pending_drop = None);
+                drag.source
+                    .update(cx, |source, _| source.pending_drop = None);
                 drag.source.read(cx).remote_drag_entries(drag.entry.clone())
             };
             self.active_pane = pane;
@@ -325,7 +355,8 @@ impl FileExplorer {
         let paths = if drag.source.entity_id() == cx.entity_id() {
             drag.paths_from(self)
         } else {
-            drag.source.update(cx, |source, _| source.pending_drop = None);
+            drag.source
+                .update(cx, |source, _| source.pending_drop = None);
             drag.paths(cx)
         };
         self.drop_into_pane(pane, paths, window, cx);
@@ -360,15 +391,22 @@ impl FileExplorer {
         // Every crumb but the current folder opens that folder in this pane.
         let crumbs = location.ancestry();
         let last = crumbs.len().saturating_sub(1);
-        let mut path = h_flex().gap_0p5().items_center().text_size(px(9.)).text_color(palette.muted);
+        let mut path = h_flex()
+            .gap_0p5()
+            .items_center()
+            .text_size(px(9.))
+            .text_color(palette.muted);
         for (index, crumb_location) in crumbs.into_iter().enumerate() {
             if index > 0 {
                 path = path.child(div().text_color(palette.faint).child("/"));
             }
             let label = crate::model::trim_middle(crumb_location.label(), 24).into_owned();
-            let crumb = div().id(("dual-breadcrumb", pane as usize * 1000 + index)).rounded_sm();
+            let crumb = div()
+                .id(("dual-breadcrumb", pane as usize * 1000 + index))
+                .rounded_sm();
             #[cfg(test)]
-            let crumb = crumb.debug_selector(move || format!("dual-breadcrumb-{}-{index}", pane as usize));
+            let crumb =
+                crumb.debug_selector(move || format!("dual-breadcrumb-{}-{index}", pane as usize));
             path = path.child(if index == last {
                 crumb.child(label).into_any_element()
             } else {

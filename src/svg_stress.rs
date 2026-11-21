@@ -32,8 +32,13 @@ mod tests {
         let started = Instant::now();
         let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).unwrap();
         let scale = width as f32 / tree.size().width();
-        let mut pixmap = resvg::tiny_skia::Pixmap::new(width, (tree.size().height() * scale) as u32).unwrap();
-        resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+        let mut pixmap =
+            resvg::tiny_skia::Pixmap::new(width, (tree.size().height() * scale) as u32).unwrap();
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::from_scale(scale, scale),
+            &mut pixmap.as_mut(),
+        );
         (started.elapsed(), pixmap.data().len())
     }
 
@@ -45,15 +50,27 @@ mod tests {
     #[test]
     #[ignore]
     fn svg_stress() {
-        let dir = std::env::temp_dir().join(format!("file-force-svg-stress-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-svg-stress-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let started = Instant::now();
         for index in 0..5000 {
-            std::fs::write(dir.join(format!("art-{index:04}.svg")), filtered_svg(index, 1024)).unwrap();
+            std::fs::write(
+                dir.join(format!("art-{index:04}.svg")),
+                filtered_svg(index, 1024),
+            )
+            .unwrap();
         }
-        println!("5,000 filtered SVGs written in {:?} → {}", started.elapsed(), dir.display());
+        println!(
+            "5,000 filtered SVGs written in {:?} → {}",
+            started.elapsed(),
+            dir.display()
+        );
         // A screen of cards: ~30 at once.
-        for (label, width) in [("as GPUI draws an SVG (its own size, 1024 px)", 1024u32), ("as a 320 px thumbnail", 320)] {
+        for (label, width) in [
+            ("as GPUI draws an SVG (its own size, 1024 px)", 1024u32),
+            ("as a 320 px thumbnail", 320),
+        ] {
             let mut times = Vec::new();
             let mut bytes = 0;
             for index in 0..60 {
@@ -75,7 +92,11 @@ mod tests {
         std::fs::create_dir_all(&cache).unwrap();
         let started = Instant::now();
         for index in 0..30 {
-            crate::thumbnails::rasterize_svg(&dir.join(format!("art-{index:04}.svg")), &cache.join(format!("{index}.svg.png"))).unwrap();
+            crate::thumbnails::rasterize_svg(
+                &dir.join(format!("art-{index:04}.svg")),
+                &cache.join(format!("{index}.svg.png")),
+            )
+            .unwrap();
         }
         let cold = started.elapsed();
         let started = Instant::now();
@@ -84,7 +105,15 @@ mod tests {
             let image = image::open(cache.join(format!("{index}.svg.png"))).unwrap();
             bytes += image.width() * image.height() * 4;
         }
-        println!("Files' cache: first visit of a 30-card screen {cold:?} (background worker), every later visit {:?} to decode, {:.1} MB on screen", started.elapsed(), bytes as f64 / 1_048_576.);
-        println!("memory if every one were kept at 1024 px: {:.1} GB; at 320 px: {:.0} MB", 5000. * 4. / 1024., 5000. * 0.39);
+        println!(
+            "Files' cache: first visit of a 30-card screen {cold:?} (background worker), every later visit {:?} to decode, {:.1} MB on screen",
+            started.elapsed(),
+            bytes as f64 / 1_048_576.
+        );
+        println!(
+            "memory if every one were kept at 1024 px: {:.1} GB; at 320 px: {:.0} MB",
+            5000. * 4. / 1024.,
+            5000. * 0.39
+        );
     }
 }

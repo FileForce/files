@@ -10,18 +10,30 @@ use std::path::Path;
 const LIMIT: usize = 200_000;
 
 pub fn applies(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| matches!(extension.to_string_lossy().to_lowercase().as_str(), "docx" | "odt" | "pptx"))
+    path.extension().is_some_and(|extension| {
+        matches!(
+            extension.to_string_lossy().to_lowercase().as_str(),
+            "docx" | "odt" | "pptx"
+        )
+    })
 }
 
 fn entry(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
     let mut file = zip.by_name(name).ok()?;
     let mut text = String::new();
-    file.by_ref().take(64 * 1024 * 1024).read_to_string(&mut text).ok()?;
+    file.by_ref()
+        .take(64 * 1024 * 1024)
+        .read_to_string(&mut text)
+        .ok()?;
     Some(text)
 }
 
 fn decode(text: &str) -> String {
-    text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// The text runs of an XML document: `text_tags` hold text, `breaks`
@@ -30,10 +42,16 @@ fn runs(xml: &str, text_tags: &[&str], breaks: &[&str], tabs: &[&str]) -> String
     let mut out = String::new();
     let mut rest = xml;
     while let Some(start) = rest.find('<') {
-        let Some(end) = rest[start..].find('>') else { break };
+        let Some(end) = rest[start..].find('>') else {
+            break;
+        };
         let tag = &rest[start + 1..start + end];
         let after = &rest[start + end + 1..];
-        let name = tag.trim_start_matches('/').split([' ', '/']).next().unwrap_or("");
+        let name = tag
+            .trim_start_matches('/')
+            .split([' ', '/'])
+            .next()
+            .unwrap_or("");
         let closing = tag.starts_with('/');
         let empty = tag.ends_with('/');
         if !closing && !empty && text_tags.contains(&name) {
@@ -66,9 +84,15 @@ fn odt_text(xml: &str) -> String {
     let mut rest = body;
     while let Some(start) = rest.find('<') {
         out.push_str(&decode(&rest[..start]));
-        let Some(end) = rest[start..].find('>') else { break };
+        let Some(end) = rest[start..].find('>') else {
+            break;
+        };
         let tag = &rest[start + 1..start + end];
-        let name = tag.trim_start_matches('/').split([' ', '/']).next().unwrap_or("");
+        let name = tag
+            .trim_start_matches('/')
+            .split([' ', '/'])
+            .next()
+            .unwrap_or("");
         match name {
             "text:p" | "text:h" if tag.starts_with('/') || tag.ends_with('/') => out.push('\n'),
             "text:line-break" => out.push('\n'),
@@ -108,13 +132,28 @@ pub fn text(path: &Path) -> Option<String> {
     let extension = path.extension()?.to_string_lossy().to_lowercase();
     let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
     let text = match extension.as_str() {
-        "docx" => runs(&entry(&mut zip, "word/document.xml")?, &["w:t"], &["w:p", "w:br", "w:cr"], &["w:tab"]),
+        "docx" => runs(
+            &entry(&mut zip, "word/document.xml")?,
+            &["w:t"],
+            &["w:p", "w:br", "w:cr"],
+            &["w:tab"],
+        ),
         "odt" => odt_text(&entry(&mut zip, "content.xml")?),
         "pptx" => {
             // Slides in order: ppt/slides/slide1.xml, slide2.xml…
             let mut slides: Vec<(usize, String)> = (0..zip.len())
-                .filter_map(|index| zip.by_index(index).ok().and_then(|file| file.name().ok().map(|name| name.to_string())))
-                .filter_map(|name| name.strip_prefix("ppt/slides/slide")?.strip_suffix(".xml")?.parse::<usize>().ok().map(|number| (number, name)))
+                .filter_map(|index| {
+                    zip.by_index(index)
+                        .ok()
+                        .and_then(|file| file.name().ok().map(|name| name.to_string()))
+                })
+                .filter_map(|name| {
+                    name.strip_prefix("ppt/slides/slide")?
+                        .strip_suffix(".xml")?
+                        .parse::<usize>()
+                        .ok()
+                        .map(|number| (number, name))
+                })
                 .collect();
             slides.sort();
             let mut out = String::new();
@@ -128,7 +167,10 @@ pub fn text(path: &Path) -> Option<String> {
     };
     let mut text = tidy(text);
     if text.len() > LIMIT {
-        let cut = (0..=LIMIT).rev().find(|index| text.is_char_boundary(*index)).unwrap_or(0);
+        let cut = (0..=LIMIT)
+            .rev()
+            .find(|index| text.is_char_boundary(*index))
+            .unwrap_or(0);
         text.truncate(cut);
         text.push_str("\n\n… (the preview shows the beginning)");
     }
@@ -137,11 +179,18 @@ pub fn text(path: &Path) -> Option<String> {
 
 /// `text`, kept for the last few documents (previews redraw often).
 pub fn cached(path: &Path) -> Option<String> {
-    type Entry = (std::path::PathBuf, Option<std::time::SystemTime>, Option<String>);
+    type Entry = (
+        std::path::PathBuf,
+        Option<std::time::SystemTime>,
+        Option<String>,
+    );
     static LAST: std::sync::Mutex<Vec<Entry>> = std::sync::Mutex::new(Vec::new());
     let modified = std::fs::metadata(path).ok()?.modified().ok();
     let mut last = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((_, _, text)) = last.iter().find(|(cached, when, _)| cached == path && *when == modified) {
+    if let Some((_, _, text)) = last
+        .iter()
+        .find(|(cached, when, _)| cached == path && *when == modified)
+    {
         return text.clone();
     }
     let read = text(path);
@@ -160,12 +209,20 @@ mod tests {
 
     #[test]
     fn a_word_document_reads_as_paragraphs() {
-        let path = std::env::temp_dir().join(format!("file-force-office-{}.docx", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("file-force-office-{}.docx", std::process::id()));
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
-        zip.start_file("word/document.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.start_file(
+            "word/document.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
         zip.write_all(br#"<?xml version="1.0"?><w:document><w:body><w:p><w:r><w:t>Quarterly &amp; yearly</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">Line </w:t><w:tab/><w:t>two</w:t></w:r></w:p></w:body></w:document>"#).unwrap();
         zip.finish().unwrap();
-        assert_eq!(text(&path).as_deref(), Some("Quarterly & yearly\nLine \ttwo"));
+        assert_eq!(
+            text(&path).as_deref(),
+            Some("Quarterly & yearly\nLine \ttwo")
+        );
         assert!(applies(&path) && !applies(Path::new("a.pdf")));
         let _ = std::fs::remove_file(&path);
     }
@@ -178,7 +235,11 @@ mod live {
     fn read_a_real_document() {
         for path in std::env::var("DOCS").unwrap().split('|') {
             let text = super::text(std::path::Path::new(path)).unwrap_or_default();
-            println!("== {path}: {} lines\n{}", text.lines().count(), text.lines().take(3).collect::<Vec<_>>().join(" | "));
+            println!(
+                "== {path}: {} lines\n{}",
+                text.lines().count(),
+                text.lines().take(3).collect::<Vec<_>>().join(" | ")
+            );
         }
     }
 }

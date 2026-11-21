@@ -33,15 +33,49 @@ static MODE: AtomicU32 = AtomicU32::new(0);
 static HEAD_TRACKING: AtomicBool = AtomicBool::new(false);
 /// Settings → Sound / Music → Your speakers, as its index in `SpeakerLayout::ALL`.
 static LAYOUT: AtomicU32 = AtomicU32::new(1);
+static CHANNEL_LEVELS: [AtomicU32; 8] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
+static CHANNEL_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn channel_levels() -> Vec<f32> {
+    CHANNEL_LEVELS[..CHANNEL_COUNT.load(Ordering::Relaxed).min(8)]
+        .iter()
+        .map(|level| f32::from_bits(level.load(Ordering::Relaxed)))
+        .collect()
+}
+
+fn publish_channel_levels(levels: &[f32; 8], count: usize) {
+    CHANNEL_COUNT.store(count.min(8), Ordering::Relaxed);
+    for (target, level) in CHANNEL_LEVELS.iter().zip(levels) {
+        target.store(level.sqrt().to_bits(), Ordering::Relaxed);
+    }
+}
 
 pub fn set_mode(mode: SpatialMode, head_tracking: bool, layout: SpeakerLayout) {
     MODE.store(mode as u32, Ordering::Relaxed);
     HEAD_TRACKING.store(head_tracking, Ordering::Relaxed);
-    LAYOUT.store(SpeakerLayout::ALL.iter().position(|known| *known == layout).unwrap_or(1) as u32, Ordering::Relaxed);
+    LAYOUT.store(
+        SpeakerLayout::ALL
+            .iter()
+            .position(|known| *known == layout)
+            .unwrap_or(1) as u32,
+        Ordering::Relaxed,
+    );
 }
 
 fn layout() -> SpeakerLayout {
-    SpeakerLayout::ALL.get(LAYOUT.load(Ordering::Relaxed) as usize).copied().unwrap_or_default()
+    SpeakerLayout::ALL
+        .get(LAYOUT.load(Ordering::Relaxed) as usize)
+        .copied()
+        .unwrap_or_default()
 }
 
 fn mode() -> SpatialMode {
@@ -71,26 +105,42 @@ pub fn target() -> Option<Target> {
 
 /// The most channels the system's sound device takes.
 fn device_channels() -> usize {
-    let Some(device) = cpal::default_host().default_output_device() else { return 0 };
-    device.supported_output_configs().map_or(0, |configs| configs.map(|config| config.channels() as usize).max().unwrap_or(0))
+    let Some(device) = cpal::default_host().default_output_device() else {
+        return 0;
+    };
+    device.supported_output_configs().map_or(0, |configs| {
+        configs
+            .map(|config| config.channels() as usize)
+            .max()
+            .unwrap_or(0)
+    })
 }
 
 /// The default device's stream settings, with at least `channels` channels
 /// when it has them (surround devices often default to stereo).
 fn device_config(channels: usize) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
-    let device = cpal::default_host().default_output_device().ok_or("No sound output")?;
-    let default = device.default_output_config().map_err(|error| error.to_string())?;
+    let device = cpal::default_host()
+        .default_output_device()
+        .ok_or("No sound output")?;
+    let default = device
+        .default_output_config()
+        .map_err(|error| error.to_string())?;
     if default.channels() as usize >= channels {
         return Ok((device, default));
     }
     let wider = device
         .supported_output_configs()
         .map_err(|error| error.to_string())?
-        .filter(|config| config.channels() as usize >= channels && config.sample_format() == default.sample_format())
+        .filter(|config| {
+            config.channels() as usize >= channels
+                && config.sample_format() == default.sample_format()
+        })
         .min_by_key(|config| config.channels());
     let config = match wider {
         Some(range) => {
-            let rate = default.sample_rate().clamp(range.min_sample_rate(), range.max_sample_rate());
+            let rate = default
+                .sample_rate()
+                .clamp(range.min_sample_rate(), range.max_sample_rate());
             range.with_sample_rate(rate)
         }
         None => default,
@@ -112,20 +162,31 @@ fn device_slot(index: usize, count: usize) -> usize {
 /// same output and channel order Music plays through.
 pub fn test_speaker(layout: SpeakerLayout, index: usize, volume: u8) {
     let count = crate::sound::speakers(layout).len();
-    let Some(speaker) = crate::sound::speakers(layout).get(index).copied() else { return };
+    let Some(speaker) = crate::sound::speakers(layout).get(index).copied() else {
+        return;
+    };
     std::thread::spawn(move || {
         let result = (|| -> Result<(), String> {
             let (device, config) = device_config(count)?;
             let rate = config.sample_rate() as f32;
             let channels = config.channels() as usize;
-            let slot = if channels >= count { device_slot(index, count) } else { index.min(channels.saturating_sub(1)) };
+            let slot = if channels >= count {
+                device_slot(index, count)
+            } else {
+                index.min(channels.saturating_sub(1))
+            };
             let frequency = if speaker.short == "LFE" { 55.0 } else { 523.25 };
-            let level = if speaker.short == "LFE" { 0.8 } else { 0.5 } * volume.min(100) as f32 / 100.0;
+            let level =
+                if speaker.short == "LFE" { 0.8 } else { 0.5 } * volume.min(100) as f32 / 100.0;
             let length = (rate * 1.2) as usize;
             let mut at = 0usize;
             let mut tone = move || {
                 let fade = (at.min(length.saturating_sub(at)) as f32 / (rate * 0.05)).min(1.0);
-                let sample = if at < length { (std::f32::consts::TAU * frequency * at as f32 / rate).sin() * level * fade } else { 0.0 };
+                let sample = if at < length {
+                    (std::f32::consts::TAU * frequency * at as f32 / rate).sin() * level * fade
+                } else {
+                    0.0
+                };
                 at += 1;
                 sample
             };
@@ -142,7 +203,12 @@ pub fn test_speaker(layout: SpeakerLayout, index: usize, volume: u8) {
                         }
                     },
                     |error| {
-                        files_sdk::log::record("music", files_sdk::log::Kind::Error, format!("Speaker test: {error}"), None);
+                        files_sdk::log::record(
+                            "music",
+                            files_sdk::log::Kind::Error,
+                            format!("Speaker test: {error}"),
+                            None,
+                        );
                     },
                     None,
                 )
@@ -152,22 +218,47 @@ pub fn test_speaker(layout: SpeakerLayout, index: usize, volume: u8) {
             Ok(())
         })();
         let detail = result.err();
-        files_sdk::log::record("files", files_sdk::log::Kind::Setting, format!("speaker test: {} ({layout:?})", speaker.name), detail);
+        files_sdk::log::record(
+            "files",
+            files_sdk::log::Kind::Setting,
+            format!("speaker test: {} ({layout:?})", speaker.name),
+            detail,
+        );
     });
 }
 
 /// The system's sound goes to headphones (or a headset, AirPods…).
 pub fn headphones() -> bool {
-    let Some(device) = cpal::default_host().default_output_device() else { return false };
-    let Ok(description) = device.description() else { return false };
-    matches!(description.device_type(), cpal::DeviceType::Headphones | cpal::DeviceType::Headset | cpal::DeviceType::Earpiece)
-        || is_headphone_name(description.name())
+    let Some(device) = cpal::default_host().default_output_device() else {
+        return false;
+    };
+    let Ok(description) = device.description() else {
+        return false;
+    };
+    matches!(
+        description.device_type(),
+        cpal::DeviceType::Headphones | cpal::DeviceType::Headset | cpal::DeviceType::Earpiece
+    ) || is_headphone_name(description.name())
 }
 
 /// Names that mean headphones when the system does not say (most Bluetooth ones).
 fn is_headphone_name(name: &str) -> bool {
-    const HINTS: [&str; 14] =
-        ["headphone", "headset", "airpods", "earpods", "buds", "beats", "earphone", "wh-1000", "wf-1000", "freebuds", "jabra", "qc35", "qc45", "наушник"];
+    const HINTS: [&str; 14] = [
+        "headphone",
+        "headset",
+        "airpods",
+        "earpods",
+        "buds",
+        "beats",
+        "earphone",
+        "wh-1000",
+        "wf-1000",
+        "freebuds",
+        "jabra",
+        "qc35",
+        "qc45",
+        "наушник",
+    ];
     let name = name.to_lowercase();
     HINTS.iter().any(|hint| name.contains(hint))
 }
@@ -219,7 +310,12 @@ pub struct SpatialPlayer {
 impl SpatialPlayer {
     /// Starts decoding `source` and opens the audio device (paused).
     /// `enhance`: the exciter of Enhance streaming, for MP3 streams.
-    pub fn open(source: Source, enhance: Option<Strength>, expected_ms: i64, target: Target) -> Result<Self, String> {
+    pub fn open(
+        source: Source,
+        enhance: Option<Strength>,
+        expected_ms: i64,
+        target: Target,
+    ) -> Result<Self, String> {
         let shared = Arc::new(Shared {
             decoded: Mutex::new(Decoded::default()),
             position: AtomicU64::new(0),
@@ -234,27 +330,42 @@ impl SpatialPlayer {
         });
         let decoding = shared.clone();
         std::thread::spawn(move || {
-            let (input, extension): (Box<dyn files_ext_music::live::MediaSource>, Option<String>) = match source {
-                Source::File(path) => match std::fs::File::open(&path) {
-                    Ok(file) => (Box::new(file), path.extension().map(|extension| extension.to_string_lossy().into_owned())),
-                    Err(error) => {
-                        *lock(&decoding.failed) = Some(error.to_string());
-                        lock(&decoding.decoded).done = true;
-                        return;
+            let (input, extension): (Box<dyn files_ext_music::live::MediaSource>, Option<String>) =
+                match source {
+                    Source::File(path) => match std::fs::File::open(&path) {
+                        Ok(file) => (
+                            Box::new(file),
+                            path.extension()
+                                .map(|extension| extension.to_string_lossy().into_owned()),
+                        ),
+                        Err(error) => {
+                            *lock(&decoding.failed) = Some(error.to_string());
+                            lock(&decoding.decoded).done = true;
+                            return;
+                        }
+                    },
+                    Source::Arriving(mp3) => {
+                        (files_ext_music::live::reader(mp3), Some("mp3".into()))
                     }
+                };
+            let result = files_ext_music::enhance::decode_stream(
+                input,
+                extension.as_deref(),
+                |rate, channels, interleaved| {
+                    let mut decoded = lock(&decoding.decoded);
+                    if decoded.channels == 0 {
+                        (decoded.rate, decoded.channels) = (rate, channels);
+                    }
+                    if channels == decoded.channels {
+                        decoded.samples.extend(
+                            interleaved
+                                .iter()
+                                .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16),
+                        );
+                    }
+                    Ok(())
                 },
-                Source::Arriving(mp3) => (files_ext_music::live::reader(mp3), Some("mp3".into())),
-            };
-            let result = files_ext_music::enhance::decode_stream(input, extension.as_deref(), |rate, channels, interleaved| {
-                let mut decoded = lock(&decoding.decoded);
-                if decoded.channels == 0 {
-                    (decoded.rate, decoded.channels) = (rate, channels);
-                }
-                if channels == decoded.channels {
-                    decoded.samples.extend(interleaved.iter().map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16));
-                }
-                Ok(())
-            });
+            );
             if let Err(error) = result {
                 *lock(&decoding.failed) = Some(error.to_string());
             }
@@ -264,20 +375,62 @@ impl SpatialPlayer {
         let (device, config) = device_config(target.channels())?;
         let format = config.sample_format();
         let stream_config = config.config();
-        let mut render = Renderer::new(shared.clone(), stream_config.sample_rate, stream_config.channels as usize, enhance, target);
+        let mut render = Renderer::new(
+            shared.clone(),
+            stream_config.sample_rate,
+            stream_config.channels as usize,
+            enhance,
+            target,
+        );
         let failed = |error: cpal::Error| {
-            files_sdk::log::record("music", files_sdk::log::Kind::Error, format!("Spatial audio output: {error}"), None);
+            files_sdk::log::record(
+                "music",
+                files_sdk::log::Kind::Error,
+                format!("Spatial audio output: {error}"),
+                None,
+            );
         };
         let stream = match format {
-            cpal::SampleFormat::F32 => device.build_output_stream(stream_config, move |data: &mut [f32], _| render.fill(data, |sample| sample), failed, None),
-            cpal::SampleFormat::I16 => device.build_output_stream(stream_config, move |data: &mut [i16], _| render.fill(data, |sample| (sample * i16::MAX as f32) as i16), failed, None),
-            cpal::SampleFormat::I32 => device.build_output_stream(stream_config, move |data: &mut [i32], _| render.fill(data, |sample| (sample as f64 * i32::MAX as f64) as i32), failed, None),
-            cpal::SampleFormat::U16 => device.build_output_stream(stream_config, move |data: &mut [u16], _| render.fill(data, |sample| ((sample + 1.0) * 0.5 * u16::MAX as f32) as u16), failed, None),
+            cpal::SampleFormat::F32 => device.build_output_stream(
+                stream_config,
+                move |data: &mut [f32], _| render.fill(data, |sample| sample),
+                failed,
+                None,
+            ),
+            cpal::SampleFormat::I16 => device.build_output_stream(
+                stream_config,
+                move |data: &mut [i16], _| {
+                    render.fill(data, |sample| (sample * i16::MAX as f32) as i16)
+                },
+                failed,
+                None,
+            ),
+            cpal::SampleFormat::I32 => device.build_output_stream(
+                stream_config,
+                move |data: &mut [i32], _| {
+                    render.fill(data, |sample| (sample as f64 * i32::MAX as f64) as i32)
+                },
+                failed,
+                None,
+            ),
+            cpal::SampleFormat::U16 => device.build_output_stream(
+                stream_config,
+                move |data: &mut [u16], _| {
+                    render.fill(data, |sample| {
+                        ((sample + 1.0) * 0.5 * u16::MAX as f32) as u16
+                    })
+                },
+                failed,
+                None,
+            ),
             other => return Err(format!("Unsupported sound output format {other:?}")),
         }
         .map_err(|error| error.to_string())?;
         stream.play().map_err(|error| error.to_string())?;
-        Ok(Self { shared, _stream: stream })
+        Ok(Self {
+            shared,
+            _stream: stream,
+        })
     }
 
     pub fn play(&self) {
@@ -299,8 +452,16 @@ impl SpatialPlayer {
         }
         let ms = |frames: u64| (frames * 1000 / decoded.rate as u64) as i64;
         let pending = self.shared.seek.load(Ordering::SeqCst);
-        let at = if pending != u64::MAX { pending } else { self.shared.position.load(Ordering::SeqCst) };
-        let length = if decoded.done { ms(decoded.frames()) } else { self.shared.expected_ms.max(ms(decoded.frames())) };
+        let at = if pending != u64::MAX {
+            pending
+        } else {
+            self.shared.position.load(Ordering::SeqCst)
+        };
+        let length = if decoded.done {
+            ms(decoded.frames())
+        } else {
+            self.shared.expected_ms.max(ms(decoded.frames()))
+        };
         (ms(at), length)
     }
 
@@ -315,11 +476,15 @@ impl SpatialPlayer {
 
     /// 0…100, as VLC's.
     pub fn set_volume(&self, volume: u8) {
-        self.shared.volume.store((volume.min(100) as f32 / 100.0).to_bits(), Ordering::Relaxed);
+        self.shared.volume.store(
+            (volume.min(100) as f32 / 100.0).to_bits(),
+            Ordering::Relaxed,
+        );
     }
 
     pub fn set_equalizer(&self, equalizer: Option<&crate::video::Equalizer>) {
-        *lock(&self.shared.equalizer) = equalizer.map(|equalizer| (equalizer.preamp, equalizer.bands.clone()));
+        *lock(&self.shared.equalizer) =
+            equalizer.map(|equalizer| (equalizer.preamp, equalizer.bands.clone()));
         self.shared.equalizer_changes.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -334,7 +499,9 @@ impl SpatialPlayer {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The audio thread's side: source frames through the chain, resampled to
@@ -356,7 +523,13 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new(shared: Arc<Shared>, out_rate: u32, out_channels: usize, enhance: Option<Strength>, target: Target) -> Self {
+    fn new(
+        shared: Arc<Shared>,
+        out_rate: u32,
+        out_channels: usize,
+        enhance: Option<Strength>,
+        target: Target,
+    ) -> Self {
         Self {
             shared,
             out_rate,
@@ -379,30 +552,51 @@ impl Renderer {
         let decoded = lock(&self.shared.decoded);
         if !playing || decoded.channels == 0 {
             data.fill(convert(0.0));
+            publish_channel_levels(&[0.0; 8], self.target.channels());
             return;
         }
         let source_channels = decoded.channels;
         if self.chain.is_none() {
-            self.chain = Some(Chain::new(decoded.rate, source_channels, self.enhance, self.target));
+            self.chain = Some(Chain::new(
+                decoded.rate,
+                source_channels,
+                self.enhance,
+                self.target,
+            ));
         }
         let seek = self.shared.seek.swap(u64::MAX, Ordering::SeqCst);
         if seek != u64::MAX {
             self.shared.position.store(seek, Ordering::SeqCst);
             // Fresh filters: no tail of where it was.
-            self.chain = Some(Chain::new(decoded.rate, source_channels, self.enhance, self.target));
+            self.chain = Some(Chain::new(
+                decoded.rate,
+                source_channels,
+                self.enhance,
+                self.target,
+            ));
             (self.previous, self.current, self.phase) = ([0.0; 8], [0.0; 8], 0.0);
         }
         let changes = self.shared.equalizer_changes.load(Ordering::SeqCst);
         if changes != self.equalizer_seen {
             self.equalizer_seen = changes;
-            self.equalizer = lock(&self.shared.equalizer).as_ref().map(|(preamp, bands)| Equalizer::new(self.out_rate, *preamp, bands, self.target.channels()));
+            self.equalizer = lock(&self.shared.equalizer)
+                .as_ref()
+                .map(|(preamp, bands)| {
+                    Equalizer::new(self.out_rate, *preamp, bands, self.target.channels())
+                });
         }
         let chain = self.chain.as_mut().expect("made above");
-        chain.set_yaw(if HEAD_TRACKING.load(Ordering::Relaxed) { crate::head_tracking::yaw() } else { 0.0 });
+        chain.set_yaw(if HEAD_TRACKING.load(Ordering::Relaxed) {
+            crate::head_tracking::yaw()
+        } else {
+            0.0
+        });
         let step = decoded.rate as f64 / self.out_rate as f64;
         let volume = f32::from_bits(self.shared.volume.load(Ordering::Relaxed));
         let total = decoded.frames();
         let mut position = self.shared.position.load(Ordering::SeqCst);
+        let mut energy = [0.0f32; 8];
+        let mut rendered = 0usize;
         for out in data.chunks_mut(channels) {
             self.phase += step;
             let mut starved = false;
@@ -413,7 +607,11 @@ impl Renderer {
                 }
                 let start = position as usize * source_channels;
                 self.frame.clear();
-                self.frame.extend(decoded.samples[start..start + source_channels].iter().map(|sample| *sample as f32 / i16::MAX as f32));
+                self.frame.extend(
+                    decoded.samples[start..start + source_channels]
+                        .iter()
+                        .map(|sample| *sample as f32 / i16::MAX as f32),
+                );
                 self.previous = self.current;
                 chain.run(&self.frame, &mut self.current);
                 position += 1;
@@ -432,7 +630,12 @@ impl Renderer {
             let part = self.phase as f32;
             let count = self.target.channels();
             let mut sample = [0.0f32; 8];
-            for ((value, previous), current) in sample.iter_mut().zip(&self.previous).zip(&self.current).take(count) {
+            for ((value, previous), current) in sample
+                .iter_mut()
+                .zip(&self.previous)
+                .zip(&self.current)
+                .take(count)
+            {
                 *value = previous + (current - previous) * part;
             }
             if let Some(equalizer) = &mut self.equalizer {
@@ -441,6 +644,10 @@ impl Renderer {
             for value in &mut sample[..count] {
                 *value = (*value * volume).clamp(-1.0, 1.0);
             }
+            for (total, value) in energy.iter_mut().zip(&sample) {
+                *total += value * value;
+            }
+            rendered += 1;
             out.fill(convert(0.0));
             if out.len() >= count {
                 for (index, value) in sample[..count].iter().enumerate() {
@@ -448,7 +655,10 @@ impl Renderer {
                 }
             } else {
                 // Fewer channels than the layout: everything to the first one or two.
-                let (left, right) = (sample[0] + sample.get(2).copied().unwrap_or(0.0) * 0.7, sample[1] + sample.get(2).copied().unwrap_or(0.0) * 0.7);
+                let (left, right) = (
+                    sample[0] + sample.get(2).copied().unwrap_or(0.0) * 0.7,
+                    sample[1] + sample.get(2).copied().unwrap_or(0.0) * 0.7,
+                );
                 match out {
                     [mono] => *mono = convert(((left + right) * 0.5).clamp(-1.0, 1.0)),
                     [first, second, ..] => {
@@ -460,12 +670,26 @@ impl Renderer {
             }
         }
         self.shared.position.store(position, Ordering::SeqCst);
+        if rendered > 0 {
+            for level in &mut energy {
+                *level /= rendered as f32;
+            }
+        }
+        publish_channel_levels(&energy, self.target.channels());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_meter_reports_rms_per_output_channel() {
+        publish_channel_levels(&[0.25, 0.0625, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2);
+        assert_eq!(channel_levels(), vec![0.5, 0.25]);
+        publish_channel_levels(&[0.0; 8], 2);
+        assert_eq!(channel_levels(), vec![0.0, 0.0]);
+    }
 
     #[test]
     fn headphones_are_told_by_name_when_the_system_does_not_say() {
@@ -477,7 +701,12 @@ mod tests {
     }
 
     /// Renders `frames` output frames from `decoded` without a sound device.
-    fn render(decoded: Decoded, out_rate: u32, frames: usize, seek: Option<u64>) -> (Vec<f32>, Arc<Shared>) {
+    fn render(
+        decoded: Decoded,
+        out_rate: u32,
+        frames: usize,
+        seek: Option<u64>,
+    ) -> (Vec<f32>, Arc<Shared>) {
         let shared = Arc::new(Shared {
             decoded: Mutex::new(decoded),
             position: AtomicU64::new(0),
@@ -498,25 +727,41 @@ mod tests {
 
     fn tone(rate: u32, seconds: f32) -> Decoded {
         let samples = (0..(rate as f32 * seconds) as usize).flat_map(|index| {
-            let value = ((std::f32::consts::TAU * 440.0 * index as f32 / rate as f32).sin() * 0.5 * i16::MAX as f32) as i16;
+            let value = ((std::f32::consts::TAU * 440.0 * index as f32 / rate as f32).sin()
+                * 0.5
+                * i16::MAX as f32) as i16;
             [value, value]
         });
-        Decoded { rate, channels: 2, samples: samples.collect(), done: true }
+        Decoded {
+            rate,
+            channels: 2,
+            samples: samples.collect(),
+            done: true,
+        }
     }
 
     #[test]
     fn a_44k_track_plays_on_a_48k_device_at_its_own_speed() {
         let (out, shared) = render(tone(44_100, 1.0), 48_000, 24_000, None);
-        assert!(out.iter().any(|sample| sample.abs() > 0.1), "sound comes out");
+        assert!(
+            out.iter().any(|sample| sample.abs() > 0.1),
+            "sound comes out"
+        );
         let played = shared.position.load(Ordering::SeqCst);
-        assert!((played as i64 - 22_050).abs() <= 2, "half a second of 44.1 kHz in half a second of 48 kHz: {played}");
+        assert!(
+            (played as i64 - 22_050).abs() <= 2,
+            "half a second of 44.1 kHz in half a second of 48 kHz: {played}"
+        );
     }
 
     #[test]
     fn the_end_stops_and_says_so() {
         let (out, shared) = render(tone(48_000, 0.1), 48_000, 9_600, None);
         assert!(shared.ended.load(Ordering::SeqCst) && !shared.playing.load(Ordering::SeqCst));
-        assert!(out[out.len() - 100..].iter().all(|sample| *sample == 0.0), "silence after the end");
+        assert!(
+            out[out.len() - 100..].iter().all(|sample| *sample == 0.0),
+            "silence after the end"
+        );
     }
 
     #[test]
@@ -530,7 +775,10 @@ mod tests {
         let mut decoded = tone(48_000, 0.01);
         decoded.done = false;
         let (out, shared) = render(decoded, 48_000, 4_800, None);
-        assert!(!shared.ended.load(Ordering::SeqCst) && shared.playing.load(Ordering::SeqCst), "still playing, waiting");
+        assert!(
+            !shared.ended.load(Ordering::SeqCst) && shared.playing.load(Ordering::SeqCst),
+            "still playing, waiting"
+        );
         assert!(out[out.len() - 100..].iter().all(|sample| *sample == 0.0));
     }
 }
@@ -543,13 +791,23 @@ mod device {
     #[test]
     #[ignore]
     fn plays_on_the_sound_device() {
-        let path = std::env::var("FILES_SPATIAL_TEST").unwrap_or_else(|_| "/private/tmp/claude-501/sp.mp3".into());
-        let player = SpatialPlayer::open(Source::File(path.into()), Some(Strength::Medium), 10_000, Target::Headphones).unwrap();
+        let path = std::env::var("FILES_SPATIAL_TEST")
+            .unwrap_or_else(|_| "/private/tmp/claude-501/sp.mp3".into());
+        let player = SpatialPlayer::open(
+            Source::File(path.into()),
+            Some(Strength::Medium),
+            10_000,
+            Target::Headphones,
+        )
+        .unwrap();
         player.set_volume(0);
         player.play();
         std::thread::sleep(std::time::Duration::from_millis(1500));
         let (at, length) = player.progress();
-        println!("after 1.5 s: at {at} ms of {length} ms; headphones: {}", headphones());
+        println!(
+            "after 1.5 s: at {at} ms of {length} ms; headphones: {}",
+            headphones()
+        );
         assert!((1200..=1700).contains(&at), "plays in real time: {at}");
         player.seek(0.8);
         std::thread::sleep(std::time::Duration::from_millis(300));

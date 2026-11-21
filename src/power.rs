@@ -24,7 +24,10 @@ pub struct Battery {
 /// The last reading, for Settings ("Battery 64%").
 pub fn battery() -> Battery {
     let charge = CHARGE.load(Ordering::Relaxed);
-    Battery { on_battery: ON_BATTERY.load(Ordering::Relaxed), percent: (charge != UNKNOWN).then_some(charge) }
+    Battery {
+        on_battery: ON_BATTERY.load(Ordering::Relaxed),
+        percent: (charge != UNKNOWN).then_some(charge),
+    }
 }
 
 fn store(battery: Battery) {
@@ -73,7 +76,10 @@ fn mode() -> PowerSavingMode {
 /// threshold; 100 means as soon as the computer runs on battery.
 fn resolves(mode: PowerSavingMode, battery: Battery, below: u8) -> bool {
     match mode {
-        PowerSavingMode::Automatic => battery.on_battery && (below >= 100 || battery.percent.is_none_or(|percent| percent <= below)),
+        PowerSavingMode::Automatic => {
+            battery.on_battery
+                && (below >= 100 || battery.percent.is_none_or(|percent| percent <= below))
+        }
         PowerSavingMode::On => true,
         PowerSavingMode::Off => false,
     }
@@ -83,11 +89,16 @@ fn update_active() -> bool {
     let active = resolves(mode(), battery(), BELOW.load(Ordering::Relaxed));
     let changed = POWER_SAVING.swap(active, Ordering::Relaxed) != active;
     if changed {
-        let charge = battery().percent.map_or(String::new(), |percent| format!(" · battery {percent}%"));
+        let charge = battery()
+            .percent
+            .map_or(String::new(), |percent| format!(" · battery {percent}%"));
         files_sdk::log::record(
             "files",
             files_sdk::log::Kind::Setting,
-            format!("power saving: {}{charge}", if active { "on" } else { "off" }),
+            format!(
+                "power saving: {}{charge}",
+                if active { "on" } else { "off" }
+            ),
             None,
         );
     }
@@ -102,8 +113,13 @@ pub fn refresh() -> bool {
 pub fn watch(appearance: Entity<AppSettings>, cx: &mut App) {
     cx.spawn(async move |cx| {
         loop {
-            cx.background_executor().timer(Duration::from_secs(30)).await;
-            let reading = cx.background_executor().spawn(async move { read_battery() }).await;
+            cx.background_executor()
+                .timer(Duration::from_secs(30))
+                .await;
+            let reading = cx
+                .background_executor()
+                .spawn(async move { read_battery() })
+                .await;
             let changed_reading = reading != battery();
             store(reading);
             // A new charge also redraws Settings' "Battery 64%".
@@ -147,7 +163,10 @@ fn read_battery() -> Battery {
     let batteries = entries.filter_map(Result::ok).filter_map(|entry| {
         let path = entry.path();
         (std::fs::read_to_string(path.join("type")).ok()?.trim() == "Battery").then(|| {
-            (std::fs::read_to_string(path.join("status")).unwrap_or_default(), std::fs::read_to_string(path.join("capacity")).ok())
+            (
+                std::fs::read_to_string(path.join("status")).unwrap_or_default(),
+                std::fs::read_to_string(path.join("capacity")).ok(),
+            )
         })
     });
     linux_battery(batteries)
@@ -161,7 +180,11 @@ fn linux_battery(batteries: impl IntoIterator<Item = (String, Option<String>)>) 
     for (status, capacity) in batteries {
         battery.on_battery |= status.trim().eq_ignore_ascii_case("discharging");
         if let Some(percent) = capacity.and_then(|capacity| capacity.trim().parse::<u8>().ok()) {
-            battery.percent = Some(battery.percent.map_or(percent, |lowest| lowest.min(percent)));
+            battery.percent = Some(
+                battery
+                    .percent
+                    .map_or(percent, |lowest| lowest.min(percent)),
+            );
         }
     }
     battery
@@ -175,14 +198,21 @@ fn read_battery() -> Battery {
     if unsafe { GetSystemPowerStatus(&mut status) } == 0 {
         return Battery::default();
     }
-    windows_battery(status.ACLineStatus, status.BatteryFlag, status.BatteryLifePercent)
+    windows_battery(
+        status.ACLineStatus,
+        status.BatteryFlag,
+        status.BatteryLifePercent,
+    )
 }
 
 /// ACLineStatus 0 = on battery; BatteryFlag 128 = no battery; percent 255 = unknown.
 #[cfg(any(windows, test))]
 fn windows_battery(ac_line: u8, flag: u8, percent: u8) -> Battery {
     let has_battery = flag != 128 && flag != 255;
-    Battery { on_battery: has_battery && ac_line == 0, percent: (has_battery && percent <= 100).then_some(percent) }
+    Battery {
+        on_battery: has_battery && ac_line == 0,
+        percent: (has_battery && percent <= 100).then_some(percent),
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -196,28 +226,76 @@ mod tests {
 
     #[test]
     fn mode_resolves_against_the_power_source() {
-        let battery = |on_battery, percent| Battery { on_battery, percent };
-        assert!(!resolves(PowerSavingMode::Automatic, battery(false, Some(10)), 100));
-        assert!(resolves(PowerSavingMode::Automatic, battery(true, Some(90)), 100), "100%: whenever on battery");
+        let battery = |on_battery, percent| Battery {
+            on_battery,
+            percent,
+        };
+        assert!(!resolves(
+            PowerSavingMode::Automatic,
+            battery(false, Some(10)),
+            100
+        ));
+        assert!(
+            resolves(PowerSavingMode::Automatic, battery(true, Some(90)), 100),
+            "100%: whenever on battery"
+        );
         assert!(resolves(PowerSavingMode::On, battery(false, None), 20));
         assert!(!resolves(PowerSavingMode::Off, battery(true, Some(5)), 20));
     }
 
     #[test]
     fn automatic_waits_for_the_threshold() {
-        let battery = |percent| Battery { on_battery: true, percent };
-        assert!(!resolves(PowerSavingMode::Automatic, battery(Some(64)), 20), "64% is above 20%");
-        assert!(resolves(PowerSavingMode::Automatic, battery(Some(20)), 20), "at the threshold");
+        let battery = |percent| Battery {
+            on_battery: true,
+            percent,
+        };
+        assert!(
+            !resolves(PowerSavingMode::Automatic, battery(Some(64)), 20),
+            "64% is above 20%"
+        );
+        assert!(
+            resolves(PowerSavingMode::Automatic, battery(Some(20)), 20),
+            "at the threshold"
+        );
         assert!(resolves(PowerSavingMode::Automatic, battery(Some(7)), 20));
-        assert!(resolves(PowerSavingMode::Automatic, battery(None), 20), "charge unknown: on battery is enough");
-        assert!(!resolves(PowerSavingMode::Automatic, Battery { on_battery: false, percent: Some(5) }, 20), "charging");
+        assert!(
+            resolves(PowerSavingMode::Automatic, battery(None), 20),
+            "charge unknown: on battery is enough"
+        );
+        assert!(
+            !resolves(
+                PowerSavingMode::Automatic,
+                Battery {
+                    on_battery: false,
+                    percent: Some(5)
+                },
+                20
+            ),
+            "charging"
+        );
     }
 
     #[test]
     fn windows_power_status_reads_battery_and_charge() {
-        assert_eq!(windows_battery(0, 1, 64), Battery { on_battery: true, percent: Some(64) });
-        assert_eq!(windows_battery(1, 8, 90), Battery { on_battery: false, percent: Some(90) });
-        assert_eq!(windows_battery(1, 128, 255), Battery::default(), "a desktop without a battery");
+        assert_eq!(
+            windows_battery(0, 1, 64),
+            Battery {
+                on_battery: true,
+                percent: Some(64)
+            }
+        );
+        assert_eq!(
+            windows_battery(1, 8, 90),
+            Battery {
+                on_battery: false,
+                percent: Some(90)
+            }
+        );
+        assert_eq!(
+            windows_battery(1, 128, 255),
+            Battery::default(),
+            "a desktop without a battery"
+        );
     }
 
     #[test]
@@ -231,17 +309,43 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn pmset_distinguishes_battery_from_ac() {
-        let on_battery = parse_pmset("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=123)\t80%; discharging; 4:00 remaining");
-        assert_eq!(on_battery, Battery { on_battery: true, percent: Some(80) });
-        let charging = parse_pmset("Now drawing from 'AC Power'\n -InternalBattery-0 (id=123)\t100%; charged; 0:00 remaining");
-        assert_eq!(charging, Battery { on_battery: false, percent: Some(100) });
-        assert_eq!(parse_pmset("Now drawing from 'AC Power'\n"), Battery::default(), "a Mac without a battery");
+        let on_battery = parse_pmset(
+            "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=123)\t80%; discharging; 4:00 remaining",
+        );
+        assert_eq!(
+            on_battery,
+            Battery {
+                on_battery: true,
+                percent: Some(80)
+            }
+        );
+        let charging = parse_pmset(
+            "Now drawing from 'AC Power'\n -InternalBattery-0 (id=123)\t100%; charged; 0:00 remaining",
+        );
+        assert_eq!(
+            charging,
+            Battery {
+                on_battery: false,
+                percent: Some(100)
+            }
+        );
+        assert_eq!(
+            parse_pmset("Now drawing from 'AC Power'\n"),
+            Battery::default(),
+            "a Mac without a battery"
+        );
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_battery_status_distinguishes_battery_from_ac() {
-        assert_eq!(linux_battery([("Discharging\n".into(), Some("42\n".into()))]), Battery { on_battery: true, percent: Some(42) });
+        assert_eq!(
+            linux_battery([("Discharging\n".into(), Some("42\n".into()))]),
+            Battery {
+                on_battery: true,
+                percent: Some(42)
+            }
+        );
         assert!(!linux_battery([("Charging\n".into(), None), ("Full\n".into(), None)]).on_battery);
         assert_eq!(linux_battery([]), Battery::default());
     }

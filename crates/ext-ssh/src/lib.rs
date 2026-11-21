@@ -6,10 +6,11 @@ use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub use files_sdk::{Endpoint as SshConnection, RemoteItem};
 use files_sdk::{
-    Accessibility, Context, Icon, Manifest, MenuItem, Outcome, Permission, RemoteProvider, Scope, Targets, secrets,
+    Accessibility, Context, Icon, Manifest, MenuItem, Outcome, Permission, RemoteProvider, Scope,
+    Targets, secrets,
 };
+pub use files_sdk::{Endpoint as SshConnection, RemoteItem};
 
 static MENU: [MenuItem; 1] = [MenuItem {
     command: "ssh.copy-address",
@@ -35,7 +36,14 @@ pub static MANIFEST: Manifest = Manifest {
         "Open, download, drop or paste to upload",
         "Open in Terminal starts ssh in that folder",
     ],
-    permissions: &[Permission::Network, Permission::Secrets, Permission::WriteFiles, Permission::LaunchApps, Permission::Clipboard, Permission::PreventSleep],
+    permissions: &[
+        Permission::Network,
+        Permission::Secrets,
+        Permission::WriteFiles,
+        Permission::LaunchApps,
+        Permission::Clipboard,
+        Permission::PreventSleep,
+    ],
     menu: &MENU,
     sidebar: &[],
     menu_color: None,
@@ -60,16 +68,30 @@ impl files_sdk::Extension for Ssh {
     fn run(&self, command: &str, context: &Context) -> io::Result<Outcome> {
         match command {
             "ssh.copy-address" => {
-                let server = context.server.as_deref().ok_or_else(|| io::Error::other("not connected"))?;
+                let server = context
+                    .server
+                    .as_deref()
+                    .ok_or_else(|| io::Error::other("not connected"))?;
                 let paths = if context.selection.is_empty() {
                     context.folder.iter().cloned().collect()
                 } else {
                     context.selection.clone()
                 };
-                let text = paths.iter().map(|path| format!("ssh://{server}{path}")).collect::<Vec<_>>().join("\n");
-                Ok(Outcome { notice: Some(format!("Copied {text}")), clipboard: Some(text), navigate: None })
+                let text = paths
+                    .iter()
+                    .map(|path| format!("ssh://{server}{path}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(Outcome {
+                    notice: Some(format!("Copied {text}")),
+                    clipboard: Some(text),
+                    navigate: None,
+                })
             }
-            _ => Err(io::Error::new(io::ErrorKind::Unsupported, format!("unknown command {command}"))),
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("unknown command {command}"),
+            )),
         }
     }
 }
@@ -91,14 +113,22 @@ fn keys_file() -> Option<PathBuf> {
 }
 
 fn read_keys() -> Vec<(String, PathBuf)> {
-    let Some(text) = keys_file().and_then(|file| std::fs::read_to_string(file).ok()) else { return Vec::new() };
-    text.lines().filter_map(|line| line.split_once('\t')).map(|(address, path)| (address.to_string(), PathBuf::from(path))).collect()
+    let Some(text) = keys_file().and_then(|file| std::fs::read_to_string(file).ok()) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(address, path)| (address.to_string(), PathBuf::from(path)))
+        .collect()
 }
 
 /// The private key `ssh` signs in with for this server, if one was chosen.
 pub fn identity(endpoint: &SshConnection) -> Option<PathBuf> {
     let address = endpoint.address();
-    read_keys().into_iter().find(|(known, _)| *known == address).map(|(_, path)| path)
+    read_keys()
+        .into_iter()
+        .find(|(known, _)| *known == address)
+        .map(|(_, path)| path)
 }
 
 /// Signs in to this server with `key` from now on (`None`: ssh's own choice
@@ -106,14 +136,20 @@ pub fn identity(endpoint: &SshConnection) -> Option<PathBuf> {
 pub fn save_identity(endpoint: &SshConnection, key: Option<&Path>) -> io::Result<()> {
     let file = keys_file().ok_or_else(|| io::Error::other("no settings folder"))?;
     let address = endpoint.address();
-    let mut keys: Vec<(String, PathBuf)> = read_keys().into_iter().filter(|(known, _)| *known != address).collect();
+    let mut keys: Vec<(String, PathBuf)> = read_keys()
+        .into_iter()
+        .filter(|(known, _)| *known != address)
+        .collect();
     if let Some(key) = key {
         keys.push((address, expand_home(key)));
     }
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text: String = keys.iter().map(|(address, path)| format!("{address}\t{}\n", path.display())).collect();
+    let text: String = keys
+        .iter()
+        .map(|(address, path)| format!("{address}\t{}\n", path.display()))
+        .collect();
     std::fs::write(file, text)
 }
 
@@ -128,26 +164,52 @@ pub fn expand_home(path: &Path) -> PathBuf {
 /// The private keys in `~/.ssh`, the usual ones first: files with a `.pub`
 /// beside them, or named like `id_*` (not the `.pub` halves, config…).
 pub fn standard_keys() -> Vec<PathBuf> {
-    let Some(dir) = std::env::home_dir().map(|home| home.join(".ssh")) else { return Vec::new() };
+    let Some(dir) = std::env::home_dir().map(|home| home.join(".ssh")) else {
+        return Vec::new();
+    };
     keys_in(&dir)
 }
 
 fn keys_in(dir: &Path) -> Vec<PathBuf> {
     const USUAL: [&str; 4] = ["id_ed25519", "id_ecdsa", "id_rsa", "id_ed25519_sk"];
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut keys: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
         .filter(|path| {
-            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-            let skip = name.ends_with(".pub") || name.starts_with('.') || matches!(name.as_str(), "config" | "known_hosts" | "known_hosts.old" | "authorized_keys" | "environment");
-            !skip && (name.starts_with("id_") || path.with_file_name(format!("{name}.pub")).is_file())
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let skip = name.ends_with(".pub")
+                || name.starts_with('.')
+                || matches!(
+                    name.as_str(),
+                    "config"
+                        | "known_hosts"
+                        | "known_hosts.old"
+                        | "authorized_keys"
+                        | "environment"
+                );
+            !skip
+                && (name.starts_with("id_") || path.with_file_name(format!("{name}.pub")).is_file())
         })
         .collect();
     keys.sort_by_key(|path| {
-        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-        (USUAL.iter().position(|usual| *usual == name).unwrap_or(USUAL.len()), name)
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        (
+            USUAL
+                .iter()
+                .position(|usual| *usual == name)
+                .unwrap_or(USUAL.len()),
+            name,
+        )
     });
     keys
 }
@@ -155,15 +217,31 @@ fn keys_in(dir: &Path) -> Vec<PathBuf> {
 /// The `ssh` options that sign in with the chosen key, and only with it
 /// (an agent full of other keys would hit the server's attempt limit first).
 pub fn identity_args(endpoint: &SshConnection) -> io::Result<Vec<String>> {
-    let Some(key) = identity(endpoint) else { return Ok(Vec::new()) };
+    let Some(key) = identity(endpoint) else {
+        return Ok(Vec::new());
+    };
     if !key.is_file() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, format!("The key {} is not there any more · choose it again in the connection dialog", key.display())));
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "The key {} is not there any more · choose it again in the connection dialog",
+                key.display()
+            ),
+        ));
     }
-    Ok(vec!["-i".into(), key.display().to_string(), "-o".into(), "IdentitiesOnly=yes".into()])
+    Ok(vec![
+        "-i".into(),
+        key.display().to_string(),
+        "-o".into(),
+        "IdentitiesOnly=yes".into(),
+    ])
 }
 
 fn has_password(endpoint: &SshConnection) -> bool {
-    secrets::get(MANIFEST.id, &endpoint.address()).ok().flatten().is_some()
+    secrets::get(MANIFEST.id, &endpoint.address())
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 /// A tiny helper `ssh` runs to ask for the password: it reads the keychain.
@@ -172,9 +250,17 @@ fn askpass_script(endpoint: &SshConnection) -> io::Result<PathBuf> {
     let account = endpoint.address();
     let quote = |value: &str| format!("'{}'", value.replace('\'', r"'\''"));
     #[cfg(target_os = "macos")]
-    let body = format!("exec /usr/bin/security find-generic-password -s {} -a {} -w", quote(&service), quote(&account));
+    let body = format!(
+        "exec /usr/bin/security find-generic-password -s {} -a {} -w",
+        quote(&service),
+        quote(&account)
+    );
     #[cfg(not(target_os = "macos"))]
-    let body = format!("exec secret-tool lookup service {} account {}", quote(&service), quote(&account));
+    let body = format!(
+        "exec secret-tool lookup service {} account {}",
+        quote(&service),
+        quote(&account)
+    );
     let path = std::env::temp_dir().join(format!("file-force-askpass-{}", std::process::id()));
     std::fs::write(&path, format!("#!/bin/sh\n{body}\n"))?;
     #[cfg(unix)]
@@ -188,13 +274,21 @@ fn askpass_script(endpoint: &SshConnection) -> io::Result<PathBuf> {
 impl RemoteProvider for Ssh {
     fn connect(&self, endpoint: &SshConnection) -> io::Result<String> {
         files_sdk::permissions::check(MANIFEST.id, Permission::Network)?;
-        let reply = String::from_utf8_lossy(&run(endpoint, "pwd")?).trim().to_string();
+        let reply = String::from_utf8_lossy(&run(endpoint, "pwd")?)
+            .trim()
+            .to_string();
         home_from_pwd(&endpoint.host, &reply)
     }
 
     fn list(&self, endpoint: &SshConnection, path: &str) -> io::Result<Vec<RemoteItem>> {
         // `-L` shows what symlinks point to, so linked folders open as folders.
-        let output = files_sdk::log::run(MANIFEST.id, &mut command(endpoint, &format!("cd -- {} && LC_ALL=C ls -lanL", quote(path)))?)?;
+        let output = files_sdk::log::run(
+            MANIFEST.id,
+            &mut command(
+                endpoint,
+                &format!("cd -- {} && LC_ALL=C ls -lanL", quote(path)),
+            )?,
+        )?;
         // Broken links make `ls` exit non-zero but the rest is still listed.
         if !output.status.success() && output.stdout.is_empty() {
             return Err(ssh_error(&output.stderr));
@@ -226,7 +320,11 @@ impl RemoteProvider for Ssh {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?
             .to_string_lossy()
             .into_owned();
-        let taken: Vec<String> = self.list(endpoint, folder)?.into_iter().map(|item| item.name).collect();
+        let taken: Vec<String> = self
+            .list(endpoint, folder)?
+            .into_iter()
+            .map(|item| item.name)
+            .collect();
         let name = free_name(&name, &taken);
         let target = join(folder, &name);
         let mut command = command(endpoint, &format!("cat > {}", quote(&target)))?;
@@ -256,7 +354,9 @@ fn control_dir() -> PathBuf {
     let dir = {
         use std::os::unix::fs::MetadataExt as _;
         // The owner of the home folder is the user running the app.
-        let uid = std::env::var_os("HOME").and_then(|home| std::fs::metadata(home).ok()).map_or(0, |metadata| metadata.uid());
+        let uid = std::env::var_os("HOME")
+            .and_then(|home| std::fs::metadata(home).ok())
+            .map_or(0, |metadata| metadata.uid());
         PathBuf::from(format!("/tmp/fe-ssh-{uid}"))
     };
     #[cfg(not(unix))]
@@ -278,12 +378,18 @@ fn command(endpoint: &SshConnection, remote: &str) -> io::Result<Command> {
     command.args(identity_args(endpoint)?);
     // A saved password (or a key's passphrase) is answered by the keychain helper; otherwise never
     // hang on a prompt: there is no terminal.
-    match has_password(endpoint).then(|| askpass_script(endpoint)).transpose() {
+    match has_password(endpoint)
+        .then(|| askpass_script(endpoint))
+        .transpose()
+    {
         Ok(Some(askpass)) => {
             command
                 .env("SSH_ASKPASS", askpass)
                 .env("SSH_ASKPASS_REQUIRE", "force")
-                .env("DISPLAY", std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string()))
+                .env(
+                    "DISPLAY",
+                    std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string()),
+                )
                 .args(["-o", "NumberOfPasswordPrompts=1"]);
         }
         _ => {
@@ -315,13 +421,16 @@ fn run(endpoint: &SshConnection, remote: &str) -> io::Result<Vec<u8>> {
     Err(ssh_error(&output.stderr))
 }
 
-
 /// Tests swap `ssh` for a script (connections run on their own threads, so
 /// this is process-wide, not per thread).
 static PROGRAM: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 fn program() -> PathBuf {
-    PROGRAM.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone().unwrap_or_else(|| PathBuf::from("ssh"))
+    PROGRAM
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("ssh"))
 }
 
 /// For tests (here and in the app): `ssh` becomes a script that runs the
@@ -344,7 +453,9 @@ pub fn use_fake_ssh(dir: &Path) {
     )
     .unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    *PROGRAM.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fake);
+    *PROGRAM
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fake);
 }
 
 /// A server asks the user to approve the connection somewhere else, e.g.
@@ -362,7 +473,10 @@ pub const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300
 /// The sign-in link in a line the server printed, if any.
 pub fn auth_url(line: &str) -> Option<String> {
     let start = line.find("https://")?;
-    let url: String = line[start..].chars().take_while(|char| !char.is_whitespace() && !"\"'<>)]".contains(*char)).collect();
+    let url: String = line[start..]
+        .chars()
+        .take_while(|char| !char.is_whitespace() && !"\"'<>)]".contains(*char))
+        .collect();
     let url = url.trim_end_matches(['.', ',', ';']).to_string();
     (url.len() > "https://".len()).then_some(url)
 }
@@ -371,7 +485,10 @@ pub fn auth_url(line: &str) -> Option<String> {
 /// while it waits: when it asks for a sign-in in the browser, `prompt` gets
 /// the link at once and the connection keeps waiting (up to
 /// [`AUTH_TIMEOUT`]) until the user approves it.
-pub fn connect_with_prompts(endpoint: &SshConnection, mut prompt: impl FnMut(AuthPrompt)) -> io::Result<String> {
+pub fn connect_with_prompts(
+    endpoint: &SshConnection,
+    mut prompt: impl FnMut(AuthPrompt),
+) -> io::Result<String> {
     use std::io::BufRead as _;
     files_sdk::permissions::check(MANIFEST.id, Permission::Network)?;
     let mut ssh = command(endpoint, "pwd")?;
@@ -389,7 +506,10 @@ pub fn connect_with_prompts(endpoint: &SshConnection, mut prompt: impl FnMut(Aut
     let (lines, receiver) = std::sync::mpsc::channel::<String>();
     let stderr = child.stderr.take().expect("piped");
     std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
             if lines.send(line).is_err() {
                 break;
             }
@@ -406,8 +526,16 @@ pub fn connect_with_prompts(endpoint: &SshConnection, mut prompt: impl FnMut(Aut
             if !prompted {
                 if let Some(url) = auth_url(&clean) {
                     prompted = true;
-                    files_sdk::log::record(MANIFEST.id, files_sdk::log::Kind::Network, format!("{} asks to sign in", endpoint.address()), Some(said.join("\n")));
-                    prompt(AuthPrompt { message: said.join("\n"), url });
+                    files_sdk::log::record(
+                        MANIFEST.id,
+                        files_sdk::log::Kind::Network,
+                        format!("{} asks to sign in", endpoint.address()),
+                        Some(said.join("\n")),
+                    );
+                    prompt(AuthPrompt {
+                        message: said.join("\n"),
+                        url,
+                    });
                 }
             }
         }
@@ -417,7 +545,10 @@ pub fn connect_with_prompts(endpoint: &SshConnection, mut prompt: impl FnMut(Aut
         if started.elapsed() > AUTH_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "The sign-in was not completed in time. Try connecting again."));
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "The sign-in was not completed in time. Try connecting again.",
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
@@ -449,7 +580,9 @@ pub fn home_from_pwd(host: &str, reply: &str) -> io::Result<String> {
     let first = reply.lines().next().unwrap_or(reply);
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        format!("{host} runs an interactive app, not a shell (it said: \"{first}\"). Open it in Terminal instead."),
+        format!(
+            "{host} runs an interactive app, not a shell (it said: \"{first}\"). Open it in Terminal instead."
+        ),
     ))
 }
 
@@ -458,7 +591,13 @@ pub fn cache_path(connection: &SshConnection, remote: &str) -> PathBuf {
     let host: String = connection
         .address()
         .chars()
-        .map(|char| if char.is_alphanumeric() || char == '.' || char == '@' { char } else { '_' })
+        .map(|char| {
+            if char.is_alphanumeric() || char == '.' || char == '@' {
+                char
+            } else {
+                '_'
+            }
+        })
         .collect();
     // The extension's cache folder (Settings → Storage lists it).
     files_sdk::storage::cache_dir(MANIFEST.id)
@@ -468,7 +607,11 @@ pub fn cache_path(connection: &SshConnection, remote: &str) -> PathBuf {
 }
 
 pub fn join(folder: &str, name: &str) -> String {
-    if folder.ends_with('/') { format!("{folder}{name}") } else { format!("{folder}/{name}") }
+    if folder.ends_with('/') {
+        format!("{folder}{name}")
+    } else {
+        format!("{folder}/{name}")
+    }
 }
 
 /// The folder above `path`, or `None` at `/`.
@@ -486,7 +629,11 @@ pub fn parent(path: &str) -> Option<String> {
 
 pub fn file_name(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() { "/" } else { trimmed.rsplit('/').next().unwrap_or(trimmed) }
+    if trimmed.is_empty() {
+        "/"
+    } else {
+        trimmed.rsplit('/').next().unwrap_or(trimmed)
+    }
 }
 
 /// Single-quotes `value` for the remote POSIX shell.
@@ -510,7 +657,12 @@ fn free_name(name: &str, taken: &[String]) -> String {
 
 fn ssh_error(stderr: &[u8]) -> io::Error {
     let message = String::from_utf8_lossy(stderr);
-    let message = message.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("ssh failed").trim();
+    let message = message
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("ssh failed")
+        .trim();
     let hint = if message.contains("Permission denied") {
         " · save the password in the connection dialog, or add your key with ssh-add / ssh-copy-id"
     } else if message.contains("Host key verification failed") {
@@ -544,7 +696,13 @@ fn parse_line(line: &str) -> Option<RemoteItem> {
         b'-' => false,
         _ => return None,
     };
-    let mode = (0..9).fold(0, |mode, index| if perms[index + 1] == b'-' { mode } else { mode | (0o400 >> index) });
+    let mode = (0..9).fold(0, |mode, index| {
+        if perms[index + 1] == b'-' {
+            mode
+        } else {
+            mode | (0o400 >> index)
+        }
+    });
     Some(RemoteItem {
         name: name.to_string(),
         is_dir,
@@ -585,9 +743,15 @@ mod tests {
         let items = parse_listing(output);
         assert_eq!(items.len(), 3, "{items:?}");
         assert_eq!(items[0].name, "notes with spaces.md");
-        assert_eq!((items[0].bytes, items[0].mode, items[0].is_dir), (812, 0o644, false));
+        assert_eq!(
+            (items[0].bytes, items[0].mode, items[0].is_dir),
+            (812, 0o644, false)
+        );
         assert_eq!(items[0].modified, "Oct 24 16:08");
-        assert_eq!((items[1].name.as_str(), items[1].is_dir, items[1].mode), (".ssh", true, 0o700));
+        assert_eq!(
+            (items[1].name.as_str(), items[1].is_dir, items[1].mode),
+            (".ssh", true, 0o700)
+        );
         assert_eq!((items[2].name.as_str(), items[2].mode), ("run.sh", 0o755));
     }
 
@@ -616,24 +780,46 @@ mod tests {
         std::fs::write(server.join("it's here.txt"), "remote body").unwrap();
         use_fake_ssh(&dir);
 
-        let connection = SshConnection { host: "test".into(), user: String::new(), port: 22 };
+        let connection = SshConnection {
+            host: "test".into(),
+            user: String::new(),
+            port: 22,
+        };
         let connection = Bound(&connection);
         let folder = server.to_string_lossy().into_owned();
         let items = connection.list(&folder).unwrap();
-        let names: Vec<_> = items.iter().map(|item| (item.name.as_str(), item.is_dir)).collect();
-        assert!(names.contains(&("it's here.txt", false)) && names.contains(&("src", true)), "{names:?}");
+        let names: Vec<_> = items
+            .iter()
+            .map(|item| (item.name.as_str(), item.is_dir))
+            .collect();
+        assert!(
+            names.contains(&("it's here.txt", false)) && names.contains(&("src", true)),
+            "{names:?}"
+        );
 
         let local = dir.join("downloaded.txt");
-        connection.download(&join(&folder, "it's here.txt"), &local).unwrap();
+        connection
+            .download(&join(&folder, "it's here.txt"), &local)
+            .unwrap();
         assert_eq!(std::fs::read_to_string(&local).unwrap(), "remote body");
-        assert!(connection.download(&join(&folder, "missing"), &dir.join("x")).is_err());
+        assert!(
+            connection
+                .download(&join(&folder, "missing"), &dir.join("x"))
+                .is_err()
+        );
 
         let upload = dir.join("it's here.txt");
         std::fs::write(&upload, "local body").unwrap();
         let target = connection.upload(&upload, &folder).unwrap();
-        assert!(target.ends_with("it's here (1).txt"), "never overwrites: {target}");
+        assert!(
+            target.ends_with("it's here (1).txt"),
+            "never overwrites: {target}"
+        );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "local body");
-        assert_eq!(std::fs::read_to_string(server.join("it's here.txt")).unwrap(), "remote body");
+        assert_eq!(
+            std::fs::read_to_string(server.join("it's here.txt")).unwrap(),
+            "remote body"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -646,8 +832,15 @@ mod tests {
             ..Default::default()
         };
         let outcome = files_sdk::Extension::run(&Ssh, "ssh.copy-address", &context).unwrap();
-        assert_eq!(outcome.clipboard.as_deref(), Some("ssh://me@box:2222/srv/a.txt\nssh://me@box:2222/srv/b"));
-        let empty = Context { folder: Some("/srv".into()), server: Some("box".into()), ..Default::default() };
+        assert_eq!(
+            outcome.clipboard.as_deref(),
+            Some("ssh://me@box:2222/srv/a.txt\nssh://me@box:2222/srv/b")
+        );
+        let empty = Context {
+            folder: Some("/srv".into()),
+            server: Some("box".into()),
+            ..Default::default()
+        };
         let outcome = files_sdk::Extension::run(&Ssh, "ssh.copy-address", &empty).unwrap();
         assert_eq!(outcome.clipboard.as_deref(), Some("ssh://box/srv"));
     }
@@ -656,8 +849,16 @@ mod tests {
     fn the_control_socket_path_fits_the_unix_limit() {
         // %C expands to a 40-character hash; sockets allow 104 bytes.
         let path = control_dir().join("0".repeat(40));
-        assert!(path.as_os_str().len() < 100, "{} is too long", path.display());
-        let endpoint = SshConnection { host: "terminal.shop".into(), user: String::new(), port: 22 };
+        assert!(
+            path.as_os_str().len() < 100,
+            "{} is too long",
+            path.display()
+        );
+        let endpoint = SshConnection {
+            host: "terminal.shop".into(),
+            user: String::new(),
+            port: 22,
+        };
         let line = files_sdk::log::shell_line(&command(&endpoint, "pwd").unwrap());
         assert!(line.contains("ControlPath=/tmp/fe-ssh-"), "{line}");
     }
@@ -665,10 +866,14 @@ mod tests {
     #[test]
     fn browser_sign_in_links_are_found() {
         assert_eq!(
-            auth_url("# To authenticate, visit: https://login.tailscale.com/a/l5ec5023386c26").as_deref(),
+            auth_url("# To authenticate, visit: https://login.tailscale.com/a/l5ec5023386c26")
+                .as_deref(),
             Some("https://login.tailscale.com/a/l5ec5023386c26")
         );
-        assert_eq!(auth_url("Open (https://sso.example.com/x?y=1).").as_deref(), Some("https://sso.example.com/x?y=1"));
+        assert_eq!(
+            auth_url("Open (https://sso.example.com/x?y=1).").as_deref(),
+            Some("https://sso.example.com/x?y=1")
+        );
         assert_eq!(auth_url("Permission denied (publickey)."), None);
     }
 
@@ -692,15 +897,30 @@ mod tests {
         use_fake_ssh(&dir);
         files_sdk::permissions::declare(&MANIFEST);
 
-        let endpoint = SshConnection { host: "auth-host".into(), user: "me".into(), port: 22 };
+        let endpoint = SshConnection {
+            host: "auth-host".into(),
+            user: "me".into(),
+            port: 22,
+        };
         let mut prompts = Vec::new();
         let started = std::time::Instant::now();
-        let home = connect_with_prompts(&endpoint, |prompt| prompts.push((prompt, started.elapsed()))).unwrap();
+        let home = connect_with_prompts(&endpoint, |prompt| {
+            prompts.push((prompt, started.elapsed()))
+        })
+        .unwrap();
         assert!(home.starts_with('/'), "{home}");
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].0.url, "https://login.tailscale.com/a/test123");
-        assert!(prompts[0].0.message.contains("requires an additional check"));
-        assert!(prompts[0].1 < std::time::Duration::from_millis(900), "the link must arrive before the server finishes waiting");
+        assert!(
+            prompts[0]
+                .0
+                .message
+                .contains("requires an additional check")
+        );
+        assert!(
+            prompts[0].1 < std::time::Duration::from_millis(900),
+            "the link must arrive before the server finishes waiting"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -710,7 +930,10 @@ mod tests {
         assert_eq!(home_from_pwd("box", "").unwrap(), "/");
         let error = home_from_pwd("terminal.shop", "Requires an active PTY").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-        assert!(error.to_string().contains("interactive app") && error.to_string().contains("Requires an active PTY"));
+        assert!(
+            error.to_string().contains("interactive app")
+                && error.to_string().contains("Requires an active PTY")
+        );
     }
 
     #[test]
@@ -718,38 +941,85 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("files-ext-ssh-keys-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for name in ["id_rsa", "id_rsa.pub", "id_ed25519", "id_ed25519.pub", "work", "work.pub", "config", "known_hosts", "notes.txt"] {
+        for name in [
+            "id_rsa",
+            "id_rsa.pub",
+            "id_ed25519",
+            "id_ed25519.pub",
+            "work",
+            "work.pub",
+            "config",
+            "known_hosts",
+            "notes.txt",
+        ] {
             std::fs::write(dir.join(name), "x").unwrap();
         }
-        let names: Vec<String> = keys_in(&dir).iter().map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(names, ["id_ed25519", "id_rsa", "work"], "a key is a file with its .pub, or id_*; ed25519 first");
+        let names: Vec<String> = keys_in(&dir)
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["id_ed25519", "id_rsa", "work"],
+            "a key is a file with its .pub, or id_*; ed25519 first"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_chosen_key_is_the_only_one_ssh_tries() {
-        let dir = std::env::temp_dir().join(format!("files-ext-ssh-identity-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("files-ext-ssh-identity-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let key = dir.join("deploy");
         std::fs::write(&key, "x").unwrap();
-        let endpoint = SshConnection { host: format!("key-host-{}", std::process::id()), user: "me".into(), port: 22 };
-        assert!(identity_args(&endpoint).unwrap().is_empty(), "no key chosen: ssh decides");
+        let endpoint = SshConnection {
+            host: format!("key-host-{}", std::process::id()),
+            user: "me".into(),
+            port: 22,
+        };
+        assert!(
+            identity_args(&endpoint).unwrap().is_empty(),
+            "no key chosen: ssh decides"
+        );
         save_identity(&endpoint, Some(&key)).unwrap();
-        assert_eq!(identity_args(&endpoint).unwrap(), ["-i".to_string(), key.display().to_string(), "-o".into(), "IdentitiesOnly=yes".into()]);
+        assert_eq!(
+            identity_args(&endpoint).unwrap(),
+            [
+                "-i".to_string(),
+                key.display().to_string(),
+                "-o".into(),
+                "IdentitiesOnly=yes".into()
+            ]
+        );
         std::fs::remove_file(&key).unwrap();
         let missing = identity_args(&endpoint).unwrap_err();
-        assert!(missing.to_string().contains("not there any more"), "{missing}");
+        assert!(
+            missing.to_string().contains("not there any more"),
+            "{missing}"
+        );
         save_identity(&endpoint, None).unwrap();
         assert_eq!(identity(&endpoint), None);
-        assert_eq!(expand_home(Path::new("~/.ssh/id_rsa")), std::env::home_dir().unwrap().join(".ssh/id_rsa"));
+        assert_eq!(
+            expand_home(Path::new("~/.ssh/id_rsa")),
+            std::env::home_dir().unwrap().join(".ssh/id_rsa")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn destination_omits_user_from_ssh_config() {
-        let connection = SshConnection { host: "prod".into(), user: String::new(), port: 22 };
+        let connection = SshConnection {
+            host: "prod".into(),
+            user: String::new(),
+            port: 22,
+        };
         assert_eq!(connection.address(), "prod");
-        let connection = SshConnection { host: "h".into(), user: "me".into(), port: 2222 };
+        let connection = SshConnection {
+            host: "h".into(),
+            user: "me".into(),
+            port: 2222,
+        };
         assert_eq!(connection.address(), "me@h:2222");
         assert_eq!(SshConnection::parse("me@h:2222"), Some(connection));
         assert_eq!(SshConnection::parse("prod").map(|it| it.port), Some(22));

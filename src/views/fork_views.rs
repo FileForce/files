@@ -17,7 +17,15 @@ use crate::palette::Palette;
 /// `+`, `~` or `−` with its color, for change lists.
 fn change_row(change: &Change, palette: Palette) -> AnyElement {
     let (sign, color, rel) = match change {
-        Change::Added { rel, folder } => ("+", palette.code, if *folder { format!("{rel}/") } else { rel.clone() }),
+        Change::Added { rel, folder } => (
+            "+",
+            palette.code,
+            if *folder {
+                format!("{rel}/")
+            } else {
+                rel.clone()
+            },
+        ),
         Change::Modified { rel } => ("~", palette.archive, rel.clone()),
         Change::Removed { rel } => ("−", palette.video, rel.clone()),
     };
@@ -33,7 +41,9 @@ impl FileExplorer {
     /// Makes a fork of a real folder in the background, then opens it.
     pub fn fork_folder(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
         if !self.appearance.read(cx).extensions.forks {
-            self.notice = Some("Forks extension is disabled · turn it on in Settings → Extensions".to_string());
+            self.notice = Some(
+                "Forks extension is disabled · turn it on in Settings → Extensions".to_string(),
+            );
             cx.notify();
             return;
         }
@@ -74,11 +84,19 @@ impl FileExplorer {
     }
 
     /// Asks, then deletes a fork's copy and returns to the original.
-    pub fn open_discard_fork_dialog(&mut self, fork: u32, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_discard_fork_dialog(
+        &mut self,
+        fork: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if window.has_active_dialog(cx) {
             return;
         }
-        let Some(summary) = crate::forks::list().into_iter().find(|summary| summary.id == fork) else {
+        let Some(summary) = crate::forks::list()
+            .into_iter()
+            .find(|summary| summary.id == fork)
+        else {
             return;
         };
         let explorer = cx.entity().downgrade();
@@ -137,7 +155,12 @@ impl FileExplorer {
     }
 
     /// Lists what the fork changed relative to the original folder.
-    pub fn open_fork_changes_dialog(&mut self, fork: u32, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_fork_changes_dialog(
+        &mut self,
+        fork: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if window.has_active_dialog(cx) {
             return;
         }
@@ -160,13 +183,19 @@ impl FileExplorer {
                             base.display()
                         )))
                         .child(if changes.is_empty() {
-                            div().text_sm().text_color(palette.muted).child("No changes yet").into_any_element()
+                            div()
+                                .text_sm()
+                                .text_color(palette.muted)
+                                .child("No changes yet")
+                                .into_any_element()
                         } else {
                             div()
                                 .id("fork-changes")
                                 .max_h(px(320.))
                                 .overflow_y_scroll()
-                                .child(v_flex().gap_1().children(changes.iter().map(|change| change_row(change, palette))))
+                                .child(v_flex().gap_1().children(
+                                    changes.iter().map(|change| change_row(change, palette)),
+                                ))
                                 .into_any_element()
                         }),
                 )
@@ -174,7 +203,12 @@ impl FileExplorer {
     }
 
     /// Confirms, then writes the fork's changes into the original folder.
-    pub fn open_apply_fork_dialog(&mut self, fork: u32, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_apply_fork_dialog(
+        &mut self,
+        fork: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if window.has_active_dialog(cx) {
             return;
         }
@@ -185,7 +219,10 @@ impl FileExplorer {
         let explorer = cx.entity().downgrade();
         let palette = self.palette();
         let use_trash = self.appearance.read(cx).deletion.use_trash;
-        let removals = changes.iter().filter(|change| matches!(change, Change::Removed { .. })).count();
+        let removals = changes
+            .iter()
+            .filter(|change| matches!(change, Change::Removed { .. }))
+            .count();
         window.open_dialog(cx, move |dialog, _, _| {
             let removal_note = match (removals, use_trash) {
                 (0, _) => "Nothing will be removed.".to_string(),
@@ -253,7 +290,12 @@ impl FileExplorer {
         });
     }
 
-    pub(crate) fn render_forks(&self, active: Location, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_forks(
+        &self,
+        active: Location,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.appearance.read(cx).extensions.forks {
             return None;
         }
@@ -262,7 +304,9 @@ impl FileExplorer {
             return None;
         }
         let active_fork = active.path().and_then(|path| crate::forks::fork_of(&path));
-        let mut section = v_flex().gap_1().child(self.section_header("forks", "FORKS", palette, cx));
+        let mut section = v_flex()
+            .gap_1()
+            .child(self.section_header("forks", "FORKS", palette, cx));
         if self.section_collapsed("forks", cx) {
             return Some(section.into_any_element());
         }
@@ -281,48 +325,77 @@ impl FileExplorer {
                     .items_center()
                     .gap_2()
                     .text_sm()
-                    .text_color(if selected { palette.text } else { palette.muted })
-                    .bg(if selected { palette.selection } else { palette.sidebar })
+                    .text_color(if selected {
+                        palette.text
+                    } else {
+                        palette.muted
+                    })
+                    .bg(if selected {
+                        palette.selection
+                    } else {
+                        palette.sidebar
+                    })
                     .hover(|style| style.bg(palette.hover).text_color(palette.text))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.navigate(Location::from_path(&dir), window, cx);
                     }))
-                    .child(Icon::new(IconName::GitFork).small().text_color(palette.accent))
+                    .child(
+                        Icon::new(IconName::GitFork)
+                            .small()
+                            .text_color(palette.accent),
+                    )
                     .child(div().flex_1().min_w_0().truncate().child(fork.name.clone()))
                     .children((fork.changes > 0).then(|| {
-                        div().text_xs().text_color(palette.faint).child(fork.changes.to_string())
+                        div()
+                            .text_xs()
+                            .text_color(palette.faint)
+                            .child(fork.changes.to_string())
                     }))
                     .context_menu(move |menu, window, _| {
                         menu.item(
                             PopupMenuItem::new("Open fork")
                                 .icon(IconName::FolderOpen)
-                                .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                    if let Some(root) = crate::forks::root(id).map(|dir| Location::from_path(&dir)) {
-                                        this.navigate(root, window, cx);
-                                    }
-                                })),
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        if let Some(root) = crate::forks::root(id)
+                                            .map(|dir| Location::from_path(&dir))
+                                        {
+                                            this.navigate(root, window, cx);
+                                        }
+                                    },
+                                )),
                         )
                         .item(
                             PopupMenuItem::new("Apply to folder…")
                                 .icon(IconName::Check)
-                                .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                    this.open_apply_fork_dialog(id, window, cx);
-                                })),
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        this.open_apply_fork_dialog(id, window, cx);
+                                    },
+                                )),
                         )
                         .item(
                             PopupMenuItem::new("Show changes…")
                                 .icon(IconName::GitCompare)
-                                .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                    this.open_fork_changes_dialog(id, window, cx);
-                                })),
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        this.open_fork_changes_dialog(id, window, cx);
+                                    },
+                                )),
                         )
                         .separator()
                         .item(
                             PopupMenuItem::new("Discard fork…")
                                 .icon(IconName::Trash)
-                                .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                    this.open_discard_fork_dialog(id, window, cx);
-                                })),
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        this.open_discard_fork_dialog(id, window, cx);
+                                    },
+                                )),
                         )
                     }),
             );
@@ -382,11 +455,21 @@ impl FileExplorer {
     }
 }
 
-fn apply(explorer: &gpui_kit::WeakEntity<FileExplorer>, fork: u32, window: &mut Window, cx: &mut gpui_kit::App) {
+fn apply(
+    explorer: &gpui_kit::WeakEntity<FileExplorer>,
+    fork: u32,
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+) {
     let _ = explorer.update(cx, |explorer, cx| {
         let settings = explorer.appearance.read(cx).clone();
         let home = Location::Home.path().unwrap_or_default();
-        match crate::forks::apply(fork, &settings.deletion.protected, &home, settings.deletion.use_trash) {
+        match crate::forks::apply(
+            fork,
+            &settings.deletion.protected,
+            &home,
+            settings.deletion.use_trash,
+        ) {
             Ok((base, report)) => {
                 explorer.navigate(Location::from_path(&base), window, cx);
                 let mut notice = format!(
@@ -394,7 +477,10 @@ fn apply(explorer: &gpui_kit::WeakEntity<FileExplorer>, fork: u32, window: &mut 
                     report.created, report.updated, report.removed
                 );
                 if let Some((item, reason)) = report.skipped.first() {
-                    notice.push_str(&format!(" · {} skipped ({item}: {reason})", report.skipped.len()));
+                    notice.push_str(&format!(
+                        " · {} skipped ({item}: {reason})",
+                        report.skipped.len()
+                    ));
                 }
                 explorer.notice = Some(notice);
             }
@@ -404,7 +490,12 @@ fn apply(explorer: &gpui_kit::WeakEntity<FileExplorer>, fork: u32, window: &mut 
     });
 }
 
-fn discard(explorer: &gpui_kit::WeakEntity<FileExplorer>, fork: u32, window: &mut Window, cx: &mut gpui_kit::App) {
+fn discard(
+    explorer: &gpui_kit::WeakEntity<FileExplorer>,
+    fork: u32,
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+) {
     let inside = explorer
         .upgrade()
         .and_then(|explorer| explorer.read(cx).active_location().path())
@@ -416,7 +507,8 @@ fn discard(explorer: &gpui_kit::WeakEntity<FileExplorer>, fork: u32, window: &mu
         if inside && let Some(base) = &base {
             explorer.navigate(Location::from_path(base), window, cx);
         }
-        explorer.notice = Some("Fork discarded · the original folder was never changed".to_string());
+        explorer.notice =
+            Some("Fork discarded · the original folder was never changed".to_string());
         cx.notify();
     });
 }

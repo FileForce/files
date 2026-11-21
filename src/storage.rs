@@ -21,7 +21,13 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [Kind::Thumbnails, Kind::Extensions, Kind::Forks, Kind::SearchIndex, Kind::Sounds];
+    pub const ALL: [Kind; 5] = [
+        Kind::Thumbnails,
+        Kind::Extensions,
+        Kind::Forks,
+        Kind::SearchIndex,
+        Kind::Sounds,
+    ];
 
     pub fn label(self, language: crate::settings::Language) -> &'static str {
         use crate::settings::Language::Russian;
@@ -86,16 +92,31 @@ struct Entry {
 }
 
 fn entry(path: PathBuf, metadata: &std::fs::Metadata) -> Entry {
-    Entry { path, bytes: metadata.len(), used: metadata.accessed().ok().max(metadata.modified().ok()).unwrap_or(SystemTime::UNIX_EPOCH) }
+    Entry {
+        path,
+        bytes: metadata.len(),
+        used: metadata
+            .accessed()
+            .ok()
+            .max(metadata.modified().ok())
+            .unwrap_or(SystemTime::UNIX_EPOCH),
+    }
 }
 
 /// Files of a kind, directly in its folder (extensions: all the way down).
 fn entries(kind: Kind) -> Vec<Entry> {
-    let Some(dir) = kind.dir() else { return Vec::new() };
+    let Some(dir) = kind.dir() else {
+        return Vec::new();
+    };
     if kind == Kind::Extensions {
-        return files_sdk::storage::walk(&dir).into_iter().map(|(path, metadata)| entry(path, &metadata)).collect();
+        return files_sdk::storage::walk(&dir)
+            .into_iter()
+            .map(|(path, metadata)| entry(path, &metadata))
+            .collect();
     }
-    let Ok(read) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(read) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     read.flatten()
         .filter_map(|item| {
             let metadata = item.metadata().ok()?;
@@ -117,17 +138,30 @@ pub fn usage() -> Vec<(Kind, Usage)> {
         .into_iter()
         .map(|kind| {
             let usage = match kind {
-                Kind::Forks => files_ext_forks::list().iter().fold(Usage::default(), |sum, fork| {
-                    let (files, bytes) = crate::resources::folder_size(&fork.dir);
-                    Usage { files: sum.files + files, bytes: sum.bytes + bytes }
-                }),
+                Kind::Forks => {
+                    files_ext_forks::list()
+                        .iter()
+                        .fold(Usage::default(), |sum, fork| {
+                            let (files, bytes) = crate::resources::folder_size(&fork.dir);
+                            Usage {
+                                files: sum.files + files,
+                                bytes: sum.bytes + bytes,
+                            }
+                        })
+                }
                 Kind::SearchIndex => {
                     let (_, _, _, search) = crate::model::index_stats();
-                    Usage { files: search, bytes: search as u64 * crate::resources::ENTRY_BYTES }
+                    Usage {
+                        files: search,
+                        bytes: search as u64 * crate::resources::ENTRY_BYTES,
+                    }
                 }
                 _ => {
                     let entries = entries(kind);
-                    Usage { files: entries.len(), bytes: entries.iter().map(|entry| entry.bytes).sum() }
+                    Usage {
+                        files: entries.len(),
+                        bytes: entries.iter().map(|entry| entry.bytes).sum(),
+                    }
                 }
             };
             (kind, usage)
@@ -141,7 +175,10 @@ pub fn extensions_root() -> PathBuf {
     if cfg!(test) {
         return std::env::temp_dir().join(format!("file-force-ext-cache-{}", std::process::id()));
     }
-    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("file-force").join("extensions")
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("file-force")
+        .join("extensions")
 }
 
 /// One extension's cache, for its own row.
@@ -155,7 +192,9 @@ pub struct ExtensionUsage {
 
 /// Each extension with something cached, biggest first (walks folders).
 pub fn extensions() -> Vec<ExtensionUsage> {
-    let Ok(read) = std::fs::read_dir(extensions_root()) else { return Vec::new() };
+    let Ok(read) = std::fs::read_dir(extensions_root()) else {
+        return Vec::new();
+    };
     let mut list: Vec<ExtensionUsage> = read
         .flatten()
         .filter(|item| item.path().is_dir())
@@ -166,7 +205,14 @@ pub fn extensions() -> Vec<ExtensionUsage> {
                 .find(|manifest| files_sdk::storage::folder_name(manifest.id) == id)
                 .map_or_else(|| id.clone(), |manifest| manifest.name.to_string());
             let usage = files_sdk::storage::usage(&id);
-            ExtensionUsage { id, name, usage: Usage { files: usage.files, bytes: usage.bytes } }
+            ExtensionUsage {
+                id,
+                name,
+                usage: Usage {
+                    files: usage.files,
+                    bytes: usage.bytes,
+                },
+            }
         })
         .filter(|extension| extension.usage.files > 0)
         .collect();
@@ -177,14 +223,28 @@ pub fn extensions() -> Vec<ExtensionUsage> {
 /// Empties one extension's cache.
 pub fn clear_extension(id: &str) -> u64 {
     let freed = files_sdk::storage::clear(id).unwrap_or(0);
-    files_sdk::log::record("storage", files_sdk::log::Kind::Info, format!("Cleared the cache of {id}: {}", crate::resources::size(freed)), None);
+    files_sdk::log::record(
+        "storage",
+        files_sdk::log::Kind::Info,
+        format!(
+            "Cleared the cache of {id}: {}",
+            crate::resources::size(freed)
+        ),
+        None,
+    );
     freed
 }
 
 /// A file being written now: left alone.
 fn in_progress(entry: &Entry) -> bool {
-    entry.path.extension().is_some_and(|extension| extension == "partial")
-        && entry.used.elapsed().is_ok_and(|age| age < Duration::from_secs(10 * 60))
+    entry
+        .path
+        .extension()
+        .is_some_and(|extension| extension == "partial")
+        && entry
+            .used
+            .elapsed()
+            .is_ok_and(|age| age < Duration::from_secs(10 * 60))
 }
 
 /// Deletes a kind's files; returns how many bytes went.
@@ -198,8 +258,18 @@ pub fn clear(kind: Kind) -> u64 {
         }
         _ => {}
     }
-    let freed = entries(kind).into_iter().filter(|entry| !in_progress(entry)).filter(|entry| std::fs::remove_file(&entry.path).is_ok()).map(|entry| entry.bytes).sum();
-    files_sdk::log::record("storage", files_sdk::log::Kind::Info, format!("Cleared {kind:?}: {}", crate::resources::size(freed)), None);
+    let freed = entries(kind)
+        .into_iter()
+        .filter(|entry| !in_progress(entry))
+        .filter(|entry| std::fs::remove_file(&entry.path).is_ok())
+        .map(|entry| entry.bytes)
+        .sum();
+    files_sdk::log::record(
+        "storage",
+        files_sdk::log::Kind::Info,
+        format!("Cleared {kind:?}: {}", crate::resources::size(freed)),
+        None,
+    );
     freed
 }
 
@@ -233,14 +303,29 @@ fn trim(mut all: Vec<Entry>, limit: u64) -> u64 {
 
 /// Keeps the caches under the limit (off the UI thread).
 pub fn enforce() -> u64 {
-    crate::tasks::run("cache limit", "all caches", || Ok::<_, String>(enforce_now())).unwrap_or(0)
+    crate::tasks::run("cache limit", "all caches", || {
+        Ok::<_, String>(enforce_now())
+    })
+    .unwrap_or(0)
 }
 
 fn enforce_now() -> u64 {
-    let all: Vec<Entry> = Kind::ALL.into_iter().filter(|kind| kind.limited()).flat_map(entries).collect();
+    let all: Vec<Entry> = Kind::ALL
+        .into_iter()
+        .filter(|kind| kind.limited())
+        .flat_map(entries)
+        .collect();
     let freed = trim(all, LIMIT.load(Ordering::Relaxed));
     if freed > 0 {
-        files_sdk::log::record("storage", files_sdk::log::Kind::Info, format!("Cache over the limit: freed {}", crate::resources::size(freed)), None);
+        files_sdk::log::record(
+            "storage",
+            files_sdk::log::Kind::Info,
+            format!(
+                "Cache over the limit: freed {}",
+                crate::resources::size(freed)
+            ),
+            None,
+        );
     }
     freed
 }
@@ -278,12 +363,19 @@ mod tests {
             .map(|index| {
                 let path = dir.join(format!("{index}.bin"));
                 std::fs::write(&path, vec![0u8; 100]).unwrap();
-                Entry { path, bytes: 100, used: now - Duration::from_secs(1000 - index * 100) }
+                Entry {
+                    path,
+                    bytes: 100,
+                    used: now - Duration::from_secs(1000 - index * 100),
+                }
             })
             .collect();
         assert_eq!(trim(all.clone(), 0), 0, "no limit, nothing goes");
         assert_eq!(trim(all.clone(), 250), 200);
-        assert!(!dir.join("0.bin").exists() && !dir.join("1.bin").exists(), "the two oldest went");
+        assert!(
+            !dir.join("0.bin").exists() && !dir.join("1.bin").exists(),
+            "the two oldest went"
+        );
         assert!(dir.join("2.bin").exists() && dir.join("3.bin").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -28,7 +28,12 @@ pub static MANIFEST: Manifest = Manifest {
         "Music tab: tracks, playlists, search and the player",
         "Quick Actions on audio files → Enhance to FLAC, Upmix to 5.1 Surround",
     ],
-    permissions: &[Permission::Network, Permission::Secrets, Permission::ReadFiles, Permission::WriteFiles],
+    permissions: &[
+        Permission::Network,
+        Permission::Secrets,
+        Permission::ReadFiles,
+        Permission::WriteFiles,
+    ],
     commands: &[],
     menu: &[],
     sidebar: &[],
@@ -61,12 +66,26 @@ impl files_sdk::Extension for Music {
 /// `music:` in global search: the library first, then the services the
 /// user is signed in to (each failing quietly).
 pub fn search_everywhere(query: &str, limit: usize) -> Vec<Track> {
-    let mut found: Vec<Track> = local::filter(&local::library(), query).into_iter().take(limit).cloned().collect();
+    let mut found: Vec<Track> = local::filter(&local::library(), query)
+        .into_iter()
+        .take(limit)
+        .cloned()
+        .collect();
     if found.len() < limit && spotify::connected() {
-        found.extend(spotify::search(query).unwrap_or_default().into_iter().take(limit - found.len()));
+        found.extend(
+            spotify::search(query)
+                .unwrap_or_default()
+                .into_iter()
+                .take(limit - found.len()),
+        );
     }
     if found.len() < limit && yandex::connected() {
-        found.extend(yandex::search(query).unwrap_or_default().into_iter().take(limit - found.len()));
+        found.extend(
+            yandex::search(query)
+                .unwrap_or_default()
+                .into_iter()
+                .take(limit - found.len()),
+        );
     }
     found
 }
@@ -124,8 +143,16 @@ pub fn cover_cache_path(track: &Track, small: bool) -> Option<PathBuf> {
         (_, Some(url)) => url.clone(),
         _ => return None,
     };
-    let hash: String = sha2::Sha256::digest(key.as_bytes()).iter().take(12).map(|byte| format!("{byte:02x}")).collect();
-    let name = if small { format!("{hash}-s.jpg") } else { format!("{hash}.jpg") };
+    let hash: String = sha2::Sha256::digest(key.as_bytes())
+        .iter()
+        .take(12)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let name = if small {
+        format!("{hash}-s.jpg")
+    } else {
+        format!("{hash}.jpg")
+    };
     Some(covers_dir().join(name))
 }
 
@@ -134,7 +161,8 @@ pub fn cover_cache_path(track: &Track, small: bool) -> Option<PathBuf> {
 pub fn cache_dir() -> PathBuf {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        files_sdk::storage::cache_dir(MANIFEST.id).unwrap_or_else(|_| std::env::temp_dir().join("file-force-music"))
+        files_sdk::storage::cache_dir(MANIFEST.id)
+            .unwrap_or_else(|_| std::env::temp_dir().join("file-force-music"))
     })
     .clone()
 }
@@ -156,7 +184,11 @@ fn move_cache(old: &std::path::Path, new: &std::path::Path) {
     for item in std::fs::read_dir(old).into_iter().flatten().flatten() {
         let target = new.join(item.file_name());
         if target.exists() || std::fs::rename(item.path(), &target).is_err() {
-            let _ = if item.path().is_dir() { std::fs::remove_dir_all(item.path()) } else { std::fs::remove_file(item.path()) };
+            let _ = if item.path().is_dir() {
+                std::fs::remove_dir_all(item.path())
+            } else {
+                std::fs::remove_file(item.path())
+            };
         }
     }
     let _ = std::fs::remove_dir_all(old);
@@ -178,7 +210,13 @@ pub fn fetch_cover(track: &Track) -> Option<PathBuf> {
         (Source::Local(path), _) => local::cover(path)?,
         (_, Some(url)) => {
             let response = agent().get(url).call().ok()?;
-            check(response, "cover").ok()?.body_mut().with_config().limit(8 * 1024 * 1024).read_to_vec().ok()?
+            check(response, "cover")
+                .ok()?
+                .body_mut()
+                .with_config()
+                .limit(8 * 1024 * 1024)
+                .read_to_vec()
+                .ok()?
         }
         _ => return None,
     };
@@ -192,9 +230,16 @@ pub fn fetch_cover(track: &Track) -> Option<PathBuf> {
 
 /// Saves `picture` no bigger than `side` px as JPEG, via a partial file.
 fn write_scaled(picture: &image::DynamicImage, target: &std::path::Path, side: u32) -> Option<()> {
-    let scaled = if picture.width() > side || picture.height() > side { picture.thumbnail(side, side) } else { picture.clone() };
+    let scaled = if picture.width() > side || picture.height() > side {
+        picture.thumbnail(side, side)
+    } else {
+        picture.clone()
+    };
     let partial = target.with_extension("partial");
-    scaled.to_rgb8().save_with_format(&partial, image::ImageFormat::Jpeg).ok()?;
+    scaled
+        .to_rgb8()
+        .save_with_format(&partial, image::ImageFormat::Jpeg)
+        .ok()?;
     std::fs::rename(&partial, target).ok()
 }
 
@@ -223,7 +268,13 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { folders: Vec::new(), yandex_uid: None, volume: 80, equalizer: None, collapsed: Vec::new() }
+        Self {
+            folders: Vec::new(),
+            yandex_uid: None,
+            volume: 80,
+            equalizer: None,
+            collapsed: Vec::new(),
+        }
     }
 }
 
@@ -244,7 +295,9 @@ fn config_path() -> Option<PathBuf> {
 static CONFIG: std::sync::Mutex<Option<Config>> = std::sync::Mutex::new(None);
 
 pub fn config() -> Config {
-    let mut cached = CONFIG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cached = CONFIG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cached
         .get_or_insert_with(|| {
             let mut config: Config = config_path()
@@ -262,12 +315,17 @@ pub fn config() -> Config {
 }
 
 pub fn save_config(config: &Config) -> io::Result<()> {
-    *CONFIG.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(config.clone());
+    *CONFIG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(config.clone());
     let path = config_path().ok_or_else(|| io::Error::other("no settings folder"))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, toml::to_string_pretty(config).map_err(io::Error::other)?)
+    std::fs::write(
+        path,
+        toml::to_string_pretty(config).map_err(io::Error::other)?,
+    )
 }
 
 /// How streamed Yandex tracks are enhanced (Settings → Music); 0: not at all.
@@ -297,17 +355,24 @@ pub fn streaming_enhance() -> Option<enhance::Strength> {
 static SIGNED: std::sync::Mutex<Vec<(&'static str, bool)>> = std::sync::Mutex::new(Vec::new());
 
 pub(crate) fn signed_in(secret: &'static str) -> bool {
-    let mut known = SIGNED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut known = SIGNED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((_, signed_in)) = known.iter().find(|(name, _)| *name == secret) {
         return *signed_in;
     }
-    let signed_in = files_sdk::secrets::get(MANIFEST.id, secret).ok().flatten().is_some();
+    let signed_in = files_sdk::secrets::get(MANIFEST.id, secret)
+        .ok()
+        .flatten()
+        .is_some();
     known.push((secret, signed_in));
     signed_in
 }
 
 pub(crate) fn set_signed_in(secret: &'static str, value: bool) {
-    let mut known = SIGNED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut known = SIGNED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     known.retain(|(name, _)| *name != secret);
     known.push((secret, value));
 }
@@ -338,19 +403,34 @@ pub(crate) fn http_error(error: ureq::Error) -> io::Error {
 }
 
 /// Fails with the server's message for a non-2xx answer.
-pub(crate) fn check(mut response: ureq::http::Response<ureq::Body>, service: &str) -> io::Result<ureq::http::Response<ureq::Body>> {
+pub(crate) fn check(
+    mut response: ureq::http::Response<ureq::Body>,
+    service: &str,
+) -> io::Result<ureq::http::Response<ureq::Body>> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
     let body = response.body_mut().read_to_string().unwrap_or_default();
-    let kind = if status == 401 || status == 403 { io::ErrorKind::PermissionDenied } else { io::ErrorKind::Other };
+    let kind = if status == 401 || status == 403 {
+        io::ErrorKind::PermissionDenied
+    } else {
+        io::ErrorKind::Other
+    };
     let detail: String = body.chars().take(200).collect();
-    Err(io::Error::new(kind, format!("{service} answered {status}: {detail}")))
+    Err(io::Error::new(
+        kind,
+        format!("{service} answered {status}: {detail}"),
+    ))
 }
 
 pub(crate) fn log(service: &str, message: String) {
-    files_sdk::log::record(MANIFEST.id, files_sdk::log::Kind::Network, format!("{service} · {message}"), None);
+    files_sdk::log::record(
+        MANIFEST.id,
+        files_sdk::log::Kind::Network,
+        format!("{service} · {message}"),
+        None,
+    );
 }
 
 #[cfg(test)]

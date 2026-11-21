@@ -3,14 +3,19 @@
 use std::io;
 use std::path::Path;
 
-use files_sdk::{Permission, ArchiveItem, ArchiveProvider, Command, ConflictPolicy, ExtractReport, Icon, Manifest};
+use files_sdk::{
+    ArchiveItem, ArchiveProvider, Command, ConflictPolicy, ExtractReport, Icon, Manifest,
+    Permission,
+};
 
 pub mod compress;
 pub mod extract;
 pub mod info;
 pub mod iso;
 
-pub use extract::{ArchiveKind, describe_error, extract_archive, find_conflicts, list_items, parent_path};
+pub use extract::{
+    ArchiveKind, describe_error, extract_archive, find_conflicts, list_items, parent_path,
+};
 
 pub static MANIFEST: Manifest = Manifest {
     id: "archives",
@@ -30,8 +35,18 @@ pub static MANIFEST: Manifest = Manifest {
     menu_color: None,
     tier: files_sdk::Tier::Free,
     commands: &[
-        Command { id: "archive.close", title: "Close archive window", mac_keys: &["escape", "cmd-w"], keys: &["escape", "ctrl-w"] },
-        Command { id: "compress.close", title: "Close compress window", mac_keys: &["escape", "cmd-w"], keys: &["escape", "ctrl-w"] },
+        Command {
+            id: "archive.close",
+            title: "Close archive window",
+            mac_keys: &["escape", "cmd-w"],
+            keys: &["escape", "ctrl-w"],
+        },
+        Command {
+            id: "compress.close",
+            title: "Close compress window",
+            mac_keys: &["escape", "cmd-w"],
+            keys: &["escape", "ctrl-w"],
+        },
     ],
 };
 
@@ -70,7 +85,12 @@ impl ArchiveProvider for Archives {
         find_conflicts(archive, target)
     }
 
-    fn extract(&self, archive: &Path, target: &Path, policy: ConflictPolicy) -> io::Result<ExtractReport> {
+    fn extract(
+        &self,
+        archive: &Path,
+        target: &Path,
+        policy: ConflictPolicy,
+    ) -> io::Result<ExtractReport> {
         extract_archive(archive, target, policy)
     }
 

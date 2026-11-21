@@ -56,7 +56,9 @@ impl Permission {
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|permission| permission.key() == key)
+        Self::ALL
+            .into_iter()
+            .find(|permission| permission.key() == key)
     }
 
     pub fn title(self) -> &'static str {
@@ -81,8 +83,12 @@ impl Permission {
             Self::Network => "Connect to servers on your network or the internet.",
             Self::LaunchApps => "Open other applications.",
             Self::Clipboard => "Put text and files on the clipboard.",
-            Self::Secrets => "Save and read its own passwords in the system keychain (Passwords on macOS).",
-            Self::Background => "Keep running tasks and receive events while the window is inactive.",
+            Self::Secrets => {
+                "Save and read its own passwords in the system keychain (Passwords on macOS)."
+            }
+            Self::Background => {
+                "Keep running tasks and receive events while the window is inactive."
+            }
             Self::PreventSleep => "Stop the computer from sleeping while a task runs.",
             Self::Accessibility => "Read what is on screen through the accessibility API.",
             Self::Sound => "Play sounds, and music in the app's player (shown in Now Playing).",
@@ -110,7 +116,9 @@ pub fn declare(manifest: &crate::Manifest) {
 
 /// Replaces the user's revocations (from settings).
 pub fn set_revoked(map: BTreeMap<String, BTreeSet<Permission>>) {
-    *revoked().lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = map;
+    *revoked()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = map;
 }
 
 /// Declared by the manifest and not revoked by the user.
@@ -135,7 +143,10 @@ pub fn check(extension: &str, permission: Permission) -> io::Result<()> {
     }
     Err(io::Error::new(
         io::ErrorKind::PermissionDenied,
-        format!("{extension} needs “{}” · allow it in Settings → Extensions", permission.title()),
+        format!(
+            "{extension} needs “{}” · allow it in Settings → Extensions",
+            permission.title()
+        ),
     ))
 }
 
@@ -163,9 +174,15 @@ mod tests {
     fn declared_permissions_are_granted_until_revoked() {
         declare(&TEST);
         assert!(check("perm-test", Permission::Network).is_ok());
-        assert!(check("perm-test", Permission::Secrets).is_err(), "never declared");
+        assert!(
+            check("perm-test", Permission::Secrets).is_err(),
+            "never declared"
+        );
         assert!(check("unknown", Permission::Network).is_err());
-        set_revoked(BTreeMap::from([("perm-test".to_string(), BTreeSet::from([Permission::Network]))]));
+        set_revoked(BTreeMap::from([(
+            "perm-test".to_string(),
+            BTreeSet::from([Permission::Network]),
+        )]));
         let error = check("perm-test", Permission::Network).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("Settings → Extensions"));

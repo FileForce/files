@@ -30,9 +30,15 @@ fn parse(text: &str) -> Option<(u16, String)> {
 
 /// One request: the token, then the path (or an empty line); "ok" back.
 fn request(port: u16, token: &str, path: Option<&Path>) -> bool {
-    let Ok(mut stream) = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(500)) else { return false };
+    let Ok(mut stream) =
+        TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(500))
+    else {
+        return false;
+    };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let path = path.map(|path| path.display().to_string()).unwrap_or_default();
+    let path = path
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
     if writeln!(stream, "{token}\n{path}").is_err() {
         return false;
     }
@@ -43,12 +49,18 @@ fn request(port: u16, token: &str, path: Option<&Path>) -> bool {
 /// Hands `path` to a running Files; `true` when it took it (this start then
 /// quits).
 pub fn hand_over(path: Option<&Path>) -> bool {
-    let Some(text) = lock_file().and_then(|file| std::fs::read_to_string(file).ok()) else { return false };
-    let Some((port, token)) = parse(&text) else { return false };
+    let Some(text) = lock_file().and_then(|file| std::fs::read_to_string(file).ok()) else {
+        return false;
+    };
+    let Some((port, token)) = parse(&text) else {
+        return false;
+    };
     // Windows lets the running one come to the front only if we allow it.
     #[cfg(windows)]
     unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY);
+        windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+            windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+        );
     }
     request(port, &token, path)
 }
@@ -61,8 +73,12 @@ fn token() -> String {
 
 /// Becomes the running Files: listens, and records where.
 pub fn listen() {
-    let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else { return };
-    let Ok(port) = listener.local_addr().map(|address| address.port()) else { return };
+    let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
+        return;
+    };
+    let Ok(port) = listener.local_addr().map(|address| address.port()) else {
+        return;
+    };
     let token = token();
     let Some(file) = lock_file() else { return };
     if std::fs::write(&file, format!("{port} {token}")).is_err() {
@@ -84,7 +100,10 @@ fn serve(stream: TcpStream, token: &str) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut reader = BufReader::new(&stream);
     let (mut given, mut path) = (String::new(), String::new());
-    if reader.read_line(&mut given).is_err() || given.trim() != token || reader.read_line(&mut path).is_err() {
+    if reader.read_line(&mut given).is_err()
+        || given.trim() != token
+        || reader.read_line(&mut path).is_err()
+    {
         return;
     }
     let path = path.trim();
@@ -109,7 +128,10 @@ mod tests {
 
     #[test]
     fn a_second_start_hands_its_folder_over() {
-        assert_eq!(parse("4242 0123456789abcdef0123"), Some((4242, "0123456789abcdef0123".to_string())));
+        assert_eq!(
+            parse("4242 0123456789abcdef0123"),
+            Some((4242, "0123456789abcdef0123".to_string()))
+        );
         assert_eq!(parse("4242 short"), None, "a weak token is refused");
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -121,9 +143,16 @@ mod tests {
             }
         });
         let dir = std::env::temp_dir();
-        assert!(!request(port, "wrong-token-0000000", Some(&dir)), "a wrong token gets nothing");
+        assert!(
+            !request(port, "wrong-token-0000000", Some(&dir)),
+            "a wrong token gets nothing"
+        );
         assert!(request(port, &token, Some(&dir)));
         server.join().unwrap();
-        assert!(crate::desktop::take_opened().iter().any(|path| path == &dir.canonicalize().unwrap()));
+        assert!(
+            crate::desktop::take_opened()
+                .iter()
+                .any(|path| path == &dir.canonicalize().unwrap())
+        );
     }
 }

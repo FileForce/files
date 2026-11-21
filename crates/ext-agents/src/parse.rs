@@ -33,7 +33,11 @@ pub(crate) fn iso_seconds(value: &str) -> Option<i64> {
     let time = time.trim_end_matches('Z');
     let time = time.split(['+', '.']).next()?;
     let mut time = time.split(':').map(|part| part.parse::<i64>().ok());
-    let (hour, minute, second) = (time.next()??, time.next()??, time.next().flatten().unwrap_or(0));
+    let (hour, minute, second) = (
+        time.next()??,
+        time.next()??,
+        time.next().flatten().unwrap_or(0),
+    );
     // Days from civil (Howard Hinnant).
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
@@ -47,7 +51,11 @@ pub(crate) fn iso_seconds(value: &str) -> Option<i64> {
 
 /// The first line of a prompt, short enough for the sidebar.
 fn title_from(prompt: &str) -> String {
-    let line = prompt.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
     let mut title: String = line.chars().take(80).collect();
     if line.chars().count() > 80 {
         title.push('…');
@@ -93,15 +101,27 @@ pub fn claude_session(path: &Path) -> Option<Session> {
         }
         match text(&line, "type") {
             Some("ai-title") => ai_title = text(&line, "aiTitle").map(str::to_string),
-            Some("summary") if ai_title.is_none() => ai_title = text(&line, "summary").map(str::to_string),
-            Some("user") if first_prompt.is_none() && line.get("isMeta").and_then(Value::as_bool) != Some(true) => {
-                if let Some(prompt) = line.pointer("/message/content").and_then(Value::as_str).filter(|prompt| !is_plumbing(prompt)) {
+            Some("summary") if ai_title.is_none() => {
+                ai_title = text(&line, "summary").map(str::to_string)
+            }
+            Some("user")
+                if first_prompt.is_none()
+                    && line.get("isMeta").and_then(Value::as_bool) != Some(true) =>
+            {
+                if let Some(prompt) = line
+                    .pointer("/message/content")
+                    .and_then(Value::as_str)
+                    .filter(|prompt| !is_plumbing(prompt))
+                {
                     first_prompt = Some(title_from(prompt));
                 }
             }
             Some("assistant") => {
-                let Some(message) = line.get("message") else { continue };
-                if let Some(model) = text(message, "model").filter(|model| !model.starts_with('<')) {
+                let Some(message) = line.get("message") else {
+                    continue;
+                };
+                if let Some(model) = text(message, "model").filter(|model| !model.starts_with('<'))
+                {
                     session.model = Some(model.to_string());
                 }
                 let id = text(message, "id").unwrap_or_default().to_string();
@@ -111,7 +131,10 @@ pub fn claude_session(path: &Path) -> Option<Session> {
                         output: number(usage, "output_tokens"),
                         cache_read: number(usage, "cache_read_input_tokens"),
                         cache_write: number(usage, "cache_creation_input_tokens"),
-                        reasoning: usage.pointer("/output_tokens_details/thinking_tokens").and_then(Value::as_u64).unwrap_or(0),
+                        reasoning: usage
+                            .pointer("/output_tokens_details/thinking_tokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
                         cost: None,
                     });
                 }
@@ -149,23 +172,38 @@ pub fn claude_messages(path: &Path) -> Vec<ChatMessage> {
                 }
                 match line.pointer("/message/content") {
                     Some(Value::String(prompt)) if !is_plumbing(prompt) => {
-                        messages.push(ChatMessage { role: Role::User, text: prompt.clone() });
+                        messages.push(ChatMessage {
+                            role: Role::User,
+                            text: prompt.clone(),
+                        });
                     }
                     Some(Value::Array(blocks)) => {
                         for block in blocks {
                             match text(block, "type") {
                                 Some("text") => {
-                                    if let Some(prompt) = text(block, "text").filter(|prompt| !is_plumbing(prompt)) {
-                                        messages.push(ChatMessage { role: Role::User, text: prompt.to_string() });
+                                    if let Some(prompt) =
+                                        text(block, "text").filter(|prompt| !is_plumbing(prompt))
+                                    {
+                                        messages.push(ChatMessage {
+                                            role: Role::User,
+                                            text: prompt.to_string(),
+                                        });
                                     }
                                 }
                                 Some("tool_result") => {
                                     let output = match block.get("content") {
                                         Some(Value::String(output)) => output.clone(),
-                                        Some(Value::Array(parts)) => parts.iter().filter_map(|part| text(part, "text")).collect::<Vec<_>>().join("\n"),
+                                        Some(Value::Array(parts)) => parts
+                                            .iter()
+                                            .filter_map(|part| text(part, "text"))
+                                            .collect::<Vec<_>>()
+                                            .join("\n"),
                                         _ => String::new(),
                                     };
-                                    messages.push(ChatMessage { role: Role::Tool, text: format!("↳ {}", short(&output, 240)) });
+                                    messages.push(ChatMessage {
+                                        role: Role::Tool,
+                                        text: format!("↳ {}", short(&output, 240)),
+                                    });
                                 }
                                 _ => {}
                             }
@@ -175,8 +213,15 @@ pub fn claude_messages(path: &Path) -> Vec<ChatMessage> {
                 }
             }
             Some("assistant") => {
-                let id = line.pointer("/message/id").and_then(Value::as_str).map(str::to_string);
-                let blocks = line.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default();
+                let id = line
+                    .pointer("/message/id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let blocks = line
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 for block in blocks {
                     match text(&block, "type") {
                         Some("text") => {
@@ -186,17 +231,27 @@ pub fn claude_messages(path: &Path) -> Vec<ChatMessage> {
                                 Some(last) if same && last.role == Role::Assistant => {
                                     last.text.push_str(piece);
                                 }
-                                _ => messages.push(ChatMessage { role: Role::Assistant, text: piece.to_string() }),
+                                _ => messages.push(ChatMessage {
+                                    role: Role::Assistant,
+                                    text: piece.to_string(),
+                                }),
                             }
                         }
                         Some("tool_use") => {
                             let name = text(&block, "name").unwrap_or("tool");
                             let detail = block
                                 .get("input")
-                                .and_then(|input| text(input, "command").or(text(input, "file_path")).or(text(input, "description")))
+                                .and_then(|input| {
+                                    text(input, "command")
+                                        .or(text(input, "file_path"))
+                                        .or(text(input, "description"))
+                                })
                                 .map(|detail| format!(" · {}", short(detail, 120)))
                                 .unwrap_or_default();
-                            messages.push(ChatMessage { role: Role::Tool, text: format!("⚙ {name}{detail}") });
+                            messages.push(ChatMessage {
+                                role: Role::Tool,
+                                text: format!("⚙ {name}{detail}"),
+                            });
                         }
                         _ => {}
                     }
@@ -234,9 +289,14 @@ pub fn codex_session(path: &Path) -> Option<Session> {
         let payload = line.get("payload").cloned().unwrap_or(Value::Null);
         match (text(&line, "type"), text(&payload, "type")) {
             (Some("session_meta"), _) => {
-                session.id = text(&payload, "id").or(text(&payload, "session_id")).unwrap_or_default().to_string();
+                session.id = text(&payload, "id")
+                    .or(text(&payload, "session_id"))
+                    .unwrap_or_default()
+                    .to_string();
                 session.cwd = text(&payload, "cwd").map(PathBuf::from);
-                session.origin = text(&payload, "source").or(text(&payload, "originator")).map(str::to_string);
+                session.origin = text(&payload, "source")
+                    .or(text(&payload, "originator"))
+                    .map(str::to_string);
             }
             (Some("turn_context"), _) => {
                 if let Some(model) = text(&payload, "model") {
@@ -244,7 +304,9 @@ pub fn codex_session(path: &Path) -> Option<Session> {
                 }
             }
             (Some("event_msg"), Some("user_message")) if title.is_none() => {
-                title = text(&payload, "message").filter(|prompt| !is_plumbing(prompt)).map(title_from);
+                title = text(&payload, "message")
+                    .filter(|prompt| !is_plumbing(prompt))
+                    .map(title_from);
             }
             (Some("event_msg"), Some("token_count")) => {
                 if let Some(total) = payload.pointer("/info/total_token_usage") {
@@ -273,25 +335,40 @@ pub fn codex_session(path: &Path) -> Option<Session> {
 pub fn codex_messages(path: &Path) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
     for line in lines(path) {
-        let Some(payload) = line.get("payload") else { continue };
+        let Some(payload) = line.get("payload") else {
+            continue;
+        };
         match (text(&line, "type"), text(payload, "type")) {
             (Some("event_msg"), Some("user_message")) => {
-                if let Some(prompt) = text(payload, "message").filter(|prompt| !is_plumbing(prompt)) {
-                    messages.push(ChatMessage { role: Role::User, text: prompt.to_string() });
+                if let Some(prompt) = text(payload, "message").filter(|prompt| !is_plumbing(prompt))
+                {
+                    messages.push(ChatMessage {
+                        role: Role::User,
+                        text: prompt.to_string(),
+                    });
                 }
             }
             (Some("event_msg"), Some("agent_message")) => {
                 if let Some(answer) = text(payload, "message") {
-                    messages.push(ChatMessage { role: Role::Assistant, text: answer.to_string() });
+                    messages.push(ChatMessage {
+                        role: Role::Assistant,
+                        text: answer.to_string(),
+                    });
                 }
             }
             (Some("response_item"), Some("function_call")) => {
                 let name = text(payload, "name").unwrap_or("tool");
-                messages.push(ChatMessage { role: Role::Tool, text: format!("⚙ {name}") });
+                messages.push(ChatMessage {
+                    role: Role::Tool,
+                    text: format!("⚙ {name}"),
+                });
             }
             (Some("event_msg"), Some("task_complete")) => {
                 if let Some(error) = payload.pointer("/error/message").and_then(Value::as_str) {
-                    messages.push(ChatMessage { role: Role::Tool, text: format!("⚠ {error}") });
+                    messages.push(ChatMessage {
+                        role: Role::Tool,
+                        text: format!("⚠ {error}"),
+                    });
                 }
             }
             _ => {}
@@ -311,7 +388,10 @@ pub fn kimi_session(wire: &Path) -> Option<Session> {
     let mut session = Session {
         agent: Agent::Kimi,
         id: text(&state, "id")?.to_string(),
-        title: text(&state, "title").or(text(&state, "lastPrompt")).filter(|title| !title.is_empty())?.to_string(),
+        title: text(&state, "title")
+            .or(text(&state, "lastPrompt"))
+            .filter(|title| !title.is_empty())?
+            .to_string(),
         cwd: text(&state, "cwd").map(PathBuf::from),
         model: None,
         updated: number(&state, "updatedAt") as i64 / 1000,
@@ -345,7 +425,9 @@ pub fn kimi_messages(path: &Path) -> Vec<ChatMessage> {
         if text(&line, "type") != Some("agent.message.appended") {
             continue;
         }
-        let Some(message) = line.pointer("/message/message") else { continue };
+        let Some(message) = line.pointer("/message/message") else {
+            continue;
+        };
         let role = match text(message, "role") {
             Some("user") => Role::User,
             Some("assistant") => Role::Assistant,
@@ -356,7 +438,12 @@ pub fn kimi_messages(path: &Path) -> Vec<ChatMessage> {
             let content = message.get("content").unwrap_or(&Value::Null);
             let text = match content {
                 Value::String(text) => text.clone(),
-                Value::Array(blocks) => blocks.iter().filter(|block| text(block, "type") == Some("text")).filter_map(|block| text(block, "text")).collect::<Vec<_>>().join("\n"),
+                Value::Array(blocks) => blocks
+                    .iter()
+                    .filter(|block| text(block, "type") == Some("text"))
+                    .filter_map(|block| text(block, "text"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 _ => String::new(),
             };
             if !text.trim().is_empty() {
@@ -366,25 +453,51 @@ pub fn kimi_messages(path: &Path) -> Vec<ChatMessage> {
         if role == Role::Tool {
             let output = match message.get("content") {
                 Some(Value::String(output)) => output.clone(),
-                Some(Value::Array(blocks)) => blocks.iter().filter_map(|block| text(block, "text")).collect::<Vec<_>>().join("\n"),
+                Some(Value::Array(blocks)) => blocks
+                    .iter()
+                    .filter_map(|block| text(block, "text"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 _ => String::new(),
             };
             if !output.trim().is_empty() {
-                messages.push(ChatMessage { role, text: format!("↳ {}", short(&output, 240)) });
+                messages.push(ChatMessage {
+                    role,
+                    text: format!("↳ {}", short(&output, 240)),
+                });
             }
         }
-        for call in message.get("toolCalls").or(message.get("tool_calls")).and_then(Value::as_array).into_iter().flatten() {
-            let name = text(call, "name").or_else(|| call.pointer("/function/name").and_then(Value::as_str)).unwrap_or("tool");
-            let arguments = call.get("arguments").cloned().or_else(|| call.pointer("/function/arguments").cloned());
+        for call in message
+            .get("toolCalls")
+            .or(message.get("tool_calls"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let name = text(call, "name")
+                .or_else(|| call.pointer("/function/name").and_then(Value::as_str))
+                .unwrap_or("tool");
+            let arguments = call
+                .get("arguments")
+                .cloned()
+                .or_else(|| call.pointer("/function/arguments").cloned());
             let detail = arguments
                 .and_then(|arguments| match arguments {
                     Value::String(arguments) => serde_json::from_str::<Value>(&arguments).ok(),
                     value => Some(value.clone()),
                 })
-                .and_then(|arguments| text(&arguments, "command").or(text(&arguments, "path")).or(text(&arguments, "file_path")).map(str::to_string))
+                .and_then(|arguments| {
+                    text(&arguments, "command")
+                        .or(text(&arguments, "path"))
+                        .or(text(&arguments, "file_path"))
+                        .map(str::to_string)
+                })
                 .map(|detail| format!(" · {}", short(&detail, 120)))
                 .unwrap_or_default();
-            messages.push(ChatMessage { role: Role::Tool, text: format!("⚙ {name}{detail}") });
+            messages.push(ChatMessage {
+                role: Role::Tool,
+                text: format!("⚙ {name}{detail}"),
+            });
         }
     }
     messages
@@ -407,7 +520,9 @@ pub fn codex_limits(path: &Path) -> Option<Account> {
             // Reports without a window or a plan (e.g. after an error) say nothing.
             let useful = |limits: &&Value| {
                 !limits.is_null()
-                    && (limits.get("primary").is_some_and(|window| !window.is_null())
+                    && (limits
+                        .get("primary")
+                        .is_some_and(|window| !window.is_null())
                         || limits.get("plan_type").is_some_and(|plan| !plan.is_null()))
             };
             if let Some(limits) = line.pointer("/payload/rate_limits").filter(useful) {
@@ -421,7 +536,10 @@ pub fn codex_limits(path: &Path) -> Option<Account> {
         if let Some(window) = report.get(key).filter(|window| !window.is_null()) {
             limits.push(Limit {
                 name: window_name(number(window, "window_minutes")),
-                used_percent: window.get("used_percent").and_then(Value::as_f64).unwrap_or(0.),
+                used_percent: window
+                    .get("used_percent")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.),
                 resets_at: window.get("resets_at").and_then(Value::as_i64),
             });
         }
@@ -429,10 +547,16 @@ pub fn codex_limits(path: &Path) -> Option<Account> {
     let mut details = Vec::new();
     if let Some(credits) = report.get("credits").filter(|credits| !credits.is_null()) {
         let unlimited = credits.get("unlimited").and_then(Value::as_bool) == Some(true);
-        let balance = credits.get("balance").and_then(|balance| balance.as_f64().or_else(|| balance.as_str()?.parse().ok()));
+        let balance = credits
+            .get("balance")
+            .and_then(|balance| balance.as_f64().or_else(|| balance.as_str()?.parse().ok()));
         details.push((
             "Credits".to_string(),
-            if unlimited { "unlimited".to_string() } else { balance.map_or_else(|| "none".to_string(), |balance| format!("{balance:.2}")) },
+            if unlimited {
+                "unlimited".to_string()
+            } else {
+                balance.map_or_else(|| "none".to_string(), |balance| format!("{balance:.2}"))
+            },
         ));
     }
     if let Some(reached) = text(&report, "rate_limit_reached_type") {

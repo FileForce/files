@@ -47,12 +47,22 @@ pub struct Counts {
 }
 
 pub fn counts() -> Counts {
-    Counts { allocs: ALLOCS.load(Relaxed), reallocs: REALLOCS.load(Relaxed), frees: FREES.load(Relaxed), bytes: BYTES.load(Relaxed) }
+    Counts {
+        allocs: ALLOCS.load(Relaxed),
+        reallocs: REALLOCS.load(Relaxed),
+        frees: FREES.load(Relaxed),
+        bytes: BYTES.load(Relaxed),
+    }
 }
 
 impl std::ops::Sub for Counts {
     type Output = Counts;
     fn sub(self, before: Counts) -> Counts {
-        Counts { allocs: self.allocs - before.allocs, reallocs: self.reallocs - before.reallocs, frees: self.frees - before.frees, bytes: self.bytes - before.bytes }
+        Counts {
+            allocs: self.allocs - before.allocs,
+            reallocs: self.reallocs - before.reallocs,
+            frees: self.frees - before.frees,
+            bytes: self.bytes - before.bytes,
+        }
     }
 }

@@ -20,16 +20,66 @@ pub struct Speaker {
     low: bool,
 }
 
-const FL: Speaker = Speaker { name: "Front left", short: "L", mask: 0x1, low: false };
-const FR: Speaker = Speaker { name: "Front right", short: "R", mask: 0x2, low: false };
-const FC: Speaker = Speaker { name: "Center", short: "C", mask: 0x4, low: false };
-const LFE: Speaker = Speaker { name: "Subwoofer", short: "LFE", mask: 0x8, low: true };
-const BL: Speaker = Speaker { name: "Rear left", short: "RL", mask: 0x10, low: false };
-const BR: Speaker = Speaker { name: "Rear right", short: "RR", mask: 0x20, low: false };
-const SL: Speaker = Speaker { name: "Side left", short: "SL", mask: 0x200, low: false };
-const SR: Speaker = Speaker { name: "Side right", short: "SR", mask: 0x400, low: false };
-const HL: Speaker = Speaker { name: "Left ear", short: "L", mask: 0x1, low: false };
-const HR: Speaker = Speaker { name: "Right ear", short: "R", mask: 0x2, low: false };
+const FL: Speaker = Speaker {
+    name: "Front left",
+    short: "L",
+    mask: 0x1,
+    low: false,
+};
+const FR: Speaker = Speaker {
+    name: "Front right",
+    short: "R",
+    mask: 0x2,
+    low: false,
+};
+const FC: Speaker = Speaker {
+    name: "Center",
+    short: "C",
+    mask: 0x4,
+    low: false,
+};
+const LFE: Speaker = Speaker {
+    name: "Subwoofer",
+    short: "LFE",
+    mask: 0x8,
+    low: true,
+};
+const BL: Speaker = Speaker {
+    name: "Rear left",
+    short: "RL",
+    mask: 0x10,
+    low: false,
+};
+const BR: Speaker = Speaker {
+    name: "Rear right",
+    short: "RR",
+    mask: 0x20,
+    low: false,
+};
+const SL: Speaker = Speaker {
+    name: "Side left",
+    short: "SL",
+    mask: 0x200,
+    low: false,
+};
+const SR: Speaker = Speaker {
+    name: "Side right",
+    short: "SR",
+    mask: 0x400,
+    low: false,
+};
+const HL: Speaker = Speaker {
+    name: "Left ear",
+    short: "L",
+    mask: 0x1,
+    low: false,
+};
+const HR: Speaker = Speaker {
+    name: "Right ear",
+    short: "R",
+    mask: 0x2,
+    low: false,
+};
 
 /// The speakers of a layout, in the WAV channel order.
 pub fn speakers(layout: SpeakerLayout) -> &'static [Speaker] {
@@ -64,7 +114,10 @@ pub fn wav(channels: u16, mask: u32, frames: &[Vec<f32>]) -> Vec<u8> {
         out.extend(16u16.to_le_bytes());
         out.extend(mask.to_le_bytes());
         // KSDATAFORMAT_SUBTYPE_PCM
-        out.extend([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71]);
+        out.extend([
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38,
+            0x9B, 0x71,
+        ]);
     }
     out.extend(b"data");
     out.extend(data_len.to_le_bytes());
@@ -99,7 +152,8 @@ fn bell(notes: &[(f32, f32)]) -> Vec<f32> {
                 let at = index as f32 / RATE as f32;
                 let attack = (index as f32 / (RATE as f32 * 0.005)).min(1.);
                 let decay = (-at * 6.).exp();
-                let wave = (at * frequency * std::f32::consts::TAU).sin() + 0.3 * (at * frequency * 2. * std::f32::consts::TAU).sin();
+                let wave = (at * frequency * std::f32::consts::TAU).sin()
+                    + 0.3 * (at * frequency * 2. * std::f32::consts::TAU).sin();
                 wave * 0.35 * attack * decay
             })
         })
@@ -146,7 +200,9 @@ fn play(path: PathBuf, volume: u8, length: Duration) {
         return;
     }
     std::thread::spawn(move || {
-        let Ok(player) = crate::video::Player::open(&path) else { return };
+        let Ok(player) = crate::video::Player::open(&path) else {
+            return;
+        };
         player.set_volume(volume);
         player.play();
         // The player lives until the sound has played.
@@ -171,17 +227,36 @@ pub fn notify(chime: Chime, level: files_sdk::log::Level, volume: u8) {
 /// A tone in one speaker of `layout` (silence in the others).
 pub fn test_speaker(layout: SpeakerLayout, index: usize, volume: u8) {
     let list = speakers(layout);
-    let Some(speaker) = list.get(index) else { return };
+    let Some(speaker) = list.get(index) else {
+        return;
+    };
     let name = format!("test-{layout:?}-{index}.wav").to_lowercase();
     if let Ok(path) = cached(&name, || {
         let length = 1.2;
-        let wanted = if speaker.low { tone(55., length, 0.8) } else { tone(523.25, length, 0.5) };
+        let wanted = if speaker.low {
+            tone(55., length, 0.8)
+        } else {
+            tone(523.25, length, 0.5)
+        };
         let silence = vec![0.; wanted.len()];
-        let frames: Vec<Vec<f32>> = (0..list.len()).map(|channel| if channel == index { wanted.clone() } else { silence.clone() }).collect();
+        let frames: Vec<Vec<f32>> = (0..list.len())
+            .map(|channel| {
+                if channel == index {
+                    wanted.clone()
+                } else {
+                    silence.clone()
+                }
+            })
+            .collect();
         let mask = list.iter().fold(0, |mask, speaker| mask | speaker.mask);
         wav(list.len() as u16, mask, &frames)
     }) {
-        files_sdk::log::record("files", files_sdk::log::Kind::Setting, format!("speaker test: {} ({layout:?})", speaker.name), None);
+        files_sdk::log::record(
+            "files",
+            files_sdk::log::Kind::Setting,
+            format!("speaker test: {} ({layout:?})", speaker.name),
+            None,
+        );
         play(path, volume, Duration::from_millis(1200));
     }
 }
@@ -203,7 +278,10 @@ mod tests {
         let surround = wav(6, mask, &vec![vec![0.; 10]; 6]);
         assert_eq!(u16::from_le_bytes([surround[20], surround[21]]), 0xFFFE);
         assert_eq!(u16::from_le_bytes([surround[22], surround[23]]), 6);
-        assert_eq!(u32::from_le_bytes([surround[40], surround[41], surround[42], surround[43]]), 0x3F);
+        assert_eq!(
+            u32::from_le_bytes([surround[40], surround[41], surround[42], surround[43]]),
+            0x3F
+        );
         assert_eq!(speakers(SpeakerLayout::Surround71).len(), 8);
         assert_eq!(speakers(SpeakerLayout::Headphones).len(), 2);
     }
@@ -212,9 +290,24 @@ mod tests {
     #[test]
     #[ignore]
     fn vlc_plays_chimes_and_surround_tests() {
-        let chime = cached("check-chime.wav", || wav(1, 0x4, &[chime_samples(Chime::Soft, files_sdk::log::Level::Success)])).unwrap();
+        let chime = cached("check-chime.wav", || {
+            wav(
+                1,
+                0x4,
+                &[chime_samples(Chime::Soft, files_sdk::log::Level::Success)],
+            )
+        })
+        .unwrap();
         let layout = speakers(SpeakerLayout::Surround51);
-        let frames: Vec<Vec<f32>> = (0..layout.len()).map(|channel| if channel == 3 { tone(55., 0.5, 0.8) } else { vec![0.; (0.5 * RATE as f32) as usize] }).collect();
+        let frames: Vec<Vec<f32>> = (0..layout.len())
+            .map(|channel| {
+                if channel == 3 {
+                    tone(55., 0.5, 0.8)
+                } else {
+                    vec![0.; (0.5 * RATE as f32) as usize]
+                }
+            })
+            .collect();
         let surround = cached("check-51.wav", || wav(6, 0x3F, &frames)).unwrap();
         for path in [chime, surround] {
             let player = crate::video::Player::open(&path).unwrap();
@@ -222,7 +315,11 @@ mod tests {
             player.play();
             let started = std::time::Instant::now();
             while player.progress().1 == 0 {
-                assert!(started.elapsed().as_secs() < 5, "VLC did not open {}", path.display());
+                assert!(
+                    started.elapsed().as_secs() < 5,
+                    "VLC did not open {}",
+                    path.display()
+                );
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
@@ -241,28 +338,45 @@ mod tests {
 // ------------------------------------------------------------ for extensions
 
 /// The user's sound settings, for chimes extensions ask for off the UI thread.
-static SETTINGS: std::sync::Mutex<Option<crate::settings::SoundSettings>> = std::sync::Mutex::new(None);
+static SETTINGS: std::sync::Mutex<Option<crate::settings::SoundSettings>> =
+    std::sync::Mutex::new(None);
 
 pub fn set_settings(settings: &crate::settings::SoundSettings) {
-    *SETTINGS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(settings.clone());
+    *SETTINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(settings.clone());
 }
 
 fn settings() -> crate::settings::SoundSettings {
-    SETTINGS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone().unwrap_or_default()
+    SETTINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .unwrap_or_default()
 }
 
 /// Player commands wait here for the UI thread (the music player lives there).
-static PENDING: std::sync::Mutex<Vec<files_sdk::audio::Command>> = std::sync::Mutex::new(Vec::new());
+static PENDING: std::sync::Mutex<Vec<files_sdk::audio::Command>> =
+    std::sync::Mutex::new(Vec::new());
 
 pub fn take_pending() -> Vec<files_sdk::audio::Command> {
-    std::mem::take(&mut *PENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    std::mem::take(
+        &mut *PENDING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
 }
 
 /// What an extension asked for: chimes and one-off sounds play at once,
 /// the rest goes to the music player.
 pub fn extension_audio(extension: &str, command: files_sdk::audio::Command) -> std::io::Result<()> {
     use files_sdk::audio::{Command, Source};
-    files_sdk::log::record(extension, files_sdk::log::Kind::Info, format!("sound: {command:?}"), None);
+    files_sdk::log::record(
+        extension,
+        files_sdk::log::Kind::Info,
+        format!("sound: {command:?}"),
+        None,
+    );
     match command {
         Command::Chime(level) => {
             let settings = settings();
@@ -272,11 +386,19 @@ pub fn extension_audio(extension: &str, command: files_sdk::audio::Command) -> s
             let volume = volume.unwrap_or_else(|| settings().volume).min(100);
             match source {
                 Source::File(path) if path.is_file() => play(path, volume, Duration::from_secs(30)),
-                Source::File(path) => return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} not found", path.display()))),
+                Source::File(path) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("{} not found", path.display()),
+                    ));
+                }
                 Source::Url(url) => play_url(url, volume),
             }
         }
-        other => PENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(other),
+        other => PENDING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(other),
     }
     Ok(())
 }
@@ -288,7 +410,9 @@ fn play_url(url: String, volume: u8) {
         return;
     }
     std::thread::spawn(move || {
-        let Ok(player) = crate::video::Player::open_url(&url) else { return };
+        let Ok(player) = crate::video::Player::open_url(&url) else {
+            return;
+        };
         player.set_volume(volume);
         player.play();
         let started = std::time::Instant::now();

@@ -1,11 +1,10 @@
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::AnimationExt as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
@@ -35,11 +34,30 @@ mod path_tests {
         std::fs::create_dir_all(dir.join("Documents")).unwrap();
         std::fs::create_dir_all(dir.join("Downloads")).unwrap();
         let text = dir.display().to_string();
-        assert_eq!(super::typed_path(&text), vec![dir.clone()], "an existing folder");
-        assert_eq!(super::typed_path(&format!("\"{text}\"")), vec![dir.clone()], "in quotes, as copied from a terminal");
-        assert_eq!(super::typed_path(&format!("{text}/Do")), vec![dir.join("Documents"), dir.join("Downloads")], "half-typed: the folders it could be");
-        assert_eq!(super::typed_path(&format!("{text}/")).first(), Some(&dir), "ending in /: the folder, then its folders");
-        assert!(super::typed_path("invoice 2026").is_empty(), "words stay a search");
+        assert_eq!(
+            super::typed_path(&text),
+            vec![dir.clone()],
+            "an existing folder"
+        );
+        assert_eq!(
+            super::typed_path(&format!("\"{text}\"")),
+            vec![dir.clone()],
+            "in quotes, as copied from a terminal"
+        );
+        assert_eq!(
+            super::typed_path(&format!("{text}/Do")),
+            vec![dir.join("Documents"), dir.join("Downloads")],
+            "half-typed: the folders it could be"
+        );
+        assert_eq!(
+            super::typed_path(&format!("{text}/")).first(),
+            Some(&dir),
+            "ending in /: the folder, then its folders"
+        );
+        assert!(
+            super::typed_path("invoice 2026").is_empty(),
+            "words stay a search"
+        );
         assert!(!super::typed_path("~").is_empty(), "~ is home");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -85,7 +103,11 @@ impl GlobalSearch {
         include_remote: bool,
     ) -> Self {
         let language = appearance.read(cx).language;
-        let root = appearance.read(cx).search_filters.global_root().unwrap_or_default();
+        let root = appearance
+            .read(cx)
+            .search_filters
+            .global_root()
+            .unwrap_or_default();
         crate::properties::watch_folder_sizes(cx);
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(crate::settings::localized(
@@ -106,7 +128,10 @@ impl GlobalSearch {
         // background thread.
         let first_root = root.clone();
         cx.spawn(async move |this, cx| {
-            let results = cx.background_executor().spawn(async move { ranked_results(&first_root, "", include_remote) }).await;
+            let results = cx
+                .background_executor()
+                .spawn(async move { ranked_results(&first_root, "", include_remote) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 // Typing began meanwhile: its own search answers.
                 if this.generation == 0 {
@@ -141,15 +166,24 @@ impl GlobalSearch {
     fn search(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
-        let (query, include_remote, root) = (self.query.clone(), self.include_remote, self.root.clone());
+        let (query, include_remote, root) =
+            (self.query.clone(), self.include_remote, self.root.clone());
         self.searching = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
-            if this.read_with(cx, |this, _| this.generation != generation).unwrap_or(true) {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(120))
+                .await;
+            if this
+                .read_with(cx, |this, _| this.generation != generation)
+                .unwrap_or(true)
+            {
                 return;
             }
-            let results = cx.background_executor().spawn(async move { ranked_results(&root, &query, include_remote) }).await;
+            let results = cx
+                .background_executor()
+                .spawn(async move { ranked_results(&root, &query, include_remote) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if this.generation != generation {
                     return;
@@ -166,7 +200,12 @@ impl GlobalSearch {
 
     /// Searches another folder, just this time.
     fn choose_root(&mut self, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Search here".into()) });
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Search here".into()),
+        });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await
                 && let Some(root) = paths.into_iter().next()
@@ -226,7 +265,13 @@ impl GlobalSearch {
         close_global_search(&self.explorer, &self.previous_focus, window, cx);
     }
 
-    fn result_row(&self, index: usize, result: SearchResult, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn result_row(
+        &self,
+        index: usize,
+        result: SearchResult,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let selected = index == self.selected;
         let (icon, title, subtitle, kind, detail) = match &result {
             SearchResult::File(file) => (
@@ -244,9 +289,16 @@ impl GlobalSearch {
                     files_ext_music::Source::Url(_) => "Stream",
                 };
                 (
-                    Icon::new(IconName::Music).text_color(palette.accent).into_any_element(),
+                    Icon::new(IconName::Music)
+                        .text_color(palette.accent)
+                        .into_any_element(),
                     track.title.clone(),
-                    [track.artist.as_str(), track.album.as_str()].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(" · "),
+                    [track.artist.as_str(), track.album.as_str()]
+                        .iter()
+                        .filter(|part| !part.is_empty())
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(" · "),
                     service.to_string(),
                     track.duration(),
                 )
@@ -256,12 +308,21 @@ impl GlobalSearch {
                     .summary
                     .date
                     .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
-                    .map(|date| date.with_timezone(&chrono::Local).format("%b %d, %H:%M").to_string())
+                    .map(|date| {
+                        date.with_timezone(&chrono::Local)
+                            .format("%b %d, %H:%M")
+                            .to_string()
+                    })
                     .unwrap_or_default();
                 (
-                    Icon::new(IconName::Mail).text_color(palette.accent).into_any_element(),
+                    Icon::new(IconName::Mail)
+                        .text_color(palette.accent)
+                        .into_any_element(),
                     mail.summary.subject.clone(),
-                    format!("{} · {} / {}", mail.summary.from, mail.account.email, mail.folder.label),
+                    format!(
+                        "{} · {} / {}",
+                        mail.summary.from, mail.account.email, mail.folder.label
+                    ),
                     "Email".to_string(),
                     date,
                 )
@@ -276,8 +337,16 @@ impl GlobalSearch {
             .items_center()
             .rounded_md()
             .border_1()
-            .border_color(if selected { palette.accent } else { palette.window })
-            .bg(if selected { palette.selection } else { palette.window })
+            .border_color(if selected {
+                palette.accent
+            } else {
+                palette.window
+            })
+            .bg(if selected {
+                palette.selection
+            } else {
+                palette.window
+            })
             .hover(|style| style.bg(palette.hover))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.selected = index;
@@ -290,7 +359,13 @@ impl GlobalSearch {
                     .min_w_0()
                     .gap_0p5()
                     .child(div().truncate().text_sm().child(title))
-                    .child(div().truncate().text_size(px(10.)).text_color(palette.muted).child(subtitle)),
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(10.))
+                            .text_color(palette.muted)
+                            .child(subtitle),
+                    ),
             )
             .child(
                 v_flex()
@@ -298,7 +373,12 @@ impl GlobalSearch {
                     .items_end()
                     .gap_0p5()
                     .child(div().text_xs().text_color(palette.muted).child(kind))
-                    .child(div().text_size(px(10.)).text_color(palette.faint).child(detail)),
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(palette.faint)
+                            .child(detail),
+                    ),
             )
             .into_any_element()
     }
@@ -321,9 +401,13 @@ impl Render for GlobalSearch {
         } else if mail_query(&self.query).is_some() {
             "Mail".to_string()
         } else if dirs::home_dir().as_ref() == Some(&self.root) {
-            crate::settings::localized(settings.language, "Home folder", "Домашняя папка").to_string()
+            crate::settings::localized(settings.language, "Home folder", "Домашняя папка")
+                .to_string()
         } else {
-            self.root.file_name().map_or_else(|| self.root.display().to_string(), |name| name.to_string_lossy().into_owned())
+            self.root.file_name().map_or_else(
+                || self.root.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
         };
         let results = self
             .results
@@ -354,21 +438,46 @@ impl Render for GlobalSearch {
                             .small()
                             .text_color(palette.muted),
                     )
-                    .suffix(div().text_xs().text_color(palette.faint).child(root_label.to_uppercase())),
+                    .suffix(
+                        div()
+                            .text_xs()
+                            .text_color(palette.faint)
+                            .child(root_label.to_uppercase()),
+                    ),
             )
             .child(
                 h_flex()
                     .px_1()
                     .gap_1()
                     .items_center()
-                    .child(Icon::new(IconName::Folder).xsmall().text_color(palette.faint))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(10.)).text_color(palette.muted).child(self.root.display().to_string()))
+                    .child(
+                        Icon::new(IconName::Folder)
+                            .xsmall()
+                            .text_color(palette.faint),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(10.))
+                            .text_color(palette.muted)
+                            .child(self.root.display().to_string()),
+                    )
                     .child(
                         Button::new("global-search-root")
                             .ghost()
                             .xsmall()
-                            .label(crate::settings::localized(settings.language, "Change…", "Сменить…"))
-                            .tooltip(crate::settings::localized(settings.language, "Search another folder this time", "Искать в другой папке в этот раз"))
+                            .label(crate::settings::localized(
+                                settings.language,
+                                "Change…",
+                                "Сменить…",
+                            ))
+                            .tooltip(crate::settings::localized(
+                                settings.language,
+                                "Search another folder this time",
+                                "Искать в другой папке в этот раз",
+                            ))
                             .on_click(cx.listener(|this, _, _, cx| this.choose_root(cx))),
                     )
                     .when(!is_default, |this| {
@@ -376,7 +485,11 @@ impl Render for GlobalSearch {
                             Button::new("global-search-root-default")
                                 .ghost()
                                 .xsmall()
-                                .label(crate::settings::localized(settings.language, "Always search here", "Всегда искать здесь"))
+                                .label(crate::settings::localized(
+                                    settings.language,
+                                    "Always search here",
+                                    "Всегда искать здесь",
+                                ))
                                 .on_click(cx.listener(|this, _, _, cx| this.save_root(cx))),
                         )
                     }),
@@ -388,10 +501,12 @@ impl Render for GlobalSearch {
                     .text_color(palette.faint)
                     .child(if self.query.trim().is_empty() {
                         // Extensions add their own, e.g. `git:main`.
-                        let contributed: String = crate::model::contributed_search_keys(crate::model::SearchScope::Global)
-                            .iter()
-                            .map(|search| format!(" {}:", search.key))
-                            .collect();
+                        let contributed: String = crate::model::contributed_search_keys(
+                            crate::model::SearchScope::Global,
+                        )
+                        .iter()
+                        .map(|search| format!(" {}:", search.key))
+                        .collect();
                         format!(
                             "{}{contributed}",
                             crate::settings::localized(
@@ -413,19 +528,17 @@ impl Render for GlobalSearch {
                     .items_center()
                     .justify_center()
                     .gap_2()
-                    .debug_selector(|| "global-search-searching".into())
-                    .child(Icon::new(IconName::LoaderCircle).large().text_color(palette.accent).with_animation(
-                        "global-search-spin",
-                        gpui_kit::Animation::new(std::time::Duration::from_secs(1)).repeat(),
-                        |icon, delta| icon.transform(gpui_kit::Transformation::rotate(gpui_kit::percentage(delta))),
-                    ))
-                    .child(crate::views::text_fx::shimmer(
-                        "global-search-shimmer",
+                    .child(crate::views::text_fx::loading(
+                        "global-search-searching",
                         crate::settings::localized(settings.language, "Searching…", "Идёт поиск…"),
-                        palette.muted,
                         palette,
                     ))
-                    .child(div().text_xs().text_color(palette.faint).child(self.root.display().to_string()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.faint)
+                            .child(self.root.display().to_string()),
+                    )
                     .into_any_element()
             } else if results.is_empty() {
                 v_flex()
@@ -462,7 +575,11 @@ impl Render for GlobalSearch {
                     .gap_2()
                     .text_size(px(10.))
                     .text_color(palette.faint)
-                    .child(if self.searching { "Searching…".to_string() } else { format!("{} shown", self.results.len()) })
+                    .child(if self.searching {
+                        "Searching…".to_string()
+                    } else {
+                        format!("{} shown", self.results.len())
+                    })
                     .child("·")
                     .child(crate::settings::localized(
                         settings.language,
@@ -486,7 +603,9 @@ impl Render for GlobalSearch {
 /// `music:words` when Music is on and its key is enabled for Cmd-K.
 fn music_query(query: &str) -> Option<&str> {
     let (key, value) = query.split_once(':')?;
-    let enabled = crate::model::contributed_search_keys(crate::model::SearchScope::Global).iter().any(|search| search.key == "music");
+    let enabled = crate::model::contributed_search_keys(crate::model::SearchScope::Global)
+        .iter()
+        .any(|search| search.key == "music");
     (enabled && key.eq_ignore_ascii_case("music") && !value.trim().is_empty()).then_some(value)
 }
 
@@ -505,15 +624,24 @@ fn mail_query(query: &str) -> Option<&str> {
 pub(crate) fn typed_path(query: &str) -> Vec<std::path::PathBuf> {
     use std::path::{Path, PathBuf};
     let text = query.trim().trim_matches(['"', '\'']);
-    let looks_like_path = text.starts_with('/') || text.starts_with('~') || text.starts_with("file://") || text.starts_with("\\\\")
-        || (text.len() >= 2 && text.as_bytes()[1] == b':' && text.as_bytes()[0].is_ascii_alphabetic());
+    let looks_like_path = text.starts_with('/')
+        || text.starts_with('~')
+        || text.starts_with("file://")
+        || text.starts_with("\\\\")
+        || (text.len() >= 2
+            && text.as_bytes()[1] == b':'
+            && text.as_bytes()[0].is_ascii_alphabetic());
     if !looks_like_path {
         return Vec::new();
     }
     let expanded: PathBuf = if let Some(rest) = text.strip_prefix('~') {
-        let Some(home) = dirs::home_dir() else { return Vec::new() };
+        let Some(home) = dirs::home_dir() else {
+            return Vec::new();
+        };
         home.join(rest.trim_start_matches(['/', '\\']))
-    } else if let Some(path) = crate::desktop::launch_path(["files".to_string(), text.to_string()]).filter(|_| text.starts_with("file://")) {
+    } else if let Some(path) = crate::desktop::launch_path(["files".to_string(), text.to_string()])
+        .filter(|_| text.starts_with("file://"))
+    {
         path
     } else {
         PathBuf::from(text)
@@ -522,11 +650,29 @@ pub(crate) fn typed_path(query: &str) -> Vec<std::path::PathBuf> {
         return vec![expanded];
     }
     // "…/Docu" → the folders of "…/" starting with "Docu"; "…/" → its folders.
-    let (parent, prefix) = if text.ends_with(['/', '\\']) { (expanded.as_path(), String::new()) } else { (expanded.parent().unwrap_or(Path::new("/")), expanded.file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default()) };
-    let Ok(read) = std::fs::read_dir(parent) else { return Vec::new() };
+    let (parent, prefix) = if text.ends_with(['/', '\\']) {
+        (expanded.as_path(), String::new())
+    } else {
+        (
+            expanded.parent().unwrap_or(Path::new("/")),
+            expanded
+                .file_name()
+                .map(|name| name.to_string_lossy().to_lowercase())
+                .unwrap_or_default(),
+        )
+    };
+    let Ok(read) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
     let mut found: Vec<PathBuf> = read
         .flatten()
-        .filter(|item| item.file_name().to_string_lossy().to_lowercase().starts_with(&prefix) && !item.file_name().to_string_lossy().starts_with('.'))
+        .filter(|item| {
+            item.file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .starts_with(&prefix)
+                && !item.file_name().to_string_lossy().starts_with('.')
+        })
         .map(|item| item.path())
         .filter(|path| path.is_dir())
         .collect();
@@ -541,12 +687,19 @@ pub(crate) fn typed_path(query: &str) -> Vec<std::path::PathBuf> {
 
 fn ranked_results(root: &std::path::Path, query: &str, include_remote: bool) -> Vec<SearchResult> {
     // A path: go there.
-    let paths: Vec<SearchResult> = typed_path(query).iter().filter_map(|path| crate::model::entry_at(path)).map(SearchResult::File).collect();
+    let paths: Vec<SearchResult> = typed_path(query)
+        .iter()
+        .filter_map(|path| crate::model::entry_at(path))
+        .map(SearchResult::File)
+        .collect();
     if !paths.is_empty() {
         return paths;
     }
     if let Some(query) = music_query(query) {
-        return files_ext_music::search_everywhere(query, MAX_RESULTS).into_iter().map(SearchResult::Track).collect();
+        return files_ext_music::search_everywhere(query, MAX_RESULTS)
+            .into_iter()
+            .map(SearchResult::Track)
+            .collect();
     }
     if let Some(query) = mail_query(query) {
         return files_ext_mail::global_search(query)
@@ -560,11 +713,16 @@ fn ranked_results(root: &std::path::Path, query: &str, include_remote: bool) -> 
     let candidates: Vec<_> = searchable_entries(root)
         .into_iter()
         // Remote folders are searched as far as they have been browsed.
-        .chain(crate::model::remote::loaded_entries().into_iter().filter(move |_| include_remote))
+        .chain(
+            crate::model::remote::loaded_entries()
+                .into_iter()
+                .filter(move |_| include_remote),
+        )
         .collect();
     let listed = std::time::Instant::now();
     let count = candidates.len();
-    let ranked = crate::model::rank_entries_in(candidates, query, crate::model::SearchScope::Global);
+    let ranked =
+        crate::model::rank_entries_in(candidates, query, crate::model::SearchScope::Global);
     // DevTools → Search: the index walk, then matching and ranking.
     crate::tasks::record_search(crate::tasks::SearchProfile {
         scope: "Global",
@@ -575,7 +733,11 @@ fn ranked_results(root: &std::path::Path, query: &str, include_remote: bool) -> 
         matching: listed.elapsed(),
         sort: std::time::Duration::ZERO,
     });
-    ranked.into_iter().map(SearchResult::File).take(MAX_RESULTS).collect()
+    ranked
+        .into_iter()
+        .map(SearchResult::File)
+        .take(MAX_RESULTS)
+        .collect()
 }
 
 pub(crate) fn close_global_search(
@@ -595,8 +757,15 @@ pub(crate) fn close_global_search(
 
 #[cfg(test)]
 impl GlobalSearch {
-    pub(crate) fn type_for_test(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| input.set_value(text.to_string(), window, cx));
+    pub(crate) fn type_for_test(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            input.set_value(text.to_string(), window, cx)
+        });
         // Typing emits Change; setting the value from code does not.
         if self.query != text {
             self.query = text.to_string();
@@ -605,7 +774,10 @@ impl GlobalSearch {
     }
 
     pub(crate) fn results_for_test(&self) -> Vec<String> {
-        self.results.iter().map(|entry| entry.name().to_string()).collect()
+        self.results
+            .iter()
+            .map(|entry| entry.name().to_string())
+            .collect()
     }
 
     pub(crate) fn searching_for_test(&self) -> bool {

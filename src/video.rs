@@ -16,7 +16,14 @@ type MediaPlayer = c_void;
 type LockCallback = unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> *mut c_void;
 type UnlockCallback = unsafe extern "C" fn(*mut c_void, *mut c_void, *const *mut c_void);
 type DisplayCallback = unsafe extern "C" fn(*mut c_void, *mut c_void);
-type SetupCallback = unsafe extern "C" fn(*mut *mut c_void, *mut c_char, *mut c_uint, *mut c_uint, *mut c_uint, *mut c_uint) -> c_uint;
+type SetupCallback = unsafe extern "C" fn(
+    *mut *mut c_void,
+    *mut c_char,
+    *mut c_uint,
+    *mut c_uint,
+    *mut c_uint,
+    *mut c_uint,
+) -> c_uint;
 type CleanupCallback = unsafe extern "C" fn(*mut c_void);
 
 /// The libvlc 3 functions the player uses.
@@ -30,8 +37,15 @@ struct Vlc {
     media_release: unsafe extern "C" fn(*mut Media),
     player_new: unsafe extern "C" fn(*mut Media) -> *mut MediaPlayer,
     player_release: unsafe extern "C" fn(*mut MediaPlayer),
-    set_callbacks: unsafe extern "C" fn(*mut MediaPlayer, Option<LockCallback>, Option<UnlockCallback>, Option<DisplayCallback>, *mut c_void),
-    set_format_callbacks: unsafe extern "C" fn(*mut MediaPlayer, Option<SetupCallback>, Option<CleanupCallback>),
+    set_callbacks: unsafe extern "C" fn(
+        *mut MediaPlayer,
+        Option<LockCallback>,
+        Option<UnlockCallback>,
+        Option<DisplayCallback>,
+        *mut c_void,
+    ),
+    set_format_callbacks:
+        unsafe extern "C" fn(*mut MediaPlayer, Option<SetupCallback>, Option<CleanupCallback>),
     play: unsafe extern "C" fn(*mut MediaPlayer) -> c_int,
     set_pause: unsafe extern "C" fn(*mut MediaPlayer, c_int),
     stop: unsafe extern "C" fn(*mut MediaPlayer),
@@ -110,7 +124,10 @@ fn candidates() -> Vec<PathBuf> {
         paths.push(PathBuf::from(custom));
     }
     // The copy that ships with the app (cargo xtask bundle), then an installed VLC.
-    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
         if cfg!(target_os = "macos") {
             paths.push(exe_dir.join("../Frameworks/vlc/lib/libvlc.dylib"));
         } else if cfg!(windows) {
@@ -121,13 +138,26 @@ fn candidates() -> Vec<PathBuf> {
         }
     }
     if cfg!(target_os = "macos") {
-        paths.push(PathBuf::from("/Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib"));
+        paths.push(PathBuf::from(
+            "/Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib",
+        ));
         if let Some(home) = dirs::home_dir() {
             paths.push(home.join("Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib"));
         }
     } else if cfg!(windows) {
-        for base in [std::env::var_os("ProgramFiles"), std::env::var_os("ProgramFiles(x86)")].into_iter().flatten() {
-            paths.push(PathBuf::from(base).join("VideoLAN").join("VLC").join("libvlc.dll"));
+        for base in [
+            std::env::var_os("ProgramFiles"),
+            std::env::var_os("ProgramFiles(x86)"),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            paths.push(
+                PathBuf::from(base)
+                    .join("VideoLAN")
+                    .join("VLC")
+                    .join("libvlc.dll"),
+            );
         }
     } else {
         paths.push(PathBuf::from("libvlc.so.5"));
@@ -141,7 +171,10 @@ fn open_library(path: &Path) -> Result<libloading::Library, libloading::Error> {
     // libvlc.dll needs libvlccore.dll from its own folder.
     const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
     // SAFETY: loading VLC's own library; its initializers are trusted like VLC itself.
-    unsafe { libloading::os::windows::Library::load_with_flags(path, LOAD_WITH_ALTERED_SEARCH_PATH).map(Into::into) }
+    unsafe {
+        libloading::os::windows::Library::load_with_flags(path, LOAD_WITH_ALTERED_SEARCH_PATH)
+            .map(Into::into)
+    }
 }
 
 #[cfg(not(windows))]
@@ -158,14 +191,26 @@ fn load() -> Result<Vlc, String> {
         }
         // `lib/` beside `plugins/` (VLC.app, the bundled copies): say where.
         // On Windows libvlc finds `plugins\` next to itself.
-        if let Some(plugins) = path.parent().and_then(Path::parent).map(|dir| dir.join("plugins")).filter(|plugins| plugins.is_dir()) {
+        if let Some(plugins) = path
+            .parent()
+            .and_then(Path::parent)
+            .map(|dir| dir.join("plugins"))
+            .filter(|plugins| plugins.is_dir())
+        {
             // SAFETY: set once, before libvlc starts any thread, from the UI thread.
             unsafe { std::env::set_var("VLC_PLUGIN_PATH", plugins) };
         }
         // libvlc asks for libvlccore by name (`@rpath/…` on macOS): loaded
         // first from the same folder, it is found.
-        let core_name = if cfg!(target_os = "macos") { "libvlccore.dylib" } else { "libvlccore.so.9" };
-        let core = path.parent().map(|lib| lib.join(core_name)).filter(|core| !cfg!(windows) && core.is_file());
+        let core_name = if cfg!(target_os = "macos") {
+            "libvlccore.dylib"
+        } else {
+            "libvlccore.so.9"
+        };
+        let core = path
+            .parent()
+            .map(|lib| lib.join(core_name))
+            .filter(|core| !cfg!(windows) && core.is_file());
         let core = match core.map(|core| open_library(&core)) {
             Some(Ok(core)) => Some(core),
             Some(Err(error)) => {
@@ -185,15 +230,26 @@ fn load() -> Result<Vlc, String> {
         unsafe {
             macro_rules! symbol {
                 ($name:literal) => {
-                    *library.get(concat!($name, "\0").as_bytes()).map_err(|error| format!("{}: {error}", $name))?
+                    *library
+                        .get(concat!($name, "\0").as_bytes())
+                        .map_err(|error| format!("{}: {error}", $name))?
                 };
             }
-            let new: unsafe extern "C" fn(c_int, *const *const c_char) -> *mut Instance = symbol!("libvlc_new");
-            let arguments: Vec<CString> = ["--quiet", "--no-video-title-show", "--no-osd", "--no-snapshot-preview"]
-                .iter()
-                .map(|argument| CString::new(*argument).expect("no NUL"))
-                .collect();
-            let pointers: Vec<*const c_char> = arguments.iter().map(|argument| argument.as_ptr()).collect();
+            let new: unsafe extern "C" fn(c_int, *const *const c_char) -> *mut Instance =
+                symbol!("libvlc_new");
+            let arguments: Vec<CString> = [
+                "--quiet",
+                "--no-video-title-show",
+                "--no-osd",
+                "--no-snapshot-preview",
+                // Do not inherit VLC's global spatialaudio/SOFA filter.
+                "--audio-filter=",
+            ]
+            .iter()
+            .map(|argument| CString::new(*argument).expect("no NUL"))
+            .collect();
+            let pointers: Vec<*const c_char> =
+                arguments.iter().map(|argument| argument.as_ptr()).collect();
             let instance = new(pointers.len() as c_int, pointers.as_ptr());
             if instance.is_null() {
                 last = format!("{}: VLC did not start", path.display());
@@ -241,7 +297,12 @@ fn load() -> Result<Vlc, String> {
                 _library: library,
                 _core: core,
             };
-            files_sdk::log::record("files", files_sdk::log::Kind::Process, format!("Video: libvlc loaded from {}", path.display()), None);
+            files_sdk::log::record(
+                "files",
+                files_sdk::log::Kind::Process,
+                format!("Video: libvlc loaded from {}", path.display()),
+                None,
+            );
             return Ok(vlc);
         }
     }
@@ -318,11 +379,25 @@ pub fn probe(path: &Path) -> Option<Probe> {
         (vlc.media_parse_with_options)(media, 0x02, 5000);
         let started = std::time::Instant::now();
         // libvlc_media_parsed_status_done (4), or skipped/failed/timeout.
-        while !matches!((vlc.media_get_parsed_status)(media), 1..=4) && started.elapsed() < std::time::Duration::from_secs(6) {
+        while !matches!((vlc.media_get_parsed_status)(media), 1..=4)
+            && started.elapsed() < std::time::Duration::from_secs(6)
+        {
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
-        let text = |pointer: *const c_char| if pointer.is_null() { String::new() } else { std::ffi::CStr::from_ptr(pointer).to_string_lossy().trim().to_string() };
-        let mut probe = Probe { duration_ms: (vlc.media_get_duration)(media).max(0), ..Default::default() };
+        let text = |pointer: *const c_char| {
+            if pointer.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(pointer)
+                    .to_string_lossy()
+                    .trim()
+                    .to_string()
+            }
+        };
+        let mut probe = Probe {
+            duration_ms: (vlc.media_get_duration)(media).max(0),
+            ..Default::default()
+        };
         for (meta, name) in META {
             let value = (vlc.media_get_meta)(media, meta);
             let string = text(value);
@@ -330,7 +405,10 @@ pub fn probe(path: &Path) -> Option<Probe> {
                 (vlc.free)(value.cast());
             }
             // VLC falls back to the file name for a missing title.
-            let file_name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            let file_name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
             if !string.is_empty() && !(meta == 0 && string == file_name) {
                 probe.tags.push((name, string));
             }
@@ -354,7 +432,9 @@ pub fn probe(path: &Path) -> Option<Probe> {
                 ..Default::default()
             };
             if stream.codec.is_empty() {
-                stream.codec = String::from_utf8_lossy(&track.codec.to_le_bytes()).trim().to_string();
+                stream.codec = String::from_utf8_lossy(&track.codec.to_le_bytes())
+                    .trim()
+                    .to_string();
             }
             if !track.details.is_null() {
                 match track.kind {
@@ -368,7 +448,8 @@ pub fn probe(path: &Path) -> Option<Probe> {
                         stream.width = video.width;
                         stream.height = video.height;
                         if video.frame_rate_den > 0 {
-                            stream.frame_rate = f64::from(video.frame_rate_num) / f64::from(video.frame_rate_den);
+                            stream.frame_rate =
+                                f64::from(video.frame_rate_num) / f64::from(video.frame_rate_den);
                         }
                     }
                     _ => {}
@@ -396,7 +477,11 @@ pub struct Equalizer {
 pub fn equalizer_bands() -> Vec<f32> {
     let Ok(vlc) = vlc() else { return Vec::new() };
     // SAFETY: plain queries of libvlc's static tables.
-    unsafe { (0..(vlc.equalizer_band_count)()).map(|band| (vlc.equalizer_band_frequency)(band)).collect() }
+    unsafe {
+        (0..(vlc.equalizer_band_count)())
+            .map(|band| (vlc.equalizer_band_frequency)(band))
+            .collect()
+    }
 }
 
 /// VLC's presets by name ("Flat", "Rock", "Classical"…).
@@ -407,7 +492,13 @@ pub fn equalizer_presets() -> Vec<String> {
         (0..(vlc.equalizer_preset_count)())
             .map(|index| {
                 let name = (vlc.equalizer_preset_name)(index);
-                if name.is_null() { String::new() } else { std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned() }
+                if name.is_null() {
+                    String::new()
+                } else {
+                    std::ffi::CStr::from_ptr(name)
+                        .to_string_lossy()
+                        .into_owned()
+                }
             })
             .collect()
     }
@@ -424,7 +515,9 @@ pub fn equalizer_preset(index: usize) -> Option<Equalizer> {
         }
         let values = Equalizer {
             preamp: (vlc.equalizer_get_preamp)(equalizer),
-            bands: (0..(vlc.equalizer_band_count)()).map(|band| (vlc.equalizer_get_amp_at_index)(equalizer, band)).collect(),
+            bands: (0..(vlc.equalizer_band_count)())
+                .map(|band| (vlc.equalizer_get_amp_at_index)(equalizer, band))
+                .collect(),
         };
         (vlc.equalizer_release)(equalizer);
         Some(values)
@@ -501,7 +594,10 @@ unsafe extern "C" fn unlock(_: *mut c_void, _: *mut c_void, _: *const *mut c_voi
 unsafe extern "C" fn display(opaque: *mut c_void, _: *mut c_void) {
     // SAFETY: opaque is the player's Target, alive until the player stops.
     let target = unsafe { &mut *(opaque as *mut Target) };
-    let mut front = target.front.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut front = target
+        .front
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     front.width = target.width;
     front.height = target.height;
     front.bgra.clear();
@@ -539,13 +635,23 @@ impl Player {
 
     fn open_media(source: &str, remote: bool) -> Result<Self, String> {
         let vlc = vlc().map_err(str::to_string)?;
-        let location = CString::new(source.as_bytes()).map_err(|_| "Unusual file name".to_string())?;
+        let location =
+            CString::new(source.as_bytes()).map_err(|_| "Unusual file name".to_string())?;
         let frame = Arc::new(Mutex::new(Frame::default()));
-        let target = Box::into_raw(Box::new(Target { decode: Vec::new(), width: 0, height: 0, front: frame.clone() }));
+        let target = Box::into_raw(Box::new(Target {
+            decode: Vec::new(),
+            width: 0,
+            height: 0,
+            front: frame.clone(),
+        }));
         // SAFETY: libvlc calls with a valid instance; the target outlives the
         // player (released in Drop after stop, which joins VLC's threads).
         unsafe {
-            let media = if remote { (vlc.media_new_location)(vlc.instance, location.as_ptr()) } else { (vlc.media_new_path)(vlc.instance, location.as_ptr()) };
+            let media = if remote {
+                (vlc.media_new_location)(vlc.instance, location.as_ptr())
+            } else {
+                (vlc.media_new_path)(vlc.instance, location.as_ptr())
+            };
             if media.is_null() {
                 drop(Box::from_raw(target));
                 return Err("VLC cannot open this file".to_string());
@@ -556,10 +662,21 @@ impl Player {
                 drop(Box::from_raw(target));
                 return Err("VLC cannot play this file".to_string());
             }
-            (vlc.set_callbacks)(player, Some(lock), Some(unlock), Some(display), target as *mut c_void);
+            (vlc.set_callbacks)(
+                player,
+                Some(lock),
+                Some(unlock),
+                Some(display),
+                target as *mut c_void,
+            );
             (vlc.set_format_callbacks)(player, Some(setup), Some(cleanup));
             OPEN_PLAYERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(Self { vlc, player, target, frame })
+            Ok(Self {
+                vlc,
+                player,
+                target,
+                frame,
+            })
         }
     }
 
@@ -586,7 +703,12 @@ impl Player {
     /// Milliseconds played and the whole length (0 until known).
     pub fn progress(&self) -> (i64, i64) {
         // SAFETY: a live player.
-        unsafe { ((self.vlc.get_time)(self.player).max(0), (self.vlc.get_length)(self.player).max(0)) }
+        unsafe {
+            (
+                (self.vlc.get_time)(self.player).max(0),
+                (self.vlc.get_length)(self.player).max(0),
+            )
+        }
     }
 
     /// Jumps to a fraction (0…1) of the video.
@@ -616,7 +738,11 @@ impl Player {
                     }
                     (self.vlc.equalizer_set_preamp)(handle, values.preamp.clamp(-20., 20.));
                     for (band, gain) in values.bands.iter().enumerate() {
-                        (self.vlc.equalizer_set_amp_at_index)(handle, gain.clamp(-20., 20.), band as c_uint);
+                        (self.vlc.equalizer_set_amp_at_index)(
+                            handle,
+                            gain.clamp(-20., 20.),
+                            band as c_uint,
+                        );
                     }
                     (self.vlc.set_equalizer)(self.player, handle);
                     (self.vlc.equalizer_release)(handle);
@@ -654,7 +780,11 @@ impl Drop for Player {
 pub fn clock(milliseconds: i64) -> String {
     let seconds = milliseconds / 1000;
     let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
-    if hours > 0 { format!("{hours}:{minutes:02}:{seconds:02}") } else { format!("{minutes}:{seconds:02}") }
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
 }
 
 #[cfg(test)]
@@ -673,7 +803,9 @@ mod tests {
     #[ignore]
     fn vlc_plays_a_stream() {
         use std::io::{Read as _, Write as _};
-        let Some(video) = std::env::var_os("FILES_TEST_VIDEO") else { return };
+        let Some(video) = std::env::var_os("FILES_TEST_VIDEO") else {
+            return;
+        };
         let bytes = std::fs::read(&video).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -700,7 +832,10 @@ mod tests {
                             bytes.len() - start
                         )
                     } else {
-                        format!("HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Type: video/quicktime\r\nContent-Length: {}\r\n\r\n", bytes.len())
+                        format!(
+                            "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Type: video/quicktime\r\nContent-Length: {}\r\n\r\n",
+                            bytes.len()
+                        )
                     };
                     let _ = stream.write_all(header.as_bytes());
                     let _ = stream.write_all(&bytes[start..]);
@@ -712,7 +847,10 @@ mod tests {
         player.play();
         let started = std::time::Instant::now();
         while player.frame.lock().unwrap().sequence < 3 {
-            assert!(started.elapsed().as_secs() < 15, "no frames from the stream");
+            assert!(
+                started.elapsed().as_secs() < 15,
+                "no frames from the stream"
+            );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
@@ -721,7 +859,9 @@ mod tests {
     #[test]
     #[ignore]
     fn vlc_plays_frames_of_a_real_video() {
-        let Some(video) = std::env::var_os("FILES_TEST_VIDEO") else { return };
+        let Some(video) = std::env::var_os("FILES_TEST_VIDEO") else {
+            return;
+        };
         let player = Player::open(Path::new(&video)).expect("VLC");
         player.set_muted(true);
         player.play();
@@ -740,7 +880,8 @@ mod tests {
         let presets = equalizer_presets();
         assert!(presets.iter().any(|name| name == "Rock"), "{presets:?}");
         assert_eq!(equalizer_bands().len(), 10);
-        let rock = equalizer_preset(presets.iter().position(|name| name == "Rock").unwrap()).unwrap();
+        let rock =
+            equalizer_preset(presets.iter().position(|name| name == "Rock").unwrap()).unwrap();
         assert_eq!(rock.bands.len(), 10);
         player.set_equalizer(Some(&rock));
         player.set_equalizer(None);

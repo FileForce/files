@@ -47,8 +47,15 @@ fn folder(path: &Path) -> Option<PathBuf> {
 /// The pages of `path`: what is rendered so far; the rest are made in the
 /// background (asked once per document version).
 pub fn pages(path: &Path) -> Pages {
-    let Some(dir) = folder(path) else { return Pages { error: Some("Cannot cache pages".into()), ..Default::default() } };
-    let mut known = state().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(dir) = folder(path) else {
+        return Pages {
+            error: Some("Cannot cache pages".into()),
+            ..Default::default()
+        };
+    };
+    let mut known = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(pages) = known.get(&dir) {
         return pages.clone();
     }
@@ -61,7 +68,12 @@ pub fn pages(path: &Path) -> Pages {
         let result = render(&source, &dir);
         crate::tasks::finish(job, result.clone());
         if let Err(error) = result {
-            state().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entry(dir).or_default().error = Some(error);
+            state()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(dir)
+                .or_default()
+                .error = Some(error);
             READY.fetch_add(1, Ordering::Relaxed);
         }
     });
@@ -72,13 +84,16 @@ fn render(source: &Path, dir: &Path) -> Result<(), String> {
     use hayro::hayro_interpret::InterpreterSettings;
     use hayro::vello_cpu::color::palette::css::WHITE;
     let data = std::fs::read(source).map_err(|error| error.to_string())?;
-    let pdf = hayro::hayro_syntax::Pdf::new(data).map_err(|error| format!("Not a readable PDF ({error:?})"))?;
+    let pdf = hayro::hayro_syntax::Pdf::new(data)
+        .map_err(|error| format!("Not a readable PDF ({error:?})"))?;
     let pages = pdf.pages();
     let count = pages.len();
     let shown = count.min(MAX_PAGES);
     std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     {
-        let mut known = state().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut known = state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let entry = known.entry(dir.to_path_buf()).or_default();
         entry.count = count;
         entry.rendered = vec![None; shown];
@@ -91,13 +106,28 @@ fn render(source: &Path, dir: &Path) -> Result<(), String> {
         if !target.is_file() {
             let (width, _) = page.render_dimensions();
             let scale = (PAGE_WIDTH / width.max(1.)).clamp(0.5, 4.);
-            let pixmap = hayro::render(page, &cache, &settings, &hayro::RenderSettings::default(), &hayro::PixmapSettings { x_scale: scale, y_scale: scale, bg_color: WHITE });
+            let pixmap = hayro::render(
+                page,
+                &cache,
+                &settings,
+                &hayro::RenderSettings::default(),
+                &hayro::PixmapSettings {
+                    x_scale: scale,
+                    y_scale: scale,
+                    bg_color: WHITE,
+                },
+            );
             let png = pixmap.into_png().map_err(|error| error.to_string())?;
             let partial = target.with_extension("partial");
             std::fs::write(&partial, png).map_err(|error| error.to_string())?;
             std::fs::rename(&partial, &target).map_err(|error| error.to_string())?;
         }
-        if let Some(slot) = state().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get_mut(dir).and_then(|pages| pages.rendered.get_mut(index)) {
+        if let Some(slot) = state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(dir)
+            .and_then(|pages| pages.rendered.get_mut(index))
+        {
             *slot = Some(target);
         }
         READY.fetch_add(1, Ordering::Relaxed);
@@ -106,16 +136,19 @@ fn render(source: &Path, dir: &Path) -> Result<(), String> {
 }
 
 pub fn is_pdf(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn a_broken_pdf_says_why() {
-        let path = std::env::temp_dir().join(format!("file-force-broken-{}.pdf", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("file-force-broken-{}.pdf", std::process::id()));
         std::fs::write(&path, b"%PDF-1.4 not really").unwrap();
-        let dir = std::env::temp_dir().join(format!("file-force-broken-pages-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-broken-pages-{}", std::process::id()));
         assert!(super::render(&path, &dir).is_err());
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir_all(&dir);

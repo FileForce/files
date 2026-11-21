@@ -2,15 +2,15 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
-    Styled as _, Subscription, Window, actions, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, Styled as _,
+    Subscription, Window, actions, div, px,
 };
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Disableable as _, Sizable as _};
 
 use crate::model::{Accent, ColorScheme, Location, Pane, ViewMode, entries, entry};
 use crate::palette::{Palette, apply_theme};
@@ -178,6 +178,10 @@ pub struct FileExplorer {
     /// The window backdrop last asked of the OS (blurred when see-through).
     applied_backdrop: Option<gpui_kit::WindowBackgroundAppearance>,
     pub query: String,
+    /// The query whose background results are currently displayed.
+    pub(crate) applied_query: String,
+    pub(crate) filtering: bool,
+    filter_generation: u64,
     pub sort: crate::model::SortOrder,
     pub notice: Option<String>,
     pub history: Vec<Location>,
@@ -188,10 +192,13 @@ pub struct FileExplorer {
     /// Every connected SSH server, each with its home folder; tabs and panes
     /// show folders of any of them.
     pub ssh_sessions: Vec<SshSession>,
-    /// The lock screen asked the system already (once per lock).
-    pub(crate) lock_asked: bool,
+    /// The lock (its generation) the lock screen asked the system for by
+    /// itself: once per lock; after a cancel it waits for Unlock.
+    pub(crate) lock_asked: Option<u64>,
     /// Why the last unlock failed (not a cancel).
     pub(crate) lock_error: Option<String>,
+    /// A row took the left press now being handled (see `clear_selection_on_background`).
+    pub(crate) row_pressed: bool,
     /// Remote folders being fetched right now.
     pub(crate) remote_loading: std::collections::HashSet<Location>,
     /// When set, this window is a folder picker; the callback receives the choice.
@@ -205,7 +212,8 @@ pub struct FileExplorer {
     pub(crate) list_scroll: ScrollHandle,
     /// Where each virtual grid (Pro rows, Expressive folders, files) was
     /// painted last frame: only the rows on screen are built.
-    pub(crate) grid_bounds: [std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>; 3],
+    pub(crate) grid_bounds:
+        [std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>; 3],
     /// The main window: its tabs are saved for the next start.
     pub(crate) keeps_session: bool,
     /// The last list `entries_for` built, and what it was built from.
@@ -214,7 +222,8 @@ pub struct FileExplorer {
     /// An item to bring into view (after a paste, a drop or arrow keys) and
     /// where it was painted last frame.
     pub(crate) reveal: Option<gpui_kit::SharedString>,
-    pub(crate) reveal_bounds: std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>,
+    pub(crate) reveal_bounds:
+        std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>,
     next_tab_id: u64,
     focus_handle: FocusHandle,
     _appearance_subscription: Subscription,
@@ -224,6 +233,7 @@ pub struct FileExplorer {
     pub(crate) agent_sessions: Vec<files_ext_agents::Session>,
     /// Footer: the event console and the notifications card.
     pub(crate) console_open: bool,
+    pub(crate) console_detached: bool,
     /// Console → Resources instead of the event list.
     /// DevTools: which Console tab shows.
     pub(crate) console_tab: crate::views::console::ConsoleTab,
@@ -250,6 +260,8 @@ pub struct FileExplorer {
 
 /// Search filters of extensions switched off in Settings stop applying.
 fn update_search_extensions(settings: &crate::settings::AppSettings) {
+    crate::settings::set_frame_rate(settings.frame_rate);
+    crate::views::music::set_devtools_channels(settings.extensions.music_devtools_channels);
     // Extensions' chimes use the user's sound settings.
     crate::sound::set_settings(&settings.sound);
     crate::storage::set_limit_mb(settings.storage.limit_mb);
@@ -266,7 +278,10 @@ fn update_search_extensions(settings: &crate::settings::AppSettings) {
         .map(|(_, manifest)| manifest.id)
         .collect();
     crate::model::set_search_disabled(off);
-    crate::model::set_search_keys_off(settings.search_filters.folder_off.clone(), settings.search_filters.global_off.clone());
+    crate::model::set_search_keys_off(
+        settings.search_filters.folder_off.clone(),
+        settings.search_filters.global_off.clone(),
+    );
 }
 
 impl FileExplorer {
@@ -310,23 +325,21 @@ impl FileExplorer {
             if matches!(event, InputEvent::Change) {
                 this.query = state.read(cx).value().to_string();
                 this.parent_selected = false;
-                if let Some(selected) = this.selected.clone() {
-                    let visible = this.entries_for(this.current);
-                    if !visible.iter().any(|entry| entry.id == selected) {
-                        this.selected = None;
-                    }
-                }
-                cx.notify();
+                this.filter_current_folder(cx);
             }
         });
         crate::properties::watch_folder_sizes(cx);
-        // The lock screen comes and goes from a background check: redraw then.
+        // The lock screen and finished smart folders redraw on change. While
+        // gathering, keep the active view animating instead of waiting for the end.
         cx.spawn(async move |this, cx| {
-            let mut seen = crate::app_lock::generation();
+            let mut seen = crate::app_lock::generation() + files_ext_smart_folders::generation();
             loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
-                let now = crate::app_lock::generation();
-                if now != seen {
+                let loading = this.read_with(cx, |this, _| {
+                    matches!(this.current, crate::model::Location::Smart(folder) if files_ext_smart_folders::is_loading(folder))
+                }).unwrap_or(false);
+                cx.background_executor().timer(std::time::Duration::from_millis(if loading { 33 } else { 250 })).await;
+                let now = crate::app_lock::generation() + files_ext_smart_folders::generation();
+                if now != seen || loading {
                     seen = now;
                     if this.update(cx, |_, cx| cx.notify()).is_err() {
                         return;
@@ -352,14 +365,13 @@ impl FileExplorer {
         })
         .detach();
         let initial_tab = WorkspaceTab::new(0, Location::Home);
-        
-        
 
         let default_view = settings.behavior.default_view;
         let mut initial_tab = initial_tab;
         initial_tab.mode = default_view;
         Self::watch_agents(cx);
         Self::watch_journal(cx);
+        Self::watch_frame_rate(cx);
         Self {
             mode: default_view,
             scheme: settings.scheme,
@@ -385,6 +397,9 @@ impl FileExplorer {
             power_saving: crate::power::power_saving(),
             applied_backdrop: None,
             query: String::new(),
+            applied_query: String::new(),
+            filtering: false,
+            filter_generation: 0,
             sort: crate::model::SortOrder::default(),
             notice: None,
             history: vec![Location::Home],
@@ -393,8 +408,9 @@ impl FileExplorer {
             pending_drop: None,
             appearance,
             ssh_sessions: Vec::new(),
-            lock_asked: false,
+            lock_asked: None,
             lock_error: None,
+            row_pressed: false,
             remote_loading: Default::default(),
             folder_picker: None,
             tabs: vec![initial_tab],
@@ -415,9 +431,11 @@ impl FileExplorer {
             _extension_events: Some(Self::watch_extension_events(window, cx)),
             agent_sessions: Vec::new(),
             console_open: false,
+            console_detached: false,
             console_tab: Default::default(),
             notifications_open: false,
-            console_query: cx.new(|cx| InputState::new(window, cx).placeholder("Filter: text, source, output")),
+            console_query: cx
+                .new(|cx| InputState::new(window, cx).placeholder("Filter: text, source, output")),
             console_kinds: Default::default(),
             console_expanded: None,
             journal_generation: 0,
@@ -466,11 +484,15 @@ impl FileExplorer {
         // the status bar): built once until something it depends on changes.
         let key = EntriesKey {
             location,
-            query: self.query.clone(),
+            query: self.applied_query.clone(),
             sort: self.sort,
             folders_only: self.folder_picker.is_some(),
             listings: crate::model::listings_generation(),
-            sizes: if self.sort.key == crate::model::SortKey::Size { crate::model::folder_sizes_generation() } else { 0 },
+            sizes: if self.sort.key == crate::model::SortKey::Size {
+                crate::model::folder_sizes_generation()
+            } else {
+                0
+            },
         };
         if let Some((cached, entries)) = &*self.entries_cache.borrow()
             && *cached == key
@@ -479,7 +501,10 @@ impl FileExplorer {
         }
         let entries = self.build_entries(location);
         // A listing read just now bumps the generation: key it after.
-        let key = EntriesKey { listings: crate::model::listings_generation(), ..key };
+        let key = EntriesKey {
+            listings: crate::model::listings_generation(),
+            ..key
+        };
         *self.entries_cache.borrow_mut() = Some((key, entries.clone()));
         entries
     }
@@ -493,18 +518,20 @@ impl FileExplorer {
         }
         let listed = std::time::Instant::now();
         let count = candidates.len();
-        let mut ranked = crate::model::rank_entries(candidates, &self.query);
+        let mut ranked = crate::model::rank_entries(candidates, &self.applied_query);
         let matched = std::time::Instant::now();
         // Fuzzy relevance wins while typing, unless the user picked a column.
-        let fuzzy = !crate::model::SearchQuery::parse(&self.query).text.is_empty();
+        let fuzzy = !crate::model::SearchQuery::parse(&self.applied_query)
+            .text
+            .is_empty();
         if !fuzzy || self.sort != crate::model::SortOrder::default() {
             crate::model::sort_entries(&mut ranked, self.sort);
         }
         // DevTools → Search: where a search's time went.
-        if !self.query.trim().is_empty() {
+        if !self.applied_query.trim().is_empty() {
             crate::tasks::record_search(crate::tasks::SearchProfile {
                 scope: "Folder",
-                query: self.query.clone(),
+                query: self.applied_query.clone(),
                 candidates: count,
                 results: ranked.len(),
                 list: listed - started,
@@ -515,8 +542,99 @@ impl FileExplorer {
         ranked
     }
 
+    /// Filters the current folder after a short typing pause. The previous
+    /// results stay visible until the newest background search finishes.
+    fn filter_current_folder(&mut self, cx: &mut Context<Self>) {
+        self.filter_generation += 1;
+        let generation = self.filter_generation;
+        let location = self.current;
+        let query = self.query.clone();
+        let sort = self.sort;
+        let folders_only = self.folder_picker.is_some();
+        self.filtering = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(120))
+                .await;
+            if this
+                .read_with(cx, |this, _| this.filter_generation != generation)
+                .unwrap_or(true)
+            {
+                return;
+            }
+            let background_query = query.clone();
+            let ranked = cx
+                .background_executor()
+                .spawn(async move {
+                    let query = background_query;
+                    let started = std::time::Instant::now();
+                    let mut candidates = entries(location, "");
+                    if folders_only {
+                        candidates.retain(|candidate| candidate.is_folder());
+                    }
+                    let listed = std::time::Instant::now();
+                    let count = candidates.len();
+                    let mut ranked = crate::model::rank_entries(candidates, &query);
+                    let matched = std::time::Instant::now();
+                    let fuzzy = !crate::model::SearchQuery::parse(&query).text.is_empty();
+                    if !fuzzy || sort != crate::model::SortOrder::default() {
+                        crate::model::sort_entries(&mut ranked, sort);
+                    }
+                    if !query.trim().is_empty() {
+                        crate::tasks::record_search(crate::tasks::SearchProfile {
+                            scope: "Folder",
+                            query: query.clone(),
+                            candidates: count,
+                            results: ranked.len(),
+                            list: listed - started,
+                            matching: matched - listed,
+                            sort: matched.elapsed(),
+                        });
+                    }
+                    ranked
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.filter_generation != generation {
+                    return;
+                }
+                this.applied_query = query;
+                this.filtering = false;
+                *this.entries_cache.borrow_mut() = Some((
+                    EntriesKey {
+                        location,
+                        query: this.applied_query.clone(),
+                        sort,
+                        folders_only,
+                        listings: crate::model::listings_generation(),
+                        sizes: if sort.key == crate::model::SortKey::Size {
+                            crate::model::folder_sizes_generation()
+                        } else {
+                            0
+                        },
+                    },
+                    ranked,
+                ));
+                if let Some(selected) = this.selected.clone()
+                    && !this
+                        .current_entries()
+                        .iter()
+                        .any(|entry| entry.id == selected)
+                {
+                    this.selected = None;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn sort_by(&mut self, key: crate::model::SortKey, cx: &mut Context<Self>) {
         self.sort = self.sort.toggled(key);
+        if !self.query.trim().is_empty() {
+            self.filter_current_folder(cx);
+        }
         cx.notify();
     }
 
@@ -524,8 +642,9 @@ impl FileExplorer {
         self.entries_for(self.current)
     }
 
+    /// The item the preview shows (in Dual, the active pane's).
     pub fn selected_entry(&self) -> Option<crate::model::Entry> {
-        entry(self.selected.as_deref()?)
+        entry(self.active_selection()?.as_ref())
     }
 
     pub fn active_location(&self) -> Location {
@@ -552,7 +671,12 @@ impl FileExplorer {
         if self.mode == mode {
             return;
         }
-        files_sdk::log::record("files", files_sdk::log::Kind::Setting, format!("view: {:?} → {mode:?}", self.mode), None);
+        files_sdk::log::record(
+            "files",
+            files_sdk::log::Kind::Setting,
+            format!("view: {:?} → {mode:?}", self.mode),
+            None,
+        );
         if mode == ViewMode::Dual {
             self.left.location = self.current;
             self.left.selected = self.selected.clone();
@@ -588,7 +712,6 @@ impl FileExplorer {
         apply_theme(cx, self.scheme, self.accent);
         cx.notify();
     }
-
 
     pub fn open_new_window(&mut self, cx: &mut Context<Self>) {
         let appearance = self.appearance.clone();
@@ -673,7 +796,10 @@ impl FileExplorer {
     }
 
     fn save_active_tab(&mut self) {
-        let tab = &mut self.tabs[self.active_tab];
+        // None while a session is being restored (the tabs are rebuilt from scratch).
+        let Some(tab) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
         tab.current = self.current;
         tab.selected = self.selected.clone();
         tab.history = self.history.clone();
@@ -701,9 +827,13 @@ impl FileExplorer {
         self.search.update(cx, |state, cx| {
             state.set_value(tab.query, window, cx);
         });
+        self.filter_current_folder(cx);
         self.tab_scroll.scroll_to_item(self.active_tab);
         // A Music tab takes the keyboard (↑↓, Enter, Space work on its tracks).
-        if let Some(music) = self.active_panel().and_then(|panel| panel.downcast::<crate::views::music::MusicView>().ok()) {
+        if let Some(music) = self
+            .active_panel()
+            .and_then(|panel| panel.downcast::<crate::views::music::MusicView>().ok())
+        {
             let focus = gpui_kit::Focusable::focus_handle(music.read(cx), cx);
             window.focus(&focus, cx);
         }
@@ -716,7 +846,10 @@ impl FileExplorer {
         if !self.appearance.read(cx).behavior.restore_tabs {
             return;
         }
-        let Some(session) = crate::session::load().filter(|session| !session.tabs.is_empty()) else { return };
+        let Some(session) = crate::session::load().filter(|session| !session.tabs.is_empty())
+        else {
+            return;
+        };
         self.tabs.clear();
         for saved in &session.tabs {
             if let Some(panel) = saved.place.strip_prefix("panel:") {
@@ -760,19 +893,38 @@ impl FileExplorer {
 
     /// A folder in a new tab, which becomes the active one (middle click,
     /// or "Open in New Tab").
-    pub(crate) fn open_in_new_tab(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_in_new_tab(
+        &mut self,
+        location: Location,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.new_tab(window, cx);
         self.navigate(location, window, cx);
-        files_sdk::log::record("files", files_sdk::log::Kind::Info, format!("New tab: {}", location.label()), None);
+        files_sdk::log::record(
+            "files",
+            files_sdk::log::Kind::Info,
+            format!("New tab: {}", location.label()),
+            None,
+        );
     }
 
     /// Shows `location`: here in a folder tab; when the tab in front is an
     /// extension's view (Music, Mail…), which has no folder, in the tab that
     /// shows it already, or a new one.
-    pub(crate) fn show_location(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn show_location(
+        &mut self,
+        location: Location,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.active_panel().is_some() {
             // A tab showing it already: go there; else a new one.
-            match self.tabs.iter().position(|tab| tab.panel.is_none() && tab.current == location) {
+            match self
+                .tabs
+                .iter()
+                .position(|tab| tab.panel.is_none() && tab.current == location)
+            {
                 Some(index) => self.select_tab(index, window, cx),
                 None => self.open_in_new_tab(location, window, cx),
             }
@@ -781,7 +933,12 @@ impl FileExplorer {
         }
     }
 
-    pub(crate) fn open_entry_in_new_tab(&mut self, entry: crate::model::Entry, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_entry_in_new_tab(
+        &mut self,
+        entry: crate::model::Entry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(target) = entry.target.filter(|_| entry.is_folder()) {
             self.open_in_new_tab(target, window, cx);
         }
@@ -820,11 +977,19 @@ impl FileExplorer {
 
     /// The extension view of the active tab, if it shows one.
     pub(crate) fn active_panel(&self) -> Option<gpui_kit::AnyView> {
-        self.tabs.get(self.active_tab).and_then(|tab| tab.panel.clone())
+        self.tabs
+            .get(self.active_tab)
+            .and_then(|tab| tab.panel.clone())
     }
 
     /// Moves the tab at `from` to `to` (a drag). Pinned tabs stay in front.
-    pub(crate) fn move_tab(&mut self, from: usize, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn move_tab(
+        &mut self,
+        from: usize,
+        to: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
             return;
         }
@@ -833,8 +998,17 @@ impl FileExplorer {
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
         self.tabs.sort_by_key(|tab| !tab.pinned);
-        self.active_tab = self.tabs.iter().position(|tab| tab.id == active_id).unwrap_or(0);
-        files_sdk::log::record("files", files_sdk::log::Kind::Setting, format!("tab moved: {} → {}", from + 1, to + 1), None);
+        self.active_tab = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == active_id)
+            .unwrap_or(0);
+        files_sdk::log::record(
+            "files",
+            files_sdk::log::Kind::Setting,
+            format!("tab moved: {} → {}", from + 1, to + 1),
+            None,
+        );
         self.restore_active_tab(window, cx);
     }
 
@@ -847,13 +1021,23 @@ impl FileExplorer {
         self.tabs[index].pinned = !self.tabs[index].pinned;
         // Pinned tabs first, each group keeping its order.
         self.tabs.sort_by_key(|tab| !tab.pinned);
-        self.active_tab = self.tabs.iter().position(|tab| tab.id == active_id).unwrap_or(0);
+        self.active_tab = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == active_id)
+            .unwrap_or(0);
         cx.notify();
     }
 
     /// Closes the unpinned tabs `close` picks (by index, relative to
     /// `index`), always leaving at least one tab.
-    pub(crate) fn close_tabs_where(&mut self, index: usize, close: impl Fn(usize, usize) -> bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn close_tabs_where(
+        &mut self,
+        index: usize,
+        close: impl Fn(usize, usize) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if index >= self.tabs.len() {
             return;
         }
@@ -968,7 +1152,12 @@ impl FileExplorer {
 
     /// Opens the folder of `path` with the file selected and scrolled to
     /// (Music → Show in Files, and any other "reveal").
-    pub(crate) fn reveal_path(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn reveal_path(
+        &mut self,
+        path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(file) = crate::model::entry_at(path) else {
             self.notice = Some(format!("{} is gone", path.display()));
             cx.notify();
@@ -1012,7 +1201,6 @@ impl FileExplorer {
         }
         cx.notify();
     }
-
 
     pub fn open_entry(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(file) = entry(id) else {
@@ -1152,7 +1340,10 @@ impl FileExplorer {
     }
 
     pub fn selected_entries(&self) -> Vec<crate::model::Entry> {
-        self.selection_ids().into_iter().filter_map(|id| entry(&id)).collect()
+        self.selection_ids()
+            .into_iter()
+            .filter_map(|id| entry(&id))
+            .collect()
     }
 
     pub fn is_selected(&self, id: &str) -> bool {
@@ -1214,7 +1405,15 @@ impl FileExplorer {
         pane: Option<Pane>,
         cx: &mut Context<Self>,
     ) {
-        if !self.appearance.read(cx).behavior.clear_selection_on_empty_click
+        // The press landed on a row (its own listener ran first): not empty space.
+        if std::mem::take(&mut self.row_pressed) {
+            return;
+        }
+        if !self
+            .appearance
+            .read(cx)
+            .behavior
+            .clear_selection_on_empty_click
             || event.modifiers.shift
             || event.modifiers.secondary(cx)
         {
@@ -1248,7 +1447,11 @@ impl FileExplorer {
 
     fn select_range_to(&mut self, id: &str, cx: &mut Context<Self>) {
         let files = self.entries_for(self.current);
-        let anchor = self.anchor.clone().or(self.selected.clone()).unwrap_or_else(|| id.to_string().into());
+        let anchor = self
+            .anchor
+            .clone()
+            .or(self.selected.clone())
+            .unwrap_or_else(|| id.to_string().into());
         let start = files.iter().position(|file| file.id == anchor);
         let end = files.iter().position(|file| file.id == id);
         let (Some(start), Some(end)) = (start, end) else {
@@ -1256,7 +1459,10 @@ impl FileExplorer {
             return;
         };
         let (low, high) = (start.min(end), start.max(end));
-        self.selection = files[low..=high].iter().map(|file| file.id.clone()).collect();
+        self.selection = files[low..=high]
+            .iter()
+            .map(|file| file.id.clone())
+            .collect();
         self.selected = Some(id.to_string().into());
         self.anchor = Some(anchor);
         self.parent_selected = false;
@@ -1266,7 +1472,11 @@ impl FileExplorer {
 
     #[cfg(test)]
     fn select_all_for_test(&mut self, cx: &mut Context<Self>) {
-        self.selection = self.entries_for(self.current).iter().map(|file| file.id.clone()).collect();
+        self.selection = self
+            .entries_for(self.current)
+            .iter()
+            .map(|file| file.id.clone())
+            .collect();
         self.selected = self.selection.last().cloned();
         cx.notify();
     }
@@ -1388,15 +1598,30 @@ impl FileExplorer {
         self.close_tab(self.active_tab, window, cx);
     }
 
-    fn on_close_other_tabs(&mut self, _: &CloseOtherTabs, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_close_other_tabs(
+        &mut self,
+        _: &CloseOtherTabs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.close_tabs_where(self.active_tab, |at, clicked| at != clicked, window, cx);
     }
 
-    fn on_close_tabs_left(&mut self, _: &CloseTabsLeft, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_close_tabs_left(
+        &mut self,
+        _: &CloseTabsLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.close_tabs_where(self.active_tab, |at, clicked| at < clicked, window, cx);
     }
 
-    fn on_close_tabs_right(&mut self, _: &CloseTabsRight, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_close_tabs_right(
+        &mut self,
+        _: &CloseTabsRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.close_tabs_where(self.active_tab, |at, clicked| at > clicked, window, cx);
     }
 
@@ -1410,21 +1635,35 @@ impl FileExplorer {
 
     fn on_toggle_inspector(&mut self, _: &ToggleInspector, _: &mut Window, cx: &mut Context<Self>) {
         self.show_inspector = !self.show_inspector;
-        files_sdk::log::record("files", files_sdk::log::Kind::Setting, format!("inspector: {}", if self.show_inspector { "shown" } else { "hidden" }), None);
+        files_sdk::log::record(
+            "files",
+            files_sdk::log::Kind::Setting,
+            format!(
+                "inspector: {}",
+                if self.show_inspector {
+                    "shown"
+                } else {
+                    "hidden"
+                }
+            ),
+            None,
+        );
         cx.notify();
     }
 
     fn on_show_settings(&mut self, _: &ShowSettings, window: &mut Window, cx: &mut Context<Self>) {
-        // A Settings tab already open: go there instead of a second copy.
-        if let Some(index) = self.settings_tab() {
-            self.select_tab(index, window, cx);
-            return;
-        }
         crate::settings_window::open_settings_dialog(self.appearance.clone(), window, cx);
     }
 
     fn settings_tab(&self) -> Option<usize> {
-        self.tabs.iter().position(|tab| tab.panel.as_ref().is_some_and(|panel| panel.clone().downcast::<crate::settings_window::SettingsWindow>().is_ok()))
+        self.tabs.iter().position(|tab| {
+            tab.panel.as_ref().is_some_and(|panel| {
+                panel
+                    .clone()
+                    .downcast::<crate::settings_window::SettingsWindow>()
+                    .is_ok()
+            })
+        })
     }
 
     /// Settings in a tab of its own, beside the files (one at a time).
@@ -1440,7 +1679,13 @@ impl FileExplorer {
             settings.adopt_pending_draft();
             settings
         });
-        self.open_panel_tab("Settings", gpui_kit::assets::IconName::Settings, view.into(), window, cx);
+        self.open_panel_tab(
+            "Settings",
+            gpui_kit::assets::IconName::Settings,
+            view.into(),
+            window,
+            cx,
+        );
     }
 
     fn on_select_previous(
@@ -1460,7 +1705,12 @@ impl FileExplorer {
         self.move_selection_with(-1, true, window, cx);
     }
 
-    fn on_extend_down(&mut self, _: &ExtendSelectionDown, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_extend_down(
+        &mut self,
+        _: &ExtendSelectionDown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.move_selection_with(1, true, window, cx);
     }
 
@@ -1502,7 +1752,12 @@ impl FileExplorer {
         window.focus_prev(cx);
     }
 
-    fn on_delete_selected(&mut self, _: &DeleteSelected, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_delete_selected(
+        &mut self,
+        _: &DeleteSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Backspace/Delete belong to the search box while it has focus.
         if self.search.read(cx).focus_handle(cx).is_focused(window) {
             return;
@@ -1532,7 +1787,9 @@ impl FileExplorer {
             .position(|extension| extension.name == name)
             .is_some_and(|index| crate::licensing::active(&settings, index));
         if !enabled {
-            self.notice = Some(format!("{name} extension is disabled · turn it on in Settings → Extensions"));
+            self.notice = Some(format!(
+                "{name} extension is disabled · turn it on in Settings → Extensions"
+            ));
             cx.notify();
         }
         enabled
@@ -1544,25 +1801,45 @@ impl FileExplorer {
         }
     }
 
-    fn on_compress_selected(&mut self, _: &CompressSelected, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_compress_selected(
+        &mut self,
+        _: &CompressSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.extension_enabled("Archives", cx) {
             self.run_demo_command(crate::commands::DemoCommand::Compress, window, cx);
         }
     }
 
-    fn on_extract_selected(&mut self, _: &ExtractSelected, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_extract_selected(
+        &mut self,
+        _: &ExtractSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.extension_enabled("Archives", cx) {
             self.run_demo_command(crate::commands::DemoCommand::Extract, window, cx);
         }
     }
 
-    fn on_copy_selected_path(&mut self, _: &CopySelectedPath, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_copy_selected_path(
+        &mut self,
+        _: &CopySelectedPath,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.extension_enabled("Copy", cx) {
             self.run_demo_command(crate::commands::DemoCommand::CopyPath, window, cx);
         }
     }
 
-    fn on_open_terminal_here(&mut self, _: &OpenTerminalHere, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_open_terminal_here(
+        &mut self,
+        _: &OpenTerminalHere,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.extension_enabled("Terminal", cx) {
             let location = self.active_location();
             self.run_folder_command(crate::commands::FolderCommand::OpenTerminal, location, cx);
@@ -1594,7 +1871,11 @@ impl FileExplorer {
 
     /// Changes sidebar settings and saves them right away (they are layout,
     /// not something to confirm with Save).
-    pub(crate) fn update_sidebar(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut crate::settings::SidebarSettings)) {
+    pub(crate) fn update_sidebar(
+        &mut self,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut crate::settings::SidebarSettings),
+    ) {
         self.appearance.update(cx, |settings, cx| {
             change(&mut settings.sidebar);
             let _ = crate::settings::save(settings);
@@ -1604,7 +1885,12 @@ impl FileExplorer {
     }
 
     pub(crate) fn section_collapsed(&self, key: &str, cx: &App) -> bool {
-        self.appearance.read(cx).sidebar.collapsed.iter().any(|folded| folded == key)
+        self.appearance
+            .read(cx)
+            .sidebar
+            .collapsed
+            .iter()
+            .any(|folded| folded == key)
     }
 
     pub(crate) fn toggle_section(&mut self, key: &'static str, cx: &mut Context<Self>) {
@@ -1618,11 +1904,19 @@ impl FileExplorer {
     }
 
     pub(crate) fn is_favorite(&self, path: &std::path::Path, cx: &App) -> bool {
-        self.appearance.read(cx).sidebar.favorites.iter().any(|favorite| favorite == path)
+        self.appearance
+            .read(cx)
+            .sidebar
+            .favorites
+            .iter()
+            .any(|favorite| favorite == path)
     }
 
     pub(crate) fn add_favorite(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         self.update_sidebar(cx, |sidebar| {
             if !sidebar.favorites.contains(&path) {
                 sidebar.favorites.push(path);
@@ -1632,7 +1926,9 @@ impl FileExplorer {
     }
 
     pub(crate) fn remove_favorite(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        self.update_sidebar(cx, |sidebar| sidebar.favorites.retain(|favorite| favorite != path));
+        self.update_sidebar(cx, |sidebar| {
+            sidebar.favorites.retain(|favorite| favorite != path)
+        });
         self.notice = Some("Removed from Favorites".to_string());
     }
 
@@ -1651,11 +1947,19 @@ impl FileExplorer {
             return;
         }
         // Other apps get the paths as text; this app also keeps the files.
-        let text = paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("\n");
+        let text = paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         let count = paths.len();
         crate::transfer::set_clipboard(paths, cut);
-        let what = if count == 1 { "1 item".to_string() } else { format!("{count} items") };
+        let what = if count == 1 {
+            "1 item".to_string()
+        } else {
+            format!("{count} items")
+        };
         self.notice = Some(if cut {
             format!("Cut {what} · paste with ⌘V to move")
         } else {
@@ -1689,7 +1993,10 @@ impl FileExplorer {
             return;
         }
         let Some(target) = self.active_location().path() else {
-            self.notice = Some(format!("Cannot paste into {}", self.active_location().label()));
+            self.notice = Some(format!(
+                "Cannot paste into {}",
+                self.active_location().label()
+            ));
             cx.notify();
             return;
         };
@@ -1715,7 +2022,11 @@ impl FileExplorer {
         if cut {
             crate::transfer::clear_clipboard();
         }
-        let operation = if cut { crate::transfer::Operation::Move } else { crate::transfer::Operation::Copy };
+        let operation = if cut {
+            crate::transfer::Operation::Move
+        } else {
+            crate::transfer::Operation::Copy
+        };
         self.run_transfer(paths, target, operation, window, cx);
     }
 
@@ -1745,26 +2056,54 @@ impl FileExplorer {
     }
 
     /// Files → Install Command Line Tool: `files .` in a terminal.
-    fn on_install_cli(&mut self, _: &crate::menus::InstallCommandLineTool, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_install_cli(
+        &mut self,
+        _: &crate::menus::InstallCommandLineTool,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (level, title, body) = match crate::desktop::install_cli() {
-            Ok(message) => (files_sdk::log::Level::Success, "The files command is installed".to_string(), message),
-            Err(error) => (files_sdk::log::Level::Error, "The files command was not installed".to_string(), error.to_string()),
+            Ok(message) => (
+                files_sdk::log::Level::Success,
+                "The files command is installed".to_string(),
+                message,
+            ),
+            Err(error) => (
+                files_sdk::log::Level::Error,
+                "The files command was not installed".to_string(),
+                error.to_string(),
+            ),
         };
         files_sdk::log::notify("files", level, title, Some(body));
         cx.notify();
     }
 
-    fn on_uninstall(&mut self, _: &crate::menus::UninstallFiles, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_uninstall(
+        &mut self,
+        _: &crate::menus::UninstallFiles,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Settings (a dialog) may be what asked: the confirmation takes its place.
         window.close_dialog(cx);
         crate::uninstall::open(self.appearance.clone(), window, cx);
     }
 
-    fn on_report_bug(&mut self, _: &crate::menus::ReportBug, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_report_bug(
+        &mut self,
+        _: &crate::menus::ReportBug,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         crate::bug_report::open(self.appearance.clone(), window, cx);
     }
 
-    fn on_check_for_updates(&mut self, _: &crate::menus::CheckForUpdates, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_check_for_updates(
+        &mut self,
+        _: &crate::menus::CheckForUpdates,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.open_update_dialog(window, cx);
     }
 
@@ -1844,12 +2183,16 @@ impl Render for FileExplorer {
         }
         let palette = self.palette();
         if crate::app_lock::locked() {
-            return self.render_lock_screen(palette, window, cx).into_any_element();
+            return self
+                .render_lock_screen(palette, window, cx)
+                .into_any_element();
         }
         // The desktop shows (blurred) only when there is no own background.
         // Text size: every rem-based size in the window scales with this.
         window.set_rem_size(px(16. * self.accessibility.text_scale.factor()));
-        let backdrop = if self.effective_opacity() < 1. && self.look.background == crate::settings::Background::Default {
+        let backdrop = if self.effective_opacity() < 1.
+            && self.look.background == crate::settings::Background::Default
+        {
             gpui_kit::WindowBackgroundAppearance::Blurred
         } else {
             gpui_kit::WindowBackgroundAppearance::Opaque
@@ -1859,7 +2202,12 @@ impl Render for FileExplorer {
             self.applied_backdrop = Some(backdrop);
         }
         // GPUI Kit's Root and title bar paint the theme background under us.
-        crate::palette::apply_chrome_opacity(cx, self.effective_opacity(), self.scheme, self.accent);
+        crate::palette::apply_chrome_opacity(
+            cx,
+            self.effective_opacity(),
+            self.scheme,
+            self.accent,
+        );
         let backdrop_color = match &self.look.background {
             crate::settings::Background::Color { hex } => crate::settings::parse_hex(hex),
             _ => None,
@@ -1871,153 +2219,195 @@ impl Render for FileExplorer {
         // An extension tab (Mail) fills the whole area: no toolbar, no inspector.
         let panel = self.active_panel();
         let has_panel = panel.is_some();
-        let inspector_visible = self.show_inspector && self.mode != ViewMode::Dual && !has_panel;
+        let inspector_visible = self.show_inspector && !has_panel;
+        let appearance = self.appearance.read(cx);
+        if appearance.developer.show_fps_counter && appearance.frame_rate >= 60 {
+            window.request_animation_frame();
+        }
 
-        div()
-            .track_focus(&self.focus_handle)
-            .key_context("FileExplorer")
-            .on_action(cx.listener(Self::on_show_expressive))
-            .on_action(cx.listener(Self::on_show_pro))
-            .on_action(cx.listener(Self::on_show_dual))
-            .on_action(cx.listener(Self::on_focus_search))
-            .on_action(cx.listener(Self::on_global_search))
-            .on_action(cx.listener(Self::on_new_tab))
-            .on_action(cx.listener(Self::on_close_tab))
-            .on_action(cx.listener(Self::on_close_other_tabs))
-            .on_action(cx.listener(Self::on_close_tabs_left))
-            .on_action(cx.listener(Self::on_close_tabs_right))
-            .on_action(cx.listener(Self::on_toggle_pin_tab))
-            .on_action(cx.listener(Self::on_toggle_theme))
-            .on_action(cx.listener(Self::on_toggle_inspector))
-            .on_action(cx.listener(Self::on_show_settings))
-            .on_action(cx.listener(|this, _: &OpenSettingsTab, window, cx| this.open_settings_tab(window, cx)))
-            .on_action(cx.listener(Self::on_select_previous))
-            .on_action(cx.listener(Self::on_select_next))
-            .on_action(cx.listener(Self::on_open_selected))
-            .on_action(cx.listener(Self::on_focus_left_pane))
-            .on_action(cx.listener(Self::on_focus_right_pane))
-            .on_action(cx.listener(Self::on_focus_next))
-            .on_action(cx.listener(Self::on_focus_previous))
-            .on_action(cx.listener(Self::on_new_window))
-            .on_action(cx.listener(Self::on_delete_selected))
-            .on_action(cx.listener(Self::on_extend_up))
-            .on_action(cx.listener(Self::on_extend_down))
-            .on_action(cx.listener(Self::on_select_all))
-            .on_action(cx.listener(Self::on_quick_look))
-            .on_action(cx.listener(Self::on_open_with_app))
-            .on_action(cx.listener(Self::on_compress_selected))
-            .on_action(cx.listener(Self::on_extract_selected))
-            .on_action(cx.listener(Self::on_copy_selected_path))
-            .on_action(cx.listener(Self::on_open_terminal_here))
-            .on_action(cx.listener(Self::on_new_file))
-            .on_action(cx.listener(Self::on_new_folder))
-            .on_action(cx.listener(Self::on_fork_here))
-            .on_action(cx.listener(Self::on_about))
-            .on_action(cx.listener(Self::on_copy_files))
-            .on_action(cx.listener(Self::on_cut_files))
-            .on_action(cx.listener(Self::on_paste_files))
-            .on_action(cx.listener(Self::on_check_for_updates))
-            .on_action(cx.listener(Self::on_report_bug))
-            .on_action(cx.listener(Self::on_install_cli))
-            .on_action(cx.listener(Self::on_uninstall))
-            .on_action(cx.listener(Self::on_toggle_dev_tools))
-            .on_mouse_down(
-                gpui_kit::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    crate::app_lock::touch();
-                    if window.focused(cx).is_none() {
-                        this.focus_main(window, cx);
-                    }
-                }),
-            )
-            .on_mouse_move(|_, _, _| crate::app_lock::touch())
-            .on_scroll(|_, _, _| crate::app_lock::touch())
-            .capture_key_down(|_, _, _| crate::app_lock::touch())
-            // Mouse side buttons walk the history, like in Finder.
-            .on_mouse_down(
-                gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back),
-                cx.listener(|this, _, window, cx| this.go_back(window, cx)),
-            )
-            .on_mouse_down(
-                gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Forward),
-                cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
-            )
-            .on_mouse_up_out(
-                gpui_kit::MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.complete_pending_drop(window, cx)),
-            )
-            .flex()
-            .flex_col()
-            .size_full()
-            .min_w_0()
-            .min_h_0()
-            .border_1()
-            .border_color(gpui_kit::transparent_black())
-            .focus_visible(|style| style.border_color(palette.accent))
-            .relative()
-            .bg(backdrop_color.unwrap_or(palette.window))
-            .text_color(palette.text)
-            .children(backdrop_image.map(|path| {
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(gpui_kit::StyledImage::object_fit(gpui_kit::img(path).size_full(), gpui_kit::ObjectFit::Cover))
-            }))
-            .child(self.render_title_bar(palette, cx))
-            .children(self.render_folder_picker_bar(palette, cx))
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable("workspace-panels")
-                        .child(
-                            resizable_panel()
-                                .size(px(218.))
-                                .size_range(px(184.)..px(280.))
-                                .fixed()
-                                .child(self.render_sidebar(palette, cx)),
-                        )
-                        .child(
-                            resizable_panel().child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .size_full()
-                                    .min_w_0()
-                                    .min_h_0()
-                                    .child(self.render_tabs(palette, cx))
-                                    .children(panel.map(|panel| div().flex_1().min_h_0().child(panel)))
-                                    .children((!has_panel).then(|| self.render_toolbar(palette, cx)))
-                                    .children((!has_panel).then(|| self.render_drop_area(palette, cx))),
+        gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(
+            format!("files-{:?}", self.current).into(),
+        )))
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .child(
+            div()
+                .track_focus(&self.focus_handle)
+                .key_context("FileExplorer")
+                .on_action(cx.listener(Self::on_show_expressive))
+                .on_action(cx.listener(Self::on_show_pro))
+                .on_action(cx.listener(Self::on_show_dual))
+                .on_action(cx.listener(Self::on_focus_search))
+                .on_action(cx.listener(Self::on_global_search))
+                .on_action(cx.listener(Self::on_new_tab))
+                .on_action(cx.listener(Self::on_close_tab))
+                .on_action(cx.listener(Self::on_close_other_tabs))
+                .on_action(cx.listener(Self::on_close_tabs_left))
+                .on_action(cx.listener(Self::on_close_tabs_right))
+                .on_action(cx.listener(Self::on_toggle_pin_tab))
+                .on_action(cx.listener(Self::on_toggle_theme))
+                .on_action(cx.listener(Self::on_toggle_inspector))
+                .on_action(cx.listener(Self::on_show_settings))
+                .on_action(cx.listener(|this, _: &OpenSettingsTab, window, cx| {
+                    this.open_settings_tab(window, cx)
+                }))
+                .on_action(cx.listener(Self::on_select_previous))
+                .on_action(cx.listener(Self::on_select_next))
+                .on_action(cx.listener(Self::on_open_selected))
+                .on_action(cx.listener(Self::on_focus_left_pane))
+                .on_action(cx.listener(Self::on_focus_right_pane))
+                .on_action(cx.listener(Self::on_focus_next))
+                .on_action(cx.listener(Self::on_focus_previous))
+                .on_action(cx.listener(Self::on_new_window))
+                .on_action(cx.listener(Self::on_delete_selected))
+                .on_action(cx.listener(Self::on_extend_up))
+                .on_action(cx.listener(Self::on_extend_down))
+                .on_action(cx.listener(Self::on_select_all))
+                .on_action(cx.listener(Self::on_quick_look))
+                .on_action(cx.listener(Self::on_open_with_app))
+                .on_action(cx.listener(Self::on_compress_selected))
+                .on_action(cx.listener(Self::on_extract_selected))
+                .on_action(cx.listener(Self::on_copy_selected_path))
+                .on_action(cx.listener(Self::on_open_terminal_here))
+                .on_action(cx.listener(Self::on_new_file))
+                .on_action(cx.listener(Self::on_new_folder))
+                .on_action(cx.listener(Self::on_fork_here))
+                .on_action(cx.listener(Self::on_about))
+                .on_action(cx.listener(Self::on_copy_files))
+                .on_action(cx.listener(Self::on_cut_files))
+                .on_action(cx.listener(Self::on_paste_files))
+                .on_action(cx.listener(Self::on_check_for_updates))
+                .on_action(cx.listener(Self::on_report_bug))
+                .on_action(cx.listener(Self::on_install_cli))
+                .on_action(cx.listener(Self::on_uninstall))
+                .on_action(cx.listener(Self::on_toggle_dev_tools))
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        crate::app_lock::touch();
+                        if window.focused(cx).is_none() {
+                            this.focus_main(window, cx);
+                        }
+                    }),
+                )
+                .on_mouse_move(|_, _, _| crate::app_lock::touch())
+                .on_scroll(|_, _, _| crate::app_lock::touch())
+                .capture_key_down(|_, _, _| crate::app_lock::touch())
+                // Mouse side buttons walk the history, like in Finder.
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back),
+                    cx.listener(|this, _, window, cx| this.go_back(window, cx)),
+                )
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Forward),
+                    cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
+                )
+                .on_mouse_up_out(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.complete_pending_drop(window, cx)),
+                )
+                .flex()
+                .flex_col()
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .border_1()
+                .border_color(gpui_kit::transparent_black())
+                .focus_visible(|style| style.border_color(palette.accent))
+                .relative()
+                .bg(backdrop_color.unwrap_or(palette.window))
+                .text_color(palette.text)
+                .children(backdrop_image.map(|path| {
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(gpui_kit::StyledImage::object_fit(
+                            gpui_kit::img(path).size_full(),
+                            gpui_kit::ObjectFit::Cover,
+                        ))
+                }))
+                .child(self.render_title_bar(palette, cx))
+                .children(self.render_folder_picker_bar(palette, cx))
+                .child(
+                    div().flex_1().min_h_0().child(
+                        h_resizable("workspace-panels")
+                            .child(
+                                resizable_panel()
+                                    .size(px(218.))
+                                    .size_range(px(184.)..px(280.))
+                                    .fixed()
+                                    .child(self.render_sidebar(palette, cx)),
+                            )
+                            .child(
+                                resizable_panel().child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .size_full()
+                                        .min_w_0()
+                                        .min_h_0()
+                                        .child(self.render_tabs(palette, cx))
+                                        .children(
+                                            panel
+                                                .map(|panel| div().flex_1().min_h_0().child(panel)),
+                                        )
+                                        .children(
+                                            (!has_panel).then(|| self.render_toolbar(palette, cx)),
+                                        )
+                                        .children(
+                                            (!has_panel)
+                                                .then(|| self.render_drop_area(palette, cx)),
+                                        ),
+                                ),
+                            )
+                            .child(
+                                resizable_panel()
+                                    .visible(inspector_visible)
+                                    .size(px(292.))
+                                    .size_range(px(252.)..px(380.))
+                                    .fixed()
+                                    .child(self.render_inspector(palette, cx)),
                             ),
-                        )
-                        .child(
-                            resizable_panel()
-                                .visible(inspector_visible)
-                                .size(px(292.))
-                                .size_range(px(252.)..px(380.))
-                                .fixed()
-                                .child(self.render_inspector(palette, cx)),
-                        ),
-                ),
-            )
-            .children(self.render_console(palette, cx))
-            .children(self.render_notifications(palette, cx))
-            .child(self.render_status_bar(palette, cx))
-            // Last and deferred: toasts paint over everything, dialogs too.
-            .children(self.render_toasts(palette, cx))
-            .into_any_element()
+                    ),
+                )
+                .children(self.render_console(palette, cx))
+                .children(self.render_notifications(palette, cx))
+                .child(self.render_status_bar(palette, cx))
+                .children(
+                    self.appearance
+                        .read(cx)
+                        .developer
+                        .show_fps_counter
+                        .then(|| gpui_fps::fps_monitor(window, cx)),
+                )
+                // Last and deferred: toasts paint over everything, dialogs too.
+                .children(self.render_toasts(palette, cx)),
+        )
+        .into_any_element()
     }
-
 }
 
 impl FileExplorer {
     /// Every window of a locked Files shows only this: nothing of the files.
-    fn render_lock_screen(&mut self, palette: crate::palette::Palette, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_lock_screen(
+        &mut self,
+        palette: crate::palette::Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         use gpui_kit::component::button::{Button, ButtonVariants as _};
         let language = self.appearance.read(cx).language;
         let tr = |en: &'static str, ru: &'static str| crate::settings::localized(language, en, ru);
-        // Ask at once in the window in front; the others wait for its answer.
-        if window.is_window_active() && !crate::app_lock::checking() && !self.lock_asked {
-            self.lock_asked = true;
+        // Ask at once in the window in front, once per lock: a cancel means
+        // "not now", so then it waits for Unlock. The others wait for its answer.
+        let lock = crate::app_lock::generation();
+        if window.is_window_active()
+            && !crate::app_lock::checking()
+            && crate::app_lock::auto_ask(lock)
+            && self.lock_asked != Some(lock)
+        {
+            self.lock_asked = Some(lock);
             self.unlock(cx);
         }
         let error = self.lock_error.clone();
@@ -2036,14 +2426,33 @@ impl FileExplorer {
             .items_center()
             .justify_center()
             .gap_4()
-            .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Lock).size(px(48.)).text_color(palette.accent))
-            .child(div().text_xl().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.text).child(tr("Files is locked", "Files заблокирован")))
-            .child(div().text_sm().text_color(palette.muted).child(tr(unlock_hint(), unlock_hint_ru())))
+            .child(
+                gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Lock)
+                    .size(px(48.))
+                    .text_color(palette.accent),
+            )
+            .child(
+                div()
+                    .text_xl()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .text_color(palette.text)
+                    .child(tr("Files is locked", "Files заблокирован")),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(palette.muted)
+                    .child(tr(unlock_hint(), unlock_hint_ru())),
+            )
             .child(
                 Button::new("unlock-files")
                     .primary()
                     .icon(gpui_kit::assets::IconName::LockOpen)
-                    .label(if crate::app_lock::checking() { tr("Waiting for you…", "Ожидание…") } else { tr("Unlock", "Разблокировать") })
+                    .label(if crate::app_lock::checking() {
+                        tr("Waiting for you…", "Ожидание…")
+                    } else {
+                        tr("Unlock", "Разблокировать")
+                    })
                     .disabled(crate::app_lock::checking())
                     .on_click(cx.listener(|this, _, _, cx| this.unlock(cx))),
             )
@@ -2052,20 +2461,28 @@ impl FileExplorer {
 
     fn unlock(&mut self, cx: &mut Context<Self>) {
         let language = self.appearance.read(cx).language;
-        let reason = crate::settings::localized(language, "unlock Files", "разблокировать Files").to_string();
+        let reason = crate::settings::localized(language, "unlock Files", "разблокировать Files")
+            .to_string();
         let answer = std::sync::Arc::new(std::sync::Mutex::new(None::<Result<bool, String>>));
         let filled = answer.clone();
-        crate::app_lock::check(reason, move |result| *filled.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result));
+        crate::app_lock::check(reason, move |result| {
+            *filled
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result)
+        });
         cx.notify();
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
-                let result = answer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(150))
+                    .await;
+                let result = answer
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take();
                 if let Some(result) = result {
                     let _ = this.update(cx, |this, cx| {
                         this.lock_error = result.err();
-                        // Locked again later: ask again then.
-                        this.lock_asked = false;
                         cx.notify();
                     });
                     return;
@@ -2171,22 +2588,13 @@ mod tests {
         let (view, cx) = pro_window();
         let middle = cx.read(|app| view.read(app).selected.clone());
         cx.simulate_keystrokes("down");
-        assert_ne!(
-            cx.read(|app| view.read(app).selected.clone()),
-            middle
-        );
+        assert_ne!(cx.read(|app| view.read(app).selected.clone()), middle);
         cx.simulate_keystrokes("up");
-        assert_eq!(
-            cx.read(|app| view.read(app).selected.clone()),
-            middle
-        );
+        assert_eq!(cx.read(|app| view.read(app).selected.clone()), middle);
 
         // Left/Right must not change the selection in Pro.
         cx.simulate_keystrokes("left right");
-        assert_eq!(
-            cx.read(|app| view.read(app).selected.clone()),
-            middle
-        );
+        assert_eq!(cx.read(|app| view.read(app).selected.clone()), middle);
 
         // Up from the first row selects the ".." parent row, Enter navigates up.
         let location = cx.read(|app| view.read(app).current);
@@ -2258,13 +2666,22 @@ mod tests {
         // The click may land on empty space and clear the selection; the ".."
         // row then counts as a selection too.
         let state = |cx: &mut VisualTestContext| {
-            cx.read(|app| (view.read(app).selected.clone(), view.read(app).parent_selected))
+            cx.read(|app| {
+                (
+                    view.read(app).selected.clone(),
+                    view.read(app).parent_selected,
+                )
+            })
         };
         let after_click = state(cx);
         let focused = cx.update(|window, cx| window.focused(cx).is_some());
         assert!(focused, "click left the window unfocused");
         cx.simulate_keystrokes("down");
-        assert_ne!(state(cx), after_click, "down after click did not change selection");
+        assert_ne!(
+            state(cx),
+            after_click,
+            "down after click did not change selection"
+        );
     }
 
     #[test]
@@ -2343,7 +2760,9 @@ mod tests {
     }
 
     /// A real (dialog-capable) explorer window showing `dir` in Pro mode.
-    fn rooted_window(dir: &std::path::Path) -> (Entity<FileExplorer>, &'static mut VisualTestContext) {
+    fn rooted_window(
+        dir: &std::path::Path,
+    ) -> (Entity<FileExplorer>, &'static mut VisualTestContext) {
         let cx = Box::leak(Box::new(TestAppContext::single()));
         cx.update(|cx| {
             gpui_kit::init(cx);
@@ -2385,11 +2804,17 @@ mod tests {
 
         // A file keeps its suggested ".txt": only the stem is selected.
         for (folder, name) in [(false, "draft.txt"), (true, "assets")] {
-            view.update_in(cx, |this, window, cx| this.open_create_dialog(location, folder, window, cx));
+            view.update_in(cx, |this, window, cx| {
+                this.open_create_dialog(location, folder, window, cx)
+            });
             cx.run_until_parked();
             assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
             // The suggested name is pre-selected: typing replaces it directly.
-            let typed = if folder { name } else { name.trim_end_matches(".txt") };
+            let typed = if folder {
+                name
+            } else {
+                name.trim_end_matches(".txt")
+            };
             cx.simulate_input(typed);
             cx.simulate_keystrokes("enter");
             cx.run_until_parked();
@@ -2398,13 +2823,20 @@ mod tests {
             assert!(path.exists(), "{name} was not created");
             assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
             let selected = cx.read(|app| view.read(app).selected.clone());
-            assert_eq!(selected.and_then(|id| crate::model::entry(&id)).map(|entry| entry.name.clone()).as_deref(), Some(name));
+            assert_eq!(
+                selected
+                    .and_then(|id| crate::model::entry(&id))
+                    .map(|entry| entry.name.clone())
+                    .as_deref(),
+                Some(name)
+            );
         }
     }
 
     #[test]
     fn enter_in_delete_dialog_deletes_instead_of_cancelling() {
-        let dir = std::env::temp_dir().join(format!("file-force-enter-delete-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-enter-delete-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("doomed.txt");
@@ -2440,30 +2872,104 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-backspace" } else { "delete" });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-backspace"
+        } else {
+            "delete"
+        });
         cx.run_until_parked();
-        assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "dialog did not open");
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "dialog did not open"
+        );
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         assert!(!file.exists(), "enter did not delete the file");
-        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)), "dialog stayed open");
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "dialog stayed open"
+        );
     }
 
     fn secondary() -> gpui_kit::Modifiers {
         if cfg!(target_os = "macos") {
-            gpui_kit::Modifiers { platform: true, ..Default::default() }
+            gpui_kit::Modifiers {
+                platform: true,
+                ..Default::default()
+            }
         } else {
-            gpui_kit::Modifiers { control: true, ..Default::default() }
+            gpui_kit::Modifiers {
+                control: true,
+                ..Default::default()
+            }
         }
+    }
+
+    #[test]
+    fn pressing_a_selected_row_keeps_the_selection_for_a_drag() {
+        let (view, cx) = pro_window();
+        let ids: Vec<_> = cx.read(|app| {
+            view.read(app)
+                .current_entries()
+                .iter()
+                .filter(|entry| entry.path.is_some())
+                .map(|entry| entry.id.clone())
+                .collect()
+        });
+        let (a, b) = (ids[0].clone(), ids[1].clone());
+        view.update(cx, |this, cx| {
+            this.appearance.update(cx, |settings, _| {
+                settings.behavior.clear_selection_on_empty_click = true
+            });
+            this.click_entry(&a, Default::default(), cx);
+            this.click_entry(&b, secondary(), cx);
+        });
+        let press = gpui_kit::MouseDownEvent {
+            button: gpui_kit::MouseButton::Left,
+            ..Default::default()
+        };
+        // A press on a row: its listener runs first, then the list's.
+        view.update(cx, |this, cx| {
+            this.row_pressed = true;
+            this.clear_selection_on_background(&press, None, cx);
+        });
+        let dragged = cx.read(|app| {
+            let this = view.read(app);
+            let entry = this
+                .current_entries()
+                .into_iter()
+                .find(|entry| entry.id == a)
+                .unwrap();
+            crate::views::drag_drop::dragged_paths(this, &entry)
+        });
+        assert_eq!(
+            dragged.len(),
+            2,
+            "both selected files go into the drag: {dragged:?}"
+        );
+        // A press on empty space still clears it.
+        view.update(cx, |this, cx| {
+            this.clear_selection_on_background(&press, None, cx)
+        });
+        assert!(cx.read(|app| view.read(app).selection_ids().is_empty()));
     }
 
     #[test]
     fn shift_selects_ranges_and_cmd_toggles_items() {
         let (view, cx) = pro_window();
-        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id.clone()).collect());
+        let ids: Vec<_> = cx.read(|app| {
+            view.read(app)
+                .current_entries()
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect()
+        });
         let [a, b, c] = [&*ids[0], &*ids[1], &*ids[2]];
         let selection = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).selection_ids());
-        let shift = gpui_kit::Modifiers { shift: true, ..Default::default() };
+        let shift = gpui_kit::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
 
         view.update(cx, |this, cx| this.click_entry(&a, Default::default(), cx));
         assert_eq!(selection(cx), [a]);
@@ -2483,7 +2989,11 @@ mod tests {
         cx.simulate_keystrokes("shift-down shift-down");
         assert_eq!(selection(cx), [b, c], "shift-down extends from the anchor");
 
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-a" } else { "ctrl-a" });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        });
         assert_eq!(selection(cx), [a, b, c]);
 
         // Right-click inside the selection keeps it for the context menu.
@@ -2493,19 +3003,30 @@ mod tests {
 
     #[test]
     fn deleting_a_multi_selection_removes_every_item() {
-        let dir = std::env::temp_dir().join(format!("file-force-multi-delete-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-multi-delete-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for name in ["a.txt", "b.txt", "keep.txt"] {
             std::fs::write(dir.join(name), name).unwrap();
         }
         let (view, cx) = rooted_window(&dir);
-        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id.clone()).collect());
+        let ids: Vec<_> = cx.read(|app| {
+            view.read(app)
+                .current_entries()
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect()
+        });
         view.update(cx, |this, cx| {
             this.click_entry(&ids[0], Default::default(), cx);
             this.click_entry(&ids[1], secondary(), cx);
         });
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-backspace" } else { "delete" });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-backspace"
+        } else {
+            "delete"
+        });
         cx.run_until_parked();
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
@@ -2517,7 +3038,8 @@ mod tests {
 
     #[test]
     fn one_protected_item_blocks_the_whole_batch() {
-        let dir = std::env::temp_dir().join(format!("file-force-protected-batch-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-protected-batch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("free.txt"), "x").unwrap();
@@ -2525,21 +3047,35 @@ mod tests {
         let (view, cx) = rooted_window(&dir);
         view.update(cx, |this, cx| {
             let guarded = dir.join("guarded.txt").to_string_lossy().into_owned();
-            this.appearance.update(cx, |settings, _| settings.deletion.protected.push(guarded));
+            this.appearance
+                .update(cx, |settings, _| settings.deletion.protected.push(guarded));
             this.select_all_for_test(cx);
         });
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-backspace" } else { "delete" });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-backspace"
+        } else {
+            "delete"
+        });
         cx.run_until_parked();
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
-        assert!(dir.join("free.txt").exists(), "batch with a protected item must delete nothing");
+        assert!(
+            dir.join("free.txt").exists(),
+            "batch with a protected item must delete nothing"
+        );
         assert!(dir.join("guarded.txt").exists());
     }
 
     #[test]
     fn real_mouse_clicks_with_modifiers_build_a_multi_selection() {
         let (view, cx) = pro_window();
-        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id.clone()).collect());
+        let ids: Vec<_> = cx.read(|app| {
+            view.read(app)
+                .current_entries()
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect()
+        });
         let names = ["a.txt", "b.txt", "c.txt"];
         let center = |cx: &mut VisualTestContext, name: &str| {
             cx.debug_bounds(Box::leak(format!("pro-row-{name}").into_boxed_str()))
@@ -2553,7 +3089,13 @@ mod tests {
         assert_eq!(selection(cx), [ids[0].clone()]);
 
         let c = center(cx, names[2]);
-        cx.simulate_click(c, gpui_kit::Modifiers { shift: true, ..Default::default() });
+        cx.simulate_click(
+            c,
+            gpui_kit::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(selection(cx), ids, "shift-click");
 
         let b = center(cx, names[1]);
@@ -2566,7 +3108,13 @@ mod tests {
         let (view, cx) = pro_window();
         view.update(cx, |this, cx| this.set_mode(ViewMode::Expressive, cx));
         cx.run_until_parked();
-        let ids: Vec<_> = cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.id.clone()).collect());
+        let ids: Vec<_> = cx.read(|app| {
+            view.read(app)
+                .current_entries()
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect()
+        });
         let center = |cx: &mut VisualTestContext, name: &str| {
             cx.debug_bounds(Box::leak(format!("card-{name}").into_boxed_str()))
                 .expect("card rendered")
@@ -2576,19 +3124,34 @@ mod tests {
         let a = center(cx, "a.txt");
         cx.simulate_click(a, Default::default());
         let c = center(cx, "c.txt");
-        cx.simulate_click(c, gpui_kit::Modifiers { shift: true, ..Default::default() });
+        cx.simulate_click(
+            c,
+            gpui_kit::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(selection(cx), ids, "shift-click on cards");
         let b = center(cx, "b.txt");
         cx.simulate_click(b, secondary());
-        assert_eq!(selection(cx), [ids[0].clone(), ids[2].clone()], "cmd-click on cards");
+        assert_eq!(
+            selection(cx),
+            [ids[0].clone(), ids[2].clone()],
+            "cmd-click on cards"
+        );
     }
 
     #[test]
     fn settings_open_as_a_modal_that_enter_does_not_close() {
         let dir = std::env::temp_dir();
         let (_view, cx) = rooted_window(&dir);
-        let open = |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-," });
+        let open =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-,"
+        } else {
+            "ctrl-,"
+        });
         cx.run_until_parked();
         assert!(open(cx), "settings did not open as a dialog");
         cx.simulate_keystrokes("enter");
@@ -2602,11 +3165,17 @@ mod tests {
     #[test]
     fn protected_paths_list_scrolls_with_the_wheel() {
         let (_view, cx) = rooted_window(&std::env::temp_dir());
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-," });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-,"
+        } else {
+            "ctrl-,"
+        });
         cx.run_until_parked();
         cx.simulate_keystrokes("down down down down");
         cx.run_until_parked();
-        let before = cx.debug_bounds("protected-list-content").expect("deletion tab shows the list");
+        let before = cx
+            .debug_bounds("protected-list-content")
+            .expect("deletion tab shows the list");
         let over_list = point(before.origin.x + px(40.), before.origin.y + px(60.));
         cx.simulate_event(gpui_kit::ScrollEvent {
             position: over_list,
@@ -2615,11 +3184,17 @@ mod tests {
         });
         cx.run_until_parked();
         let after = cx.debug_bounds("protected-list-content").unwrap();
-        assert!(after.origin.y < before.origin.y, "list did not scroll: {before:?} -> {after:?}");
+        assert!(
+            after.origin.y < before.origin.y,
+            "list did not scroll: {before:?} -> {after:?}"
+        );
     }
 
     fn double_click(cx: &mut VisualTestContext, selector: &'static str) {
-        let position = cx.debug_bounds(selector).expect("element rendered").center();
+        let position = cx
+            .debug_bounds(selector)
+            .expect("element rendered")
+            .center();
         for click_count in [1, 2] {
             cx.simulate_event(gpui_kit::MouseDownEvent {
                 position,
@@ -2638,9 +3213,15 @@ mod tests {
     }
 
     /// Forks are made in the background; wait for it and return the fork folder.
-    fn fork_and_wait(view: &Entity<FileExplorer>, cx: &mut VisualTestContext, folder: &std::path::Path) -> std::path::PathBuf {
+    fn fork_and_wait(
+        view: &Entity<FileExplorer>,
+        cx: &mut VisualTestContext,
+        folder: &std::path::Path,
+    ) -> std::path::PathBuf {
         let location = Location::from_path(folder);
-        view.update_in(cx, |this, window, cx| this.fork_folder(location, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.fork_folder(location, window, cx)
+        });
         for _ in 0..200 {
             cx.run_until_parked();
             if let Some(path) = cx.read(|app| view.read(app).current.path())
@@ -2660,7 +3241,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("original.txt"), "keep").unwrap();
         let listing = |dir: &std::path::Path| {
-            let mut names: Vec<_> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+            let mut names: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
             names.sort();
             names
         };
@@ -2669,13 +3253,25 @@ mod tests {
         let fork = fork_and_wait(&view, cx, &dir);
         assert_ne!(fork, dir);
         let names = |view: &Entity<FileExplorer>, cx: &mut VisualTestContext| {
-            cx.read(|app| view.read(app).current_entries().iter().map(|entry| entry.name.clone()).collect::<Vec<_>>())
+            cx.read(|app| {
+                view.read(app)
+                    .current_entries()
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect::<Vec<_>>()
+            })
         };
-        assert_eq!(names(&view, cx), ["original.txt"], "the fork shows the original's files");
+        assert_eq!(
+            names(&view, cx),
+            ["original.txt"],
+            "the fork shows the original's files"
+        );
 
         // New file in the fork, through the real dialog.
         let location = cx.read(|app| view.read(app).current);
-        view.update_in(cx, |this, window, cx| this.open_create_dialog(location, false, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.open_create_dialog(location, false, window, cx)
+        });
         cx.run_until_parked();
         cx.simulate_input("draft");
         cx.simulate_keystrokes("enter");
@@ -2684,24 +3280,42 @@ mod tests {
 
         // Deleting inside the fork deletes only the fork's copy.
         let original = cx.read(|app| {
-            view.read(app).current_entries().into_iter().find(|entry| entry.name == "original.txt").unwrap().id.clone()
+            view.read(app)
+                .current_entries()
+                .into_iter()
+                .find(|entry| entry.name == "original.txt")
+                .unwrap()
+                .id
+                .clone()
         });
         view.update(cx, |this, cx| this.select_entry(&original, cx));
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-backspace" } else { "delete" });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-backspace"
+        } else {
+            "delete"
+        });
         cx.run_until_parked();
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         assert_eq!(names(&view, cx), ["draft.txt"]);
         assert_eq!(listing(&dir), before, "fork changes reached the original");
-        assert_eq!(std::fs::read_to_string(dir.join("original.txt")).unwrap(), "keep");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("original.txt")).unwrap(),
+            "keep"
+        );
 
         // Discard deletes the copy and returns to the untouched original.
         let id = crate::forks::fork_of(&fork).unwrap();
-        view.update_in(cx, |this, window, cx| this.open_discard_fork_dialog(id, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.open_discard_fork_dialog(id, window, cx)
+        });
         cx.run_until_parked();
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
-        assert_eq!(cx.read(|app| view.read(app).current), Location::from_path(&dir));
+        assert_eq!(
+            cx.read(|app| view.read(app).current),
+            Location::from_path(&dir)
+        );
         assert!(!fork.exists(), "discard left the copy behind");
         assert_eq!(listing(&dir), before);
     }
@@ -2715,20 +3329,36 @@ mod tests {
         std::fs::write(&file, "hello").unwrap();
         let (view, cx) = rooted_window(&dir);
         // The record is shared by parallel tests; count only this file.
-        let opened = || crate::default_apps::opened().lock().unwrap().iter().filter(|(path, _)| *path == file).count();
+        let opened = || {
+            crate::default_apps::opened()
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(path, _)| *path == file)
+                .count()
+        };
 
         double_click(cx, "pro-row-notes.txt");
-        assert_eq!(opened(), 1, "double-click on a Pro row did not open the file");
+        assert_eq!(
+            opened(),
+            1,
+            "double-click on a Pro row did not open the file"
+        );
 
         view.update(cx, |this, cx| this.set_mode(ViewMode::Expressive, cx));
         cx.run_until_parked();
         double_click(cx, "card-notes.txt");
-        assert_eq!(opened(), 2, "double-click on an Expressive card did not open the file");
+        assert_eq!(
+            opened(),
+            2,
+            "double-click on an Expressive card did not open the file"
+        );
     }
 
     #[test]
     fn choosing_a_default_app_applies_at_once_and_is_used_on_double_click() {
-        let dir = std::env::temp_dir().join(format!("file-force-default-app-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-default-app-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("notes.txt");
@@ -2742,17 +3372,24 @@ mod tests {
         let settings = cx.update(|window, cx| {
             cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone()))
         });
-        settings.update(cx, |settings, cx| settings.set_default_app("txt", Some(app.clone()), cx));
+        settings.update(cx, |settings, cx| {
+            settings.set_default_app("txt", Some(app.clone()), cx)
+        });
         // No Save pressed: the choice is already live and on disk.
         let live = cx.read(|cx| appearance.read(cx).default_apps.get("txt").cloned());
         assert_eq!(live.as_deref(), Some(app.to_string_lossy().as_ref()));
         let saved = std::fs::read_to_string(crate::settings::settings_path().unwrap()).unwrap();
-        assert!(saved.contains("[default_apps]") && saved.contains("Editor.app"), "{saved}");
+        assert!(
+            saved.contains("[default_apps]") && saved.contains("Editor.app"),
+            "{saved}"
+        );
 
         double_click(cx, "pro-row-notes.txt");
         let opened = crate::default_apps::opened().lock().unwrap().clone();
         assert!(
-            opened.iter().any(|(path, used)| *path == file && used.as_deref() == Some("Editor")),
+            opened
+                .iter()
+                .any(|(path, used)| *path == file && used.as_deref() == Some("Editor")),
             "{opened:?}"
         );
     }
@@ -2760,27 +3397,42 @@ mod tests {
     #[test]
     fn settings_save_writes_and_stays_open_while_cancel_closes() {
         let (_view, cx) = rooted_window(&std::env::temp_dir());
-        let open = |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+        let open =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
         let click = |cx: &mut VisualTestContext, button: &'static str| {
-            let center = cx.debug_bounds(button).expect("footer button rendered").center();
+            let center = cx
+                .debug_bounds(button)
+                .expect("footer button rendered")
+                .center();
             cx.simulate_click(center, Default::default());
             cx.run_until_parked();
         };
         let settings_file = crate::settings::settings_path().unwrap();
         let _ = std::fs::remove_file(&settings_file);
 
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-," });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-,"
+        } else {
+            "ctrl-,"
+        });
         cx.run_until_parked();
         click(cx, "settings-cancel");
         assert!(!open(cx), "Cancel did not close settings");
         assert!(!settings_file.exists(), "Cancel wrote settings");
 
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-," });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-,"
+        } else {
+            "ctrl-,"
+        });
         cx.run_until_parked();
         assert!(open(cx), "settings did not reopen from the keyboard");
         // Nothing changed: Save is disabled and writes nothing.
         click(cx, "settings-save");
-        assert!(!settings_file.exists(), "Save without changes wrote settings");
+        assert!(
+            !settings_file.exists(),
+            "Save without changes wrote settings"
+        );
         assert!(open(cx), "Save must not close settings");
     }
 
@@ -2805,29 +3457,54 @@ mod tests {
         let settings = cx.update(|window, cx| {
             cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone()))
         });
-        let taken = if cfg!(target_os = "macos") { "cmd-w" } else { "ctrl-w" };
-        settings.update(cx, |settings, cx| settings.set_shortcut("explorer.new_tab", Some(taken.to_string()), cx));
+        let taken = if cfg!(target_os = "macos") {
+            "cmd-w"
+        } else {
+            "ctrl-w"
+        };
+        settings.update(cx, |settings, cx| {
+            settings.set_shortcut("explorer.new_tab", Some(taken.to_string()), cx)
+        });
         let keymap = cx.read(|cx| appearance.read(cx).keymap.clone());
-        assert!(keymap.is_empty(), "a conflicting shortcut was saved: {keymap:?}");
+        assert!(
+            keymap.is_empty(),
+            "a conflicting shortcut was saved: {keymap:?}"
+        );
         let error = cx.read(|cx| settings.read(cx).hotkey_error_for_test());
         assert!(error.is_some_and(|error| error.contains("Close tab")));
         // A free shortcut still works.
-        let free = if cfg!(target_os = "macos") { "cmd-y" } else { "ctrl-y" };
-        settings.update(cx, |settings, cx| settings.set_shortcut("explorer.new_tab", Some(free.to_string()), cx));
-        assert_eq!(cx.read(|cx| appearance.read(cx).keymap.get("explorer.new_tab").cloned()).as_deref(), Some(free));
+        let free = if cfg!(target_os = "macos") {
+            "cmd-y"
+        } else {
+            "ctrl-y"
+        };
+        settings.update(cx, |settings, cx| {
+            settings.set_shortcut("explorer.new_tab", Some(free.to_string()), cx)
+        });
+        assert_eq!(
+            cx.read(|cx| appearance.read(cx).keymap.get("explorer.new_tab").cloned())
+                .as_deref(),
+            Some(free)
+        );
     }
 
     #[test]
     fn space_opens_quick_look_and_arrows_browse_inside_it() {
-        let dir = std::env::temp_dir().join(format!("file-force-quick-look-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-quick-look-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "first").unwrap();
         std::fs::write(dir.join("b.txt"), "second").unwrap();
         let (view, cx) = rooted_window(&dir);
-        let open = |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+        let open =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
         let selected = |cx: &mut VisualTestContext| {
-            cx.read(|app| view.read(app).selected_entry_any().map(|entry| entry.name.clone()))
+            cx.read(|app| {
+                view.read(app)
+                    .selected_entry_any()
+                    .map(|entry| entry.name.clone())
+            })
         };
         let first = cx.read(|app| view.read(app).current_entries()[0].id.clone());
         view.update(cx, |this, cx| this.select_entry(&first, cx));
@@ -2837,7 +3514,11 @@ mod tests {
         assert!(open(cx), "space did not open Quick Look");
         cx.simulate_keystrokes("down");
         cx.run_until_parked();
-        assert_eq!(selected(cx).as_deref(), Some("b.txt"), "down did not move to the next file");
+        assert_eq!(
+            selected(cx).as_deref(),
+            Some("b.txt"),
+            "down did not move to the next file"
+        );
         assert!(open(cx), "browsing closed the panel");
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
@@ -2852,7 +3533,11 @@ mod tests {
     fn rebinding_a_shortcut_moves_the_action_to_the_new_keys() {
         let (view, cx) = rooted_window(&std::env::temp_dir());
         let tabs = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).tabs.len());
-        let (old, new) = if cfg!(target_os = "macos") { ("cmd-t", "cmd-y") } else { ("ctrl-t", "ctrl-y") };
+        let (old, new) = if cfg!(target_os = "macos") {
+            ("cmd-t", "cmd-y")
+        } else {
+            ("ctrl-t", "ctrl-y")
+        };
 
         cx.simulate_keystrokes(old);
         assert_eq!(tabs(cx), 2, "default shortcut works");
@@ -2861,7 +3546,9 @@ mod tests {
         let settings = cx.update(|window, cx| {
             cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone()))
         });
-        settings.update(cx, |settings, cx| settings.set_shortcut("explorer.new_tab", Some(new.to_string()), cx));
+        settings.update(cx, |settings, cx| {
+            settings.set_shortcut("explorer.new_tab", Some(new.to_string()), cx)
+        });
         cx.run_until_parked();
         // The settings view took focus; in the app closing it hands focus back.
         view.update_in(cx, |this, window, cx| this.focus_main(window, cx));
@@ -2874,7 +3561,9 @@ mod tests {
         assert!(saved.contains("[keymap]") && saved.contains(new), "{saved}");
 
         // Resetting brings the default back.
-        settings.update(cx, |settings, cx| settings.set_shortcut("explorer.new_tab", None, cx));
+        settings.update(cx, |settings, cx| {
+            settings.set_shortcut("explorer.new_tab", None, cx)
+        });
         cx.run_until_parked();
         view.update_in(cx, |this, window, cx| this.focus_main(window, cx));
         cx.simulate_keystrokes(old);
@@ -2885,7 +3574,8 @@ mod tests {
 
     #[test]
     fn forking_a_selected_folder_and_applying_writes_the_changes() {
-        let dir = std::env::temp_dir().join(format!("file-force-fork-apply-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-fork-apply-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("project")).unwrap();
         std::fs::write(dir.join("project/old.txt"), "old").unwrap();
@@ -2895,17 +3585,31 @@ mod tests {
         // A terminal or editor in the fork would do exactly this.
         std::fs::write(fork.join("new.md"), "new").unwrap();
         std::fs::remove_file(fork.join("old.txt")).unwrap();
-        assert!(dir.join("project/old.txt").exists(), "nothing is written before Apply");
+        assert!(
+            dir.join("project/old.txt").exists(),
+            "nothing is written before Apply"
+        );
 
         let id = crate::forks::fork_of(&fork).unwrap();
-        view.update_in(cx, |this, window, cx| this.open_apply_fork_dialog(id, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.open_apply_fork_dialog(id, window, cx)
+        });
         cx.run_until_parked();
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
 
-        assert_eq!(std::fs::read_to_string(dir.join("project/new.md")).unwrap(), "new");
-        assert!(!dir.join("project/old.txt").exists(), "removed file is still there");
-        assert_eq!(cx.read(|app| view.read(app).current), Location::from_path(&dir.join("project")));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("project/new.md")).unwrap(),
+            "new"
+        );
+        assert!(
+            !dir.join("project/old.txt").exists(),
+            "removed file is still there"
+        );
+        assert_eq!(
+            cx.read(|app| view.read(app).current),
+            Location::from_path(&dir.join("project"))
+        );
         assert!(!fork.exists(), "fork stays after Apply");
     }
 
@@ -2929,24 +3633,43 @@ mod tests {
         let (view, cx) = pro_window();
         let first = cx.read(|app| view.read(app).current_entries()[0].id.clone());
         view.update(cx, |this, cx| this.select_entry(&first, cx));
-        let keys = if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" };
-        let notice = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).notice.clone()).unwrap_or_default();
+        let keys = if cfg!(target_os = "macos") {
+            "cmd-alt-c"
+        } else {
+            "ctrl-alt-c"
+        };
+        let notice = |cx: &mut VisualTestContext| {
+            cx.read(|app| view.read(app).notice.clone())
+                .unwrap_or_default()
+        };
 
         cx.simulate_keystrokes(keys);
-        assert_eq!(notice(cx), "Path copied", "Copy extension shortcut did not run");
+        assert_eq!(
+            notice(cx),
+            "Path copied",
+            "Copy extension shortcut did not run"
+        );
 
         view.update(cx, |this, cx| {
-            this.appearance.update(cx, |settings, _| settings.extensions.copy = false);
+            this.appearance
+                .update(cx, |settings, _| settings.extensions.copy = false);
             this.notice = None;
         });
         cx.simulate_keystrokes(keys);
-        assert!(notice(cx).contains("Copy extension is disabled"), "{}", notice(cx));
+        assert!(
+            notice(cx).contains("Copy extension is disabled"),
+            "{}",
+            notice(cx)
+        );
     }
 
     #[test]
     fn clicking_empty_space_clears_the_selection_unless_disabled() {
         let (view, cx) = pro_window();
-        let row = cx.debug_bounds("pro-row-a.txt").expect("row rendered").center();
+        let row = cx
+            .debug_bounds("pro-row-a.txt")
+            .expect("row rendered")
+            .center();
         let list = cx.debug_bounds("pro-scroll-probe").expect("list rendered");
         // Below the last row, still inside the scroll area.
         let empty = point(list.center().x, list.origin.y + list.size.height + px(60.));
@@ -2955,19 +3678,30 @@ mod tests {
         cx.simulate_click(row, Default::default());
         assert_eq!(selected(cx).len(), 1);
         cx.simulate_click(empty, Default::default());
-        assert!(selected(cx).is_empty(), "empty-space click kept the selection");
-        assert!(cx.read(|app| view.read(app).selected_entry().is_none()), "preview still shows the item");
+        assert!(
+            selected(cx).is_empty(),
+            "empty-space click kept the selection"
+        );
+        assert!(
+            cx.read(|app| view.read(app).selected_entry().is_none()),
+            "preview still shows the item"
+        );
 
         // A plain click on a row still selects it (the background press comes first).
         cx.simulate_click(row, Default::default());
         assert_eq!(selected(cx).len(), 1);
 
         view.update(cx, |this, cx| {
-            this.appearance
-                .update(cx, |settings, _| settings.behavior.clear_selection_on_empty_click = false)
+            this.appearance.update(cx, |settings, _| {
+                settings.behavior.clear_selection_on_empty_click = false
+            })
         });
         cx.simulate_click(empty, Default::default());
-        assert_eq!(selected(cx).len(), 1, "setting off: empty click must keep the selection");
+        assert_eq!(
+            selected(cx).len(),
+            1,
+            "setting off: empty click must keep the selection"
+        );
     }
 
     #[test]
@@ -2976,15 +3710,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let (view, cx) = rooted_window(&dir);
-        let n = if cfg!(target_os = "macos") { "cmd-n" } else { "ctrl-n" };
+        let n = if cfg!(target_os = "macos") {
+            "cmd-n"
+        } else {
+            "ctrl-n"
+        };
         let dialog_title_has = |cx: &mut VisualTestContext, folder: bool| {
             // The create dialog suggests "untitled folder" or "untitled.txt".
             let open = cx.update(|window, cx| window.has_active_dialog(cx));
-            open && cx.debug_bounds(if folder { "create-dialog-folder" } else { "create-dialog-file" }).is_some()
+            open && cx
+                .debug_bounds(if folder {
+                    "create-dialog-folder"
+                } else {
+                    "create-dialog-file"
+                })
+                .is_some()
         };
         let wait = |cx: &mut VisualTestContext| {
             // Longer than GPUI's pending-sequence timeout.
-            cx.executor().advance_clock(std::time::Duration::from_secs(2));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(2));
             cx.run_until_parked();
         };
 
@@ -2996,7 +3741,10 @@ mod tests {
 
         cx.simulate_keystrokes(&format!("{n} f"));
         wait(cx);
-        assert!(dialog_title_has(cx, true), "cmd-n f did not open New Folder");
+        assert!(
+            dialog_title_has(cx, true),
+            "cmd-n f did not open New Folder"
+        );
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
 
@@ -3004,7 +3752,9 @@ mod tests {
         let mut forked = None;
         for _ in 0..200 {
             cx.run_until_parked();
-            forked = cx.read(|app| view.read(app).current.path()).and_then(|path| crate::forks::fork_of(&path));
+            forked = cx
+                .read(|app| view.read(app).current.path())
+                .and_then(|path| crate::forks::fork_of(&path));
             if forked.is_some() {
                 break;
             }
@@ -3018,10 +3768,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("file-force-forks-off-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (view, cx) = rooted_window(&dir);
-        view.update(cx, |this, cx| this.appearance.update(cx, |settings, _| settings.extensions.forks = false));
-        view.update_in(cx, |this, window, cx| this.fork_folder(Location::from_path(&dir), window, cx));
-        assert_eq!(cx.read(|app| view.read(app).current), Location::from_path(&dir), "forked while disabled");
-        let notice = cx.read(|app| view.read(app).notice.clone()).unwrap_or_default();
+        view.update(cx, |this, cx| {
+            this.appearance
+                .update(cx, |settings, _| settings.extensions.forks = false)
+        });
+        view.update_in(cx, |this, window, cx| {
+            this.fork_folder(Location::from_path(&dir), window, cx)
+        });
+        assert_eq!(
+            cx.read(|app| view.read(app).current),
+            Location::from_path(&dir),
+            "forked while disabled"
+        );
+        let notice = cx
+            .read(|app| view.read(app).notice.clone())
+            .unwrap_or_default();
         assert!(notice.contains("Forks extension is disabled"), "{notice}");
     }
 
@@ -3039,11 +3800,24 @@ mod tests {
                 settings
             })
         });
-        let (view, cx) = cx.add_window_view(move |window, cx| FileExplorer::new(window, cx, appearance));
-        assert_eq!(cx.read(|app| view.read(app).mode), ViewMode::Pro, "window did not start in Pro");
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-t" } else { "ctrl-t" });
+        let (view, cx) =
+            cx.add_window_view(move |window, cx| FileExplorer::new(window, cx, appearance));
+        assert_eq!(
+            cx.read(|app| view.read(app).mode),
+            ViewMode::Pro,
+            "window did not start in Pro"
+        );
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-t"
+        } else {
+            "ctrl-t"
+        });
         assert_eq!(cx.read(|app| view.read(app).tabs.len()), 2);
-        assert_eq!(cx.read(|app| view.read(app).mode), ViewMode::Pro, "new tab did not start in Pro");
+        assert_eq!(
+            cx.read(|app| view.read(app).mode),
+            ViewMode::Pro,
+            "new tab did not start in Pro"
+        );
     }
 
     #[test]
@@ -3051,18 +3825,27 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("file-force-held-cmd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (view, cx) = rooted_window(&dir);
-        let keys = if cfg!(target_os = "macos") { "cmd-n cmd-f cmd-f" } else { "ctrl-n ctrl-f ctrl-f" };
+        let keys = if cfg!(target_os = "macos") {
+            "cmd-n cmd-f cmd-f"
+        } else {
+            "ctrl-n ctrl-f ctrl-f"
+        };
         cx.simulate_keystrokes(keys);
         let mut forked = None;
         for _ in 0..200 {
             cx.run_until_parked();
-            forked = cx.read(|app| view.read(app).current.path()).and_then(|path| crate::forks::fork_of(&path));
+            forked = cx
+                .read(|app| view.read(app).current.path())
+                .and_then(|path| crate::forks::fork_of(&path));
             if forked.is_some() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)), "opened the New File dialog instead");
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "opened the New File dialog instead"
+        );
         crate::forks::discard(forked.expect("holding cmd did not fork"));
     }
 
@@ -3081,13 +3864,28 @@ mod tests {
             });
         });
         cx.run_until_parked();
-        assert!(cx.update(|_, cx| cx.reduce_motion()), "reduce motion did not reach GPUI");
-        let explorer = |cx: &mut VisualTestContext| cx.read(|app| (view.read(app).palette(), view.read(app).effective_opacity()));
+        assert!(
+            cx.update(|_, cx| cx.reduce_motion()),
+            "reduce motion did not reach GPUI"
+        );
+        let explorer = |cx: &mut VisualTestContext| {
+            cx.read(|app| (view.read(app).palette(), view.read(app).effective_opacity()))
+        };
         let (palette, opacity) = explorer(cx);
-        assert!(palette.border.l > default_border.l, "high contrast did not brighten borders");
-        assert_eq!(palette.muted, palette.text, "secondary text is as strong as primary text");
+        assert!(
+            palette.border.l > default_border.l,
+            "high contrast did not brighten borders"
+        );
+        assert_eq!(
+            palette.muted, palette.text,
+            "secondary text is as strong as primary text"
+        );
         assert_eq!(opacity, 1.0, "high contrast keeps panels solid");
-        assert_eq!(cx.update(|window, _| window.rem_size()), px(16. * TextScale::Larger.factor()), "text size not applied");
+        assert_eq!(
+            cx.update(|window, _| window.rem_size()),
+            px(16. * TextScale::Larger.factor()),
+            "text size not applied"
+        );
 
         view.update(cx, |this, cx| {
             this.appearance.update(cx, |settings, cx| {
@@ -3098,7 +3896,11 @@ mod tests {
             });
         });
         cx.run_until_parked();
-        assert_eq!(explorer(cx).1, 1.0, "reduce transparency overrides Appearance opacity");
+        assert_eq!(
+            explorer(cx).1,
+            1.0,
+            "reduce transparency overrides Appearance opacity"
+        );
         assert!(!cx.update(|_, cx| cx.reduce_motion()));
         view.update(cx, |this, cx| {
             this.appearance.update(cx, |settings, cx| {
@@ -3107,7 +3909,10 @@ mod tests {
             });
         });
         cx.run_until_parked();
-        assert!((explorer(cx).1 - 0.6).abs() < 1e-6, "opacity comes back when nothing overrides it");
+        assert!(
+            (explorer(cx).1 - 0.6).abs() < 1e-6,
+            "opacity comes back when nothing overrides it"
+        );
 
         view.update(cx, |this, cx| {
             this.appearance.update(cx, |settings, cx| {
@@ -3116,7 +3921,10 @@ mod tests {
             });
         });
         cx.run_until_parked();
-        assert!(cx.update(|_, cx| cx.reduce_motion()), "power saving reduces motion independently of Accessibility");
+        assert!(
+            cx.update(|_, cx| cx.reduce_motion()),
+            "power saving reduces motion independently of Accessibility"
+        );
         assert!(!explorer(cx).0.shimmer, "power saving disables shimmer");
         view.update(cx, |this, cx| {
             this.appearance.update(cx, |settings, cx| {
@@ -3133,7 +3941,11 @@ mod tests {
     fn two_windows(
         left: &std::path::Path,
         right: &std::path::Path,
-    ) -> (Entity<FileExplorer>, Entity<FileExplorer>, &'static mut TestAppContext) {
+    ) -> (
+        Entity<FileExplorer>,
+        Entity<FileExplorer>,
+        &'static mut TestAppContext,
+    ) {
         let cx = Box::leak(Box::new(TestAppContext::single()));
         cx.update(|cx| {
             gpui_kit::init(cx);
@@ -3150,14 +3962,18 @@ mod tests {
             let appearance = appearance.clone();
             let location = Location::from_path(dir);
             cx.update(|cx| {
-                gpui_kit::open_window(crate::explorer_window_options(index), cx, move |window, cx| {
-                    cx.new(|cx| {
-                        let mut explorer = FileExplorer::new(window, cx, appearance.clone());
-                        explorer.current = location;
-                        explorer.mode = ViewMode::Pro;
-                        explorer
-                    })
-                })
+                gpui_kit::open_window(
+                    crate::explorer_window_options(index),
+                    cx,
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            let mut explorer = FileExplorer::new(window, cx, appearance.clone());
+                            explorer.current = location;
+                            explorer.mode = ViewMode::Pro;
+                            explorer
+                        })
+                    },
+                )
             })
             .unwrap()
         };
@@ -3181,7 +3997,8 @@ mod tests {
     #[test]
     fn copy_and_cut_in_one_window_paste_in_another() {
         let _clipboard = crate::transfer::clipboard_test_lock();
-        let root = std::env::temp_dir().join(format!("file-force-two-windows-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("file-force-two-windows-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (left, right) = (root.join("left"), root.join("right"));
         std::fs::create_dir_all(&left).unwrap();
@@ -3191,7 +4008,13 @@ mod tests {
         let (left_view, _right_view, cx) = two_windows(&left, &right);
         let select = |view: &Entity<FileExplorer>, cx: &mut TestAppContext, name: &str| {
             let id = cx.read(|app| {
-                view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id.clone()
+                view.read(app)
+                    .current_entries()
+                    .into_iter()
+                    .find(|entry| entry.name == name)
+                    .unwrap()
+                    .id
+                    .clone()
             });
             view.update(cx, |this, cx| this.select_entry(&id, cx));
         };
@@ -3201,18 +4024,36 @@ mod tests {
         left_view.update(cx, |this, cx| this.put_on_clipboard(false, cx));
         let windows: Vec<_> = cx.windows();
         let right_window = windows[1];
-        cx.update_window(right_window, |_, window, cx| window.dispatch_action(Box::new(PasteFiles), cx)).unwrap();
+        cx.update_window(right_window, |_, window, cx| {
+            window.dispatch_action(Box::new(PasteFiles), cx)
+        })
+        .unwrap();
         wait_for(cx, || right.join("copy-me.txt").exists());
-        assert!(left.join("copy-me.txt").exists(), "copy removed the original");
+        assert!(
+            left.join("copy-me.txt").exists(),
+            "copy removed the original"
+        );
 
         // ⌘X dims the item until it is pasted elsewhere, then it moves.
         select(&left_view, cx, "move-me.txt");
         left_view.update(cx, |this, cx| this.put_on_clipboard(true, cx));
-        assert!(crate::transfer::is_cut(&left.join("move-me.txt")), "cut item is not marked");
-        cx.update_window(right_window, |_, window, cx| window.dispatch_action(Box::new(PasteFiles), cx)).unwrap();
+        assert!(
+            crate::transfer::is_cut(&left.join("move-me.txt")),
+            "cut item is not marked"
+        );
+        cx.update_window(right_window, |_, window, cx| {
+            window.dispatch_action(Box::new(PasteFiles), cx)
+        })
+        .unwrap();
         wait_for(cx, || right.join("move-me.txt").exists());
-        assert!(!left.join("move-me.txt").exists(), "cut did not move the file");
-        assert!(!crate::transfer::is_cut(&left.join("move-me.txt")), "dimming stays after paste");
+        assert!(
+            !left.join("move-me.txt").exists(),
+            "cut did not move the file"
+        );
+        assert!(
+            !crate::transfer::is_cut(&left.join("move-me.txt")),
+            "dimming stays after paste"
+        );
     }
 
     #[test]
@@ -3223,29 +4064,39 @@ mod tests {
         let (left, right) = (root.join("left"), root.join("right"));
         std::fs::create_dir_all(left.join("folder")).unwrap();
         std::fs::create_dir_all(&right).unwrap();
-        for name in ["default.txt", "moved.txt", "finder.txt", "option.txt", "asked.txt"] {
+        for name in [
+            "default.txt",
+            "moved.txt",
+            "finder.txt",
+            "option.txt",
+            "asked.txt",
+        ] {
             std::fs::write(left.join(name), name).unwrap();
         }
         std::fs::write(left.join("folder/inside.txt"), "x").unwrap();
         let (_, right_view, cx) = two_windows(&left, &right);
         let right_window = cx.windows()[1];
-        let drop = |cx: &mut TestAppContext, name: &str, action: DropAction, ask: bool, option: bool| {
-            let path = left.join(name);
-            cx.update_window(right_window, |_, window, cx| {
-                right_view.update(cx, |this, cx| {
-                    this.appearance.update(cx, |settings, _| {
-                        settings.behavior.drop_action = action;
-                        settings.behavior.ask_on_drop = ask;
+        let drop =
+            |cx: &mut TestAppContext, name: &str, action: DropAction, ask: bool, option: bool| {
+                let path = left.join(name);
+                cx.update_window(right_window, |_, window, cx| {
+                    right_view.update(cx, |this, cx| {
+                        this.appearance.update(cx, |settings, _| {
+                            settings.behavior.drop_action = action;
+                            settings.behavior.ask_on_drop = ask;
+                        });
+                        this.receive_files(vec![path], option, window, cx);
                     });
-                    this.receive_files(vec![path], option, window, cx);
-                });
-            })
-            .unwrap();
-        };
+                })
+                .unwrap();
+            };
 
         drop(cx, "default.txt", DropAction::Copy, false, false);
         wait_for(cx, || right.join("default.txt").exists());
-        assert!(left.join("default.txt").exists(), "Copy is the default: the original stays");
+        assert!(
+            left.join("default.txt").exists(),
+            "Copy is the default: the original stays"
+        );
 
         drop(cx, "moved.txt", DropAction::Move, false, false);
         wait_for(cx, || right.join("moved.txt").exists());
@@ -3253,7 +4104,10 @@ mod tests {
 
         drop(cx, "finder.txt", DropAction::Finder, false, false);
         wait_for(cx, || right.join("finder.txt").exists());
-        assert!(!left.join("finder.txt").exists(), "Like Finder moves on the same disk");
+        assert!(
+            !left.join("finder.txt").exists(),
+            "Like Finder moves on the same disk"
+        );
 
         drop(cx, "option.txt", DropAction::Move, false, true);
         wait_for(cx, || right.join("option.txt").exists());
@@ -3262,15 +4116,23 @@ mod tests {
         // Ask every time: a dialog opens; Enter takes the suggested action.
         drop(cx, "asked.txt", DropAction::Move, true, false);
         cx.run_until_parked();
-        let open = cx.update_window(right_window, |_, window, cx| window.has_active_dialog(cx)).unwrap();
+        let open = cx
+            .update_window(right_window, |_, window, cx| window.has_active_dialog(cx))
+            .unwrap();
         assert!(open, "ask-on-drop did not open the dialog");
-        assert!(!right.join("asked.txt").exists(), "nothing moves before the user answers");
+        assert!(
+            !right.join("asked.txt").exists(),
+            "nothing moves before the user answers"
+        );
         cx.update_window(right_window, |_, window, cx| {
             window.dispatch_keystroke(gpui_kit::Keystroke::parse("enter").unwrap(), cx);
         })
         .unwrap();
         wait_for(cx, || right.join("asked.txt").exists());
-        assert!(!left.join("asked.txt").exists(), "Enter should take the suggested Move");
+        assert!(
+            !left.join("asked.txt").exists(),
+            "Enter should take the suggested Move"
+        );
     }
 
     #[test]
@@ -3280,11 +4142,25 @@ mod tests {
         let first = cx.read(|app| view.read(app).current_entries()[0].clone());
         view.update(cx, |this, cx| this.select_entry(&first.id, cx));
         let path = first.path.clone().unwrap().to_path_buf();
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-x" } else { "ctrl-x" });
-        assert!(crate::transfer::is_cut(&path), "cmd-x did not cut the selection");
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-c" } else { "ctrl-c" });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-x"
+        } else {
+            "ctrl-x"
+        });
+        assert!(
+            crate::transfer::is_cut(&path),
+            "cmd-x did not cut the selection"
+        );
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-c"
+        } else {
+            "ctrl-c"
+        });
         let (paths, cut) = crate::transfer::clipboard_contents();
-        assert!(paths.contains(&path) && !cut, "cmd-c did not copy the selection");
+        assert!(
+            paths.contains(&path) && !cut,
+            "cmd-c did not copy the selection"
+        );
         crate::transfer::clear_clipboard();
     }
 
@@ -3307,10 +4183,17 @@ mod tests {
             let viewport = cx.read(|app| view.read(app).list_scroll.bounds());
             row.is_some_and(|row| row.top() >= viewport.top() && row.bottom() <= viewport.bottom())
         };
-        assert!(!visible(cx, "file-299.txt"), "fixture: the end of the list starts off screen");
+        assert!(
+            !visible(cx, "file-299.txt"),
+            "fixture: the end of the list starts off screen"
+        );
 
         crate::transfer::set_clipboard(vec![outside.join("zzz-pasted.txt")], false);
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-v" } else { "ctrl-v" });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-v"
+        } else {
+            "ctrl-v"
+        });
         for _ in 0..300 {
             cx.run_until_parked();
             if list.join("zzz-pasted.txt").exists() && visible(cx, "zzz-pasted.txt") {
@@ -3321,7 +4204,10 @@ mod tests {
         }
         crate::transfer::clear_clipboard();
         assert!(list.join("zzz-pasted.txt").exists(), "paste did not happen");
-        assert!(visible(cx, "zzz-pasted.txt"), "the pasted item is not scrolled into view");
+        assert!(
+            visible(cx, "zzz-pasted.txt"),
+            "the pasted item is not scrolled into view"
+        );
     }
 
     #[test]
@@ -3335,18 +4221,42 @@ mod tests {
         let tabs = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).tabs.len());
         let before = tabs(cx);
         let row = cx.debug_bounds("pro-row-Projects").expect("no folder row");
-        cx.simulate_mouse_down(row.center(), gpui_kit::MouseButton::Middle, gpui_kit::Modifiers::none());
-        cx.simulate_mouse_up(row.center(), gpui_kit::MouseButton::Middle, gpui_kit::Modifiers::none());
+        cx.simulate_mouse_down(
+            row.center(),
+            gpui_kit::MouseButton::Middle,
+            gpui_kit::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            row.center(),
+            gpui_kit::MouseButton::Middle,
+            gpui_kit::Modifiers::none(),
+        );
         cx.run_until_parked();
         assert_eq!(tabs(cx), before + 1, "middle click opens a new tab");
         let opened = cx.read(|app| view.read(app).active_location().path());
-        assert_eq!(opened, Some(dir.join("Projects")), "the new tab shows the folder");
+        assert_eq!(
+            opened,
+            Some(dir.join("Projects")),
+            "the new tab shows the folder"
+        );
         // Middle click on the tab closes it again.
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let id = cx.read(|app| view.read(app).tabs.last().map(|tab| tab.id)).unwrap();
-        let tab = cx.debug_bounds(Box::leak(format!("workspace-tab-{id}").into_boxed_str())).expect("tab not drawn");
-        cx.simulate_mouse_down(tab.center(), gpui_kit::MouseButton::Middle, gpui_kit::Modifiers::none());
-        cx.simulate_mouse_up(tab.center(), gpui_kit::MouseButton::Middle, gpui_kit::Modifiers::none());
+        let id = cx
+            .read(|app| view.read(app).tabs.last().map(|tab| tab.id))
+            .unwrap();
+        let tab = cx
+            .debug_bounds(Box::leak(format!("workspace-tab-{id}").into_boxed_str()))
+            .expect("tab not drawn");
+        cx.simulate_mouse_down(
+            tab.center(),
+            gpui_kit::MouseButton::Middle,
+            gpui_kit::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            tab.center(),
+            gpui_kit::MouseButton::Middle,
+            gpui_kit::Modifiers::none(),
+        );
         cx.run_until_parked();
         assert_eq!(tabs(cx), before, "middle click on a tab closes it");
         let _ = std::fs::remove_dir_all(&dir);
@@ -3369,11 +4279,20 @@ mod tests {
             cx.run_until_parked();
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
-        let selected = cx.read(|app| view.read(app).selected_entry().map(|entry| entry.name.clone()));
+        let selected = cx.read(|app| {
+            view.read(app)
+                .selected_entry()
+                .map(|entry| entry.name.clone())
+        });
         assert_eq!(selected.as_deref(), Some("file-299.txt"));
-        let row = cx.debug_bounds("pro-row-file-299.txt").expect("row not drawn");
+        let row = cx
+            .debug_bounds("pro-row-file-299.txt")
+            .expect("row not drawn");
         let viewport = cx.read(|app| view.read(app).list_scroll.bounds());
-        assert!(row.top() >= viewport.top() && row.bottom() <= viewport.bottom(), "the revealed file is off screen");
+        assert!(
+            row.top() >= viewport.top() && row.bottom() <= viewport.bottom(),
+            "the revealed file is off screen"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3393,10 +4312,21 @@ mod tests {
             cx.run_until_parked();
             cx.refresh().ok();
         }
-        let name = cx.read(|app| view.read(app).selected_entry().map(|entry| entry.name.clone())).unwrap();
-        let row = cx.debug_bounds(Box::leak(format!("pro-row-{name}").into_boxed_str())).unwrap();
+        let name = cx
+            .read(|app| {
+                view.read(app)
+                    .selected_entry()
+                    .map(|entry| entry.name.clone())
+            })
+            .unwrap();
+        let row = cx
+            .debug_bounds(Box::leak(format!("pro-row-{name}").into_boxed_str()))
+            .unwrap();
         let viewport = cx.read(|app| view.read(app).list_scroll.bounds());
-        assert!(row.top() >= viewport.top() && row.bottom() <= viewport.bottom(), "{name} is off screen");
+        assert!(
+            row.top() >= viewport.top() && row.bottom() <= viewport.bottom(),
+            "{name} is off screen"
+        );
     }
 
     #[test]
@@ -3407,9 +4337,15 @@ mod tests {
         cx.run_until_parked();
         let disk = cx.debug_bounds("sidebar-disk").expect("disk card rendered");
         let sections = cx.read(|app| view.read(app).sidebar_scroll.bounds());
-        assert!(sections.bottom() <= disk.top() + px(0.5), "sections {sections:?} overlap the disk card {disk:?}");
+        assert!(
+            sections.bottom() <= disk.top() + px(0.5),
+            "sections {sections:?} overlap the disk card {disk:?}"
+        );
         let overflow = cx.read(|app| view.read(app).sidebar_scroll.max_offset().y);
-        assert!(overflow > px(0.), "the sidebar should scroll when it does not fit");
+        assert!(
+            overflow > px(0.),
+            "the sidebar should scroll when it does not fit"
+        );
     }
 
     #[test]
@@ -3417,10 +4353,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("file-force-favorite-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("git")).unwrap();
         let (view, cx) = rooted_window(&dir);
-        let header = |cx: &mut VisualTestContext| cx.debug_bounds("sidebar-section-favorites-probe");
+        let header =
+            |cx: &mut VisualTestContext| cx.debug_bounds("sidebar-section-favorites-probe");
         let _ = header;
         let item_shown = |cx: &mut VisualTestContext, path: &std::path::Path| {
-            cx.debug_bounds(Box::leak(format!("favorite-probe-{}", path.display()).into_boxed_str())).is_some()
+            cx.debug_bounds(Box::leak(
+                format!("favorite-probe-{}", path.display()).into_boxed_str(),
+            ))
+            .is_some()
         };
 
         // Add a favorite (what the context menu does) and see it in the sidebar.
@@ -3433,7 +4373,10 @@ mod tests {
         // Folding Favorites hides it and is saved.
         view.update(cx, |this, cx| this.toggle_section("favorites", cx));
         cx.run_until_parked();
-        assert!(!item_shown(cx, &favorite), "folded section still shows its items");
+        assert!(
+            !item_shown(cx, &favorite),
+            "folded section still shows its items"
+        );
         let saved = std::fs::read_to_string(crate::settings::settings_path().unwrap()).unwrap();
         assert!(saved.contains("collapsed = [\"favorites\"]"), "{saved}");
         view.update(cx, |this, cx| this.toggle_section("favorites", cx));
@@ -3442,18 +4385,35 @@ mod tests {
 
         view.update(cx, |this, cx| this.remove_favorite(&favorite, cx));
         cx.run_until_parked();
-        assert!(!item_shown(cx, &favorite), "removed favorite is still shown");
+        assert!(
+            !item_shown(cx, &favorite),
+            "removed favorite is still shown"
+        );
         // A file is a favorite too: shown by name, a click opens it.
         let report = dir.join("report.pdf");
         std::fs::write(&report, b"%PDF-").unwrap();
         view.update(cx, |this, cx| this.add_favorite(report.clone(), cx));
         cx.run_until_parked();
-        assert!(item_shown(cx, &report), "a favorite file is not in the sidebar");
-        let bounds = cx.debug_bounds(Box::leak(format!("favorite-probe-{}", report.display()).into_boxed_str())).unwrap();
+        assert!(
+            item_shown(cx, &report),
+            "a favorite file is not in the sidebar"
+        );
+        let bounds = cx
+            .debug_bounds(Box::leak(
+                format!("favorite-probe-{}", report.display()).into_boxed_str(),
+            ))
+            .unwrap();
         crate::default_apps::opened().lock().unwrap().clear();
         cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
         cx.run_until_parked();
-        assert!(crate::default_apps::opened().lock().unwrap().iter().any(|(path, _)| path == &report), "a click opens the file");
+        assert!(
+            crate::default_apps::opened()
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(path, _)| path == &report),
+            "a click opens the file"
+        );
     }
 
     #[test]
@@ -3462,28 +4422,56 @@ mod tests {
         let deep = root.join("one").join("two");
         std::fs::create_dir_all(&deep).unwrap();
         let (view, cx) = rooted_window(&root);
-        view.update_in(cx, |this, window, cx| this.navigate(Location::from_path(&deep), window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.navigate(Location::from_path(&deep), window, cx)
+        });
         cx.run_until_parked();
         let current = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).current);
 
         // The crumb for "one" sits just before the last one.
         let crumbs = Location::from_path(&deep).ancestry().len();
-        let one = cx.debug_bounds(Box::leak(format!("breadcrumb-{}", crumbs - 2).into_boxed_str())).unwrap();
+        let one = cx
+            .debug_bounds(Box::leak(
+                format!("breadcrumb-{}", crumbs - 2).into_boxed_str(),
+            ))
+            .unwrap();
         cx.simulate_click(one.center(), Default::default());
         cx.run_until_parked();
-        assert_eq!(current(cx), Location::from_path(&root.join("one")), "breadcrumb click did not navigate");
+        assert_eq!(
+            current(cx),
+            Location::from_path(&root.join("one")),
+            "breadcrumb click did not navigate"
+        );
 
         let side = |cx: &mut VisualTestContext, direction| {
             let position = point(px(700.), px(400.));
             let button = gpui_kit::MouseButton::Navigate(direction);
-            cx.simulate_event(gpui_kit::MouseDownEvent { position, button, click_count: 1, ..Default::default() });
-            cx.simulate_event(gpui_kit::MouseUpEvent { position, button, click_count: 1, ..Default::default() });
+            cx.simulate_event(gpui_kit::MouseDownEvent {
+                position,
+                button,
+                click_count: 1,
+                ..Default::default()
+            });
+            cx.simulate_event(gpui_kit::MouseUpEvent {
+                position,
+                button,
+                click_count: 1,
+                ..Default::default()
+            });
             cx.run_until_parked();
         };
         side(cx, gpui_kit::NavigationDirection::Back);
-        assert_eq!(current(cx), Location::from_path(&deep), "mouse Back did not go back");
+        assert_eq!(
+            current(cx),
+            Location::from_path(&deep),
+            "mouse Back did not go back"
+        );
         side(cx, gpui_kit::NavigationDirection::Forward);
-        assert_eq!(current(cx), Location::from_path(&root.join("one")), "mouse Forward did not go forward");
+        assert_eq!(
+            current(cx),
+            Location::from_path(&root.join("one")),
+            "mouse Forward did not go forward"
+        );
     }
 
     #[test]
@@ -3493,13 +4481,21 @@ mod tests {
         let inside = documents.join("file-force-highlight-test");
         std::fs::create_dir_all(&inside).unwrap();
         view.update(cx, |this, cx| this.add_favorite(inside.clone(), cx));
-        view.update_in(cx, |this, window, cx| this.navigate(Location::from_path(&inside), window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.navigate(Location::from_path(&inside), window, cx)
+        });
         cx.run_until_parked();
         let highlighted = |cx: &mut VisualTestContext, location: Location| {
             cx.read(|app| view.read(app).sidebar_item_selected(location))
         };
-        assert!(highlighted(cx, Location::from_path(&inside)), "the favorite itself must be highlighted");
-        assert!(!highlighted(cx, Location::Documents), "Documents must not light up for a folder inside it");
+        assert!(
+            highlighted(cx, Location::from_path(&inside)),
+            "the favorite itself must be highlighted"
+        );
+        assert!(
+            !highlighted(cx, Location::Documents),
+            "Documents must not light up for a folder inside it"
+        );
         assert!(!highlighted(cx, Location::Home));
         view.update(cx, |this, cx| this.remove_favorite(&inside, cx));
         let _ = std::fs::remove_dir(&inside);
@@ -3507,7 +4503,8 @@ mod tests {
 
     #[test]
     fn dual_panes_accept_drops_and_have_clickable_breadcrumbs() {
-        let root = std::env::temp_dir().join(format!("file-force-dual-drop-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("file-force-dual-drop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (left, right) = (root.join("left"), root.join("right"));
         std::fs::create_dir_all(&left).unwrap();
@@ -3530,12 +4527,19 @@ mod tests {
             this.drop_into_pane(Pane::Left, vec![left.join("a.txt")], window, cx)
         });
         cx.run_until_parked();
-        assert!(!left.join("a copy.txt").exists(), "drop onto the same folder must be a no-op");
+        assert!(
+            !left.join("a copy.txt").exists(),
+            "drop onto the same folder must be a no-op"
+        );
         // A real pane-to-pane drag: its source is this same explorer.
-        let entry = cx.read(|app| {
-            view.read(app).entries_for(Location::from_path(&left)).into_iter().find(|entry| entry.name == "a.txt")
-        })
-        .unwrap();
+        let entry = cx
+            .read(|app| {
+                view.read(app)
+                    .entries_for(Location::from_path(&left))
+                    .into_iter()
+                    .find(|entry| entry.name == "a.txt")
+            })
+            .unwrap();
         view.update_in(cx, |this, window, cx| {
             let palette = this.palette();
             let drag = crate::views::drag_drop::dragged_file(entry, palette, cx);
@@ -3546,35 +4550,68 @@ mod tests {
 
         // A breadcrumb in the right pane opens its folder in that pane.
         let crumbs = Location::from_path(&right).ancestry().len();
-        let crumb = cx.debug_bounds(Box::leak(format!("dual-breadcrumb-1-{}", crumbs - 2).into_boxed_str())).unwrap();
+        let crumb = cx
+            .debug_bounds(Box::leak(
+                format!("dual-breadcrumb-1-{}", crumbs - 2).into_boxed_str(),
+            ))
+            .unwrap();
         cx.simulate_click(crumb.center(), gpui_kit::Modifiers::none());
         cx.run_until_parked();
-        let (left_now, right_now) = cx.read(|app| (view.read(app).left.location, view.read(app).right.location));
+        let (left_now, right_now) =
+            cx.read(|app| (view.read(app).left.location, view.read(app).right.location));
         assert_eq!(right_now, Location::from_path(&root));
-        assert_eq!(left_now, Location::from_path(&left), "the other pane stays put");
+        assert_eq!(
+            left_now,
+            Location::from_path(&left),
+            "the other pane stays put"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_sidebar_folder_from_an_extension_tab_opens_or_switches_to_its_tab() {
         let (view, cx) = pro_window();
-        let tab_of = |cx: &mut VisualTestContext| cx.read(|app| { let this = view.read(app); (this.tabs.len(), this.active_tab, this.current, this.active_panel().is_some()) });
+        let tab_of = |cx: &mut VisualTestContext| {
+            cx.read(|app| {
+                let this = view.read(app);
+                (
+                    this.tabs.len(),
+                    this.active_tab,
+                    this.current,
+                    this.active_panel().is_some(),
+                )
+            })
+        };
         // A Music / Mail like view in front (Settings is one too).
         view.update_in(cx, |this, window, cx| this.open_settings_tab(window, cx));
         cx.run_until_parked();
         let (tabs, settings_tab, _, panel) = tab_of(cx);
         assert!(panel);
-        view.update_in(cx, |this, window, cx| this.show_location(Location::Downloads, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.show_location(Location::Downloads, window, cx)
+        });
         cx.run_until_parked();
         let (opened, downloads_tab, current, panel) = tab_of(cx);
-        assert_eq!((opened, current, panel), (tabs + 1, Location::Downloads, false), "a new tab with the folder");
+        assert_eq!(
+            (opened, current, panel),
+            (tabs + 1, Location::Downloads, false),
+            "a new tab with the folder"
+        );
         // Back to the extension view, then the same folder again: its tab, not one more.
-        view.update_in(cx, |this, window, cx| this.select_tab(settings_tab, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.select_tab(settings_tab, window, cx)
+        });
         cx.run_until_parked();
-        view.update_in(cx, |this, window, cx| this.show_location(Location::Downloads, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.show_location(Location::Downloads, window, cx)
+        });
         cx.run_until_parked();
         let (count, active, current, panel) = tab_of(cx);
-        assert_eq!((count, active, current, panel), (opened, downloads_tab, Location::Downloads, false), "switched to the tab showing it");
+        assert_eq!(
+            (count, active, current, panel),
+            (opened, downloads_tab, Location::Downloads, false),
+            "switched to the tab showing it"
+        );
     }
 
     #[test]
@@ -3587,39 +4624,84 @@ mod tests {
         crate::ssh::use_fake_ssh(&dir);
         let (view, cx) = pro_window();
         let home = server.to_string_lossy().into_owned();
-        let prod = crate::model::SshConnection { host: "prod".into(), user: "me".into(), port: 22 };
-        let staging = crate::model::SshConnection { host: "staging".into(), user: "me".into(), port: 22 };
-        view.update_in(cx, |this, window, cx| this.start_ssh_session(prod, &home, window, cx));
+        let prod = crate::model::SshConnection {
+            host: "prod".into(),
+            user: "me".into(),
+            port: 22,
+        };
+        let staging = crate::model::SshConnection {
+            host: "staging".into(),
+            user: "me".into(),
+            port: 22,
+        };
+        view.update_in(cx, |this, window, cx| {
+            this.start_ssh_session(prod, &home, window, cx)
+        });
         cx.run_until_parked();
-        view.update_in(cx, |this, window, cx| this.start_ssh_session(staging, &home, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.start_ssh_session(staging, &home, window, cx)
+        });
         cx.run_until_parked();
 
-        let (on_prod, on_staging) = (Location::remote("me@prod", &home), Location::remote("me@staging", &home));
-        assert_ne!(on_prod, on_staging, "the same path on two servers is two folders");
+        let (on_prod, on_staging) = (
+            Location::remote("me@prod", &home),
+            Location::remote("me@staging", &home),
+        );
+        assert_ne!(
+            on_prod, on_staging,
+            "the same path on two servers is two folders"
+        );
         cx.read(|app| {
             let this = view.read(app);
             assert_eq!(this.ssh_sessions.len(), 2);
-            assert_eq!(this.ssh_for(on_prod).map(|connection| connection.host), Some("prod".to_string()));
-            assert_eq!(this.ssh_for(on_staging).map(|connection| connection.host), Some("staging".to_string()));
+            assert_eq!(
+                this.ssh_for(on_prod).map(|connection| connection.host),
+                Some("prod".to_string())
+            );
+            assert_eq!(
+                this.ssh_for(on_staging).map(|connection| connection.host),
+                Some("staging".to_string())
+            );
             assert_eq!(this.current, on_staging);
         });
         // Each server's folder is fetched and listed on its own.
         view.update_in(cx, |this, window, cx| this.navigate(on_prod, window, cx));
         cx.run_until_parked();
-        let names = |cx: &mut VisualTestContext, location| cx.read(|app| view.read(app).entries_for(location).iter().map(|entry| entry.name.to_string()).collect::<Vec<_>>());
+        let names = |cx: &mut VisualTestContext, location| {
+            cx.read(|app| {
+                view.read(app)
+                    .entries_for(location)
+                    .iter()
+                    .map(|entry| entry.name.to_string())
+                    .collect::<Vec<_>>()
+            })
+        };
         assert_eq!(names(cx, on_prod), ["projects"]);
         assert_eq!(names(cx, on_staging), ["projects"]);
         let parent = cx.read(|app| view.read(app).entries_for(on_prod)[0].parent);
-        assert_eq!(parent.remote_server(), Some("me@prod"), "an entry knows its server");
+        assert_eq!(
+            parent.remote_server(),
+            Some("me@prod"),
+            "an entry knows its server"
+        );
 
         // A file from prod dropped into a folder on staging: down, then up.
         std::fs::write(server.join("report.txt"), "from prod").unwrap();
         std::fs::create_dir_all(server.join("inbox")).unwrap();
         view.update_in(cx, |this, _, cx| this.load_remote(on_prod, true, cx));
         cx.run_until_parked();
-        let report = cx.read(|app| view.read(app).entries_for(on_prod).into_iter().find(|entry| &*entry.name == "report.txt")).unwrap();
+        let report = cx
+            .read(|app| {
+                view.read(app)
+                    .entries_for(on_prod)
+                    .into_iter()
+                    .find(|entry| &*entry.name == "report.txt")
+            })
+            .unwrap();
         let inbox = Location::remote("me@staging", &format!("{home}/inbox"));
-        view.update_in(cx, |this, _, cx| this.copy_between_servers(vec![report], inbox, cx));
+        view.update_in(cx, |this, _, cx| {
+            this.copy_between_servers(vec![report], inbox, cx)
+        });
         cx.run_until_parked();
         for _ in 0..50 {
             if server.join("inbox/report.txt").exists() {
@@ -3628,14 +4710,30 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
             cx.run_until_parked();
         }
-        assert_eq!(std::fs::read_to_string(server.join("inbox/report.txt")).unwrap(), "from prod");
+        assert_eq!(
+            std::fs::read_to_string(server.join("inbox/report.txt")).unwrap(),
+            "from prod"
+        );
 
-        view.update_in(cx, |this, window, cx| this.disconnect_ssh("me@prod", window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.disconnect_ssh("me@prod", window, cx)
+        });
         cx.run_until_parked();
         cx.read(|app| {
             let this = view.read(app);
-            assert_eq!(this.ssh_sessions.iter().map(|session| session.connection.host.as_str()).collect::<Vec<_>>(), ["staging"], "the other server stays");
-            assert_eq!(this.current, Location::Home, "the pane on the gone server went home");
+            assert_eq!(
+                this.ssh_sessions
+                    .iter()
+                    .map(|session| session.connection.host.as_str())
+                    .collect::<Vec<_>>(),
+                ["staging"],
+                "the other server stays"
+            );
+            assert_eq!(
+                this.current,
+                Location::Home,
+                "the pane on the gone server went home"
+            );
             assert!(this.ssh_for(on_staging).is_some());
         });
         let _ = std::fs::remove_dir_all(&dir);
@@ -3654,9 +4752,15 @@ mod tests {
         view.update_in(cx, |this, window, cx| this.open_settings_tab(window, cx));
         cx.run_until_parked();
         let tabs = cx.read(|app| view.read(app).tabs.len());
-        let connection = crate::model::SshConnection { host: "box".into(), user: "me".into(), port: 2222 };
+        let connection = crate::model::SshConnection {
+            host: "box".into(),
+            user: "me".into(),
+            port: 2222,
+        };
         let home = server.to_string_lossy().into_owned();
-        view.update_in(cx, |this, window, cx| this.start_ssh_session(connection, &home, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.start_ssh_session(connection, &home, window, cx)
+        });
         cx.run_until_parked();
         cx.read(|app| {
             let this = view.read(app);
@@ -3677,30 +4781,50 @@ mod tests {
         std::fs::write(server.join("projects/readme.md"), "x").unwrap();
         crate::ssh::use_fake_ssh(&dir);
         let (view, cx) = pro_window();
-        let connection = crate::model::SshConnection { host: "box".into(), user: "me".into(), port: 2222 };
+        let connection = crate::model::SshConnection {
+            host: "box".into(),
+            user: "me".into(),
+            port: 2222,
+        };
         let home = server.to_string_lossy().into_owned();
-        view.update_in(cx, |this, window, cx| this.start_ssh_session(connection, &home, window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.start_ssh_session(connection, &home, window, cx)
+        });
         cx.run_until_parked();
 
         let names = |cx: &mut VisualTestContext| {
             cx.read(|app| {
                 let this = view.read(app);
-                this.entries_for(this.current).iter().map(|entry| entry.name.clone()).collect::<Vec<_>>()
+                this.entries_for(this.current)
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect::<Vec<_>>()
             })
         };
-        assert_eq!(cx.read(|app| view.read(app).current), Location::remote("me@box:2222", &home));
+        assert_eq!(
+            cx.read(|app| view.read(app).current),
+            Location::remote("me@box:2222", &home)
+        );
         assert_eq!(names(cx), ["projects"]);
         let saved = cx.read(|app| view.read(app).appearance.read(app).sidebar.ssh.clone());
         assert_eq!(saved.first().map(String::as_str), Some("me@box:2222"));
 
-        let projects = cx.read(|app| view.read(app).entries_for(Location::remote("me@box:2222", &home))[0].clone());
-        view.update_in(cx, |this, window, cx| this.open_entry(&projects.id, window, cx));
+        let projects = cx.read(|app| {
+            view.read(app)
+                .entries_for(Location::remote("me@box:2222", &home))[0]
+                .clone()
+        });
+        view.update_in(cx, |this, window, cx| {
+            this.open_entry(&projects.id, window, cx)
+        });
         cx.run_until_parked();
         assert_eq!(names(cx), ["readme.md"]);
         let crumbs = cx.read(|app| view.read(app).current.breadcrumbs());
         assert_eq!(crumbs.last().copied(), Some("projects"));
 
-        view.update_in(cx, |this, window, cx| this.disconnect_ssh("me@box:2222", window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.disconnect_ssh("me@box:2222", window, cx)
+        });
         assert_eq!(cx.read(|app| view.read(app).current), Location::Home);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3709,8 +4833,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         use files_sdk::{
-            Accessibility, Context, Event, Extension, Icon, Manifest, MenuItem, Outcome, Permission, Scope,
-            SidebarItem, SidebarSection, Targets,
+            Accessibility, Context, Event, Extension, Icon, Manifest, MenuItem, Outcome,
+            Permission, Scope, SidebarItem, SidebarSection, Targets,
         };
 
         use super::*;
@@ -3728,7 +4852,10 @@ mod tests {
                 icon: None,
                 targets: Targets::FILE,
                 scope: Scope::Local,
-                accessibility: Accessibility { label: None, hint: None },
+                accessibility: Accessibility {
+                    label: None,
+                    hint: None,
+                },
             },
             MenuItem {
                 command: "probe.here",
@@ -3736,7 +4863,10 @@ mod tests {
                 icon: None,
                 targets: Targets::BACKGROUND,
                 scope: Scope::Anywhere,
-                accessibility: Accessibility { label: None, hint: None },
+                accessibility: Accessibility {
+                    label: None,
+                    hint: None,
+                },
             },
         ];
 
@@ -3754,7 +4884,10 @@ mod tests {
             sidebar: &[SidebarSection {
                 id: "probe-section",
                 title: "PROBE",
-                accessibility: Accessibility { label: Some("Probe places"), hint: None },
+                accessibility: Accessibility {
+                    label: Some("Probe places"),
+                    hint: None,
+                },
             }],
             menu_color: None,
             tier: files_sdk::Tier::Free,
@@ -3776,7 +4909,10 @@ mod tests {
                         navigate: context.sidebar_item.clone().map(Into::into),
                         ..Default::default()
                     },
-                    _ => Outcome { notice: context.folder.clone(), ..Default::default() },
+                    _ => Outcome {
+                        notice: context.folder.clone(),
+                        ..Default::default()
+                    },
                 })
             }
 
@@ -3789,7 +4925,10 @@ mod tests {
                     command: "probe.open",
                     id: downloads.display().to_string(),
                     accessibility_label: None,
-                    menu: vec![files_sdk::SidebarMenuItem::new("Forget probe", "probe.forget")],
+                    menu: vec![files_sdk::SidebarMenuItem::new(
+                        "Forget probe",
+                        "probe.forget",
+                    )],
                 }]
             }
 
@@ -3821,35 +4960,73 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
             };
-            assert_eq!(titles(cx, Targets::FILE, Location::Home), ["Probe: copy name"]);
+            assert_eq!(
+                titles(cx, Targets::FILE, Location::Home),
+                ["Probe: copy name"]
+            );
             assert!(titles(cx, Targets::FOLDER, Location::Home).is_empty());
-            assert_eq!(titles(cx, Targets::BACKGROUND, Location::Home), ["Probe: here"]);
-            assert!(titles(cx, Targets::FILE, Location::remote("box", "/srv")).is_empty(), "local-only item on a server");
+            assert_eq!(
+                titles(cx, Targets::BACKGROUND, Location::Home),
+                ["Probe: here"]
+            );
+            assert!(
+                titles(cx, Targets::FILE, Location::remote("box", "/srv")).is_empty(),
+                "local-only item on a server"
+            );
 
             // Running a command: the clipboard needs the permission.
             let run = |cx: &mut VisualTestContext| {
                 view.update_in(cx, |this, window, cx| {
-                    let context = files_sdk::Context { selection: vec!["a.txt".into()], ..Default::default() };
+                    let context = files_sdk::Context {
+                        selection: vec!["a.txt".into()],
+                        ..Default::default()
+                    };
                     this.run_extension_command(&PROBE, "probe.copy", context, window, cx);
                     this.notice.clone()
                 })
             };
             assert_eq!(run(cx).as_deref(), Some("probe copied"));
-            assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("a.txt"));
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some("a.txt")
+            );
             let mut revoked = std::collections::BTreeMap::new();
-            revoked.insert("probe".to_string(), std::collections::BTreeSet::from([Permission::Clipboard]));
+            revoked.insert(
+                "probe".to_string(),
+                std::collections::BTreeSet::from([Permission::Clipboard]),
+            );
             files_sdk::permissions::set_revoked(revoked);
-            assert!(run(cx).unwrap_or_default().contains("Settings → Extensions"), "revoked clipboard must be refused");
+            assert!(
+                run(cx)
+                    .unwrap_or_default()
+                    .contains("Settings → Extensions"),
+                "revoked clipboard must be refused"
+            );
 
             // Going to the background reaches only extensions allowed to run there.
             let before = BACKGROUND_EVENTS.load(Ordering::SeqCst);
-            cx.read(|app| view.read(app).broadcast_extension_event(Event::WindowActive(false), app));
+            cx.read(|app| {
+                view.read(app)
+                    .broadcast_extension_event(Event::WindowActive(false), app)
+            });
             assert_eq!(BACKGROUND_EVENTS.load(Ordering::SeqCst), before + 1);
             let mut revoked = std::collections::BTreeMap::new();
-            revoked.insert("probe".to_string(), std::collections::BTreeSet::from([Permission::Background]));
+            revoked.insert(
+                "probe".to_string(),
+                std::collections::BTreeSet::from([Permission::Background]),
+            );
             files_sdk::permissions::set_revoked(revoked);
-            cx.read(|app| view.read(app).broadcast_extension_event(Event::WindowActive(false), app));
-            assert_eq!(BACKGROUND_EVENTS.load(Ordering::SeqCst), before + 1, "no Background permission, no event");
+            cx.read(|app| {
+                view.read(app)
+                    .broadcast_extension_event(Event::WindowActive(false), app)
+            });
+            assert_eq!(
+                BACKGROUND_EVENTS.load(Ordering::SeqCst),
+                before + 1,
+                "no Background permission, no event"
+            );
             let wakes = WAKES.load(Ordering::SeqCst);
             cx.read(|app| view.read(app).broadcast_extension_event(Event::Woke, app));
             assert_eq!(WAKES.load(Ordering::SeqCst), wakes + 1);
@@ -3859,12 +5036,17 @@ mod tests {
             // Other sections (agents found by other tests…) are folded so the row stays on screen.
             view.update(cx, |this, cx| {
                 this.appearance.update(cx, |settings, _| {
-                    settings.sidebar.collapsed = ["favorites", "agents", "forks", "tags", "connected"].map(String::from).to_vec();
+                    settings.sidebar.collapsed =
+                        ["favorites", "agents", "forks", "tags", "connected"]
+                            .map(String::from)
+                            .to_vec();
                 });
                 cx.notify();
             });
             cx.run_until_parked();
-            let row = cx.debug_bounds("ext-probe-section-0").expect("extension sidebar row not rendered");
+            let row = cx
+                .debug_bounds("ext-probe-section-0")
+                .expect("extension sidebar row not rendered");
             cx.simulate_click(row.center(), gpui_kit::Modifiers::none());
             cx.run_until_parked();
             assert_eq!(cx.read(|app| view.read(app).current), Location::Downloads);
@@ -3875,7 +5057,10 @@ mod tests {
             let mut settings = crate::settings::AppSettings::default();
             settings.set_revoked("ssh", Permission::Network, true);
             let source = toml::to_string(&settings).unwrap();
-            assert!(source.contains("[permissions]") && source.contains("network"), "{source}");
+            assert!(
+                source.contains("[permissions]") && source.contains("network"),
+                "{source}"
+            );
             let back: crate::settings::AppSettings = toml::from_str(&source).unwrap();
             assert!(back.revoked("ssh", Permission::Network));
             assert!(!back.revoked("ssh", Permission::Secrets));
@@ -3891,7 +5076,8 @@ mod tests {
         use files_ext_agents::{Agent, Role};
         use std::os::unix::fs::PermissionsExt as _;
 
-        let dir = std::env::temp_dir().join(format!("file-force-agents-app-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-agents-app-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let project = dir.join("claude/projects/-work");
         std::fs::create_dir_all(&project).unwrap();
@@ -3934,17 +5120,32 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let session = cx.read(|app| view.read(app).agent_sessions[0].clone());
-        assert_eq!((session.agent, session.title.as_str()), (Agent::Claude, "Explain the build"));
+        assert_eq!(
+            (session.agent, session.title.as_str()),
+            (Agent::Claude, "Explain the build")
+        );
         assert!(session.external, "not started from Files");
         cx.run_until_parked();
-        assert!(cx.debug_bounds("agent-session-0").is_some(), "session row missing in the sidebar");
+        assert!(
+            cx.debug_bounds("agent-session-0").is_some(),
+            "session row missing in the sidebar"
+        );
 
         // A new session from Files streams its answer and is remembered as ours.
         let windows = cx.windows().len();
         let weak = view.downgrade();
         let appearance = cx.read(|app| view.read(app).appearance.clone());
         let agent_view = cx
-            .update(|_, app| crate::views::agents::open_agent_window(None, dir.clone(), appearance, weak, Vec::new(), app))
+            .update(|_, app| {
+                crate::views::agents::open_agent_window(
+                    None,
+                    dir.clone(),
+                    appearance,
+                    weak,
+                    Vec::new(),
+                    app,
+                )
+            })
             .expect("agent window did not open");
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), windows + 1);
@@ -3958,7 +5159,8 @@ mod tests {
         .unwrap();
         for _ in 0..300 {
             // The reader thread is real; the UI polls it on gpui's test clock.
-            cx.executor().advance_clock(std::time::Duration::from_millis(100));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
             cx.run_until_parked();
             if cx.read(|app| !agent_view.read(app).is_running()) {
                 break;
@@ -3970,7 +5172,14 @@ mod tests {
             (window.messages_for_test(), window.session_id_for_test())
         });
         let notice = cx.read(|app| agent_view.read(app).notice_for_test());
-        assert_eq!(messages.iter().map(|message| message.role).collect::<Vec<_>>(), [Role::User, Role::Assistant], "{notice:?}");
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.role)
+                .collect::<Vec<_>>(),
+            [Role::User, Role::Assistant],
+            "{notice:?}"
+        );
         assert_eq!(messages[1].text, "Hello there");
         assert_eq!(id.as_deref(), Some("new-42"));
         let ours = cx.read(|app| view.read(app).appearance.read(app).sidebar.agents.clone());
@@ -3991,46 +5200,75 @@ mod tests {
             cwd: Some("/work".into()),
             model: Some("model-with-a-really-long-name-".repeat(6)),
             updated: 1_800_000_000 - index,
-            usage: Usage { input: 1_000_000, output: 2_000, ..Default::default() },
+            usage: Usage {
+                input: 1_000_000,
+                output: 2_000,
+                ..Default::default()
+            },
             origin: None,
             running: false,
             external: true,
             source: None,
         };
-        let sessions: Vec<Session> =
-            (0..60).map(|index| session(Agent::ALL[index as usize % 3], index)).collect();
+        let sessions: Vec<Session> = (0..60)
+            .map(|index| session(Agent::ALL[index as usize % 3], index))
+            .collect();
         let (view, cx) = pro_window();
         let appearance = cx.read(|app| view.read(app).appearance.clone());
-        let usage = cx.update(|_, app| crate::views::agents::open_usage_window(sessions, appearance, app)).unwrap();
+        let usage = cx
+            .update(|_, app| crate::views::agents::open_usage_window(sessions, appearance, app))
+            .unwrap();
         cx.run_until_parked();
         let window = *cx.windows().last().unwrap();
         let mut usage_cx = gpui_kit::VisualTestContext::from_window(window, cx);
         usage_cx.run_until_parked();
 
         // Only the most recent agent starts unfolded.
-        assert_eq!(usage_cx.read(|app| usage.read(app).expanded_for_test()), [Agent::Claude]);
+        assert_eq!(
+            usage_cx.read(|app| usage.read(app).expanded_for_test()),
+            [Agent::Claude]
+        );
         let width = usage_cx.update(|window, _| window.viewport_size().width);
         for agent in Agent::ALL {
-            let card = usage_cx.debug_bounds(Box::leak(format!("usage-card-{}", agent.short()).into_boxed_str())).unwrap();
-            assert!(card.origin.x >= gpui_kit::px(0.) && card.right() <= width, "{agent:?} card leaves the window: {card:?}");
+            let card = usage_cx
+                .debug_bounds(Box::leak(
+                    format!("usage-card-{}", agent.short()).into_boxed_str(),
+                ))
+                .unwrap();
+            assert!(
+                card.origin.x >= gpui_kit::px(0.) && card.right() <= width,
+                "{agent:?} card leaves the window: {card:?}"
+            );
         }
         // Clicking a header unfolds it; clicking again folds it.
         let codex = usage_cx.debug_bounds("usage-card-codex").unwrap();
         usage_cx.simulate_click(codex.center(), gpui_kit::Modifiers::none());
-        assert_eq!(usage_cx.read(|app| usage.read(app).expanded_for_test()), [Agent::Claude, Agent::Codex]);
+        assert_eq!(
+            usage_cx.read(|app| usage.read(app).expanded_for_test()),
+            [Agent::Claude, Agent::Codex]
+        );
         usage_cx.simulate_click(codex.center(), gpui_kit::Modifiers::none());
-        assert_eq!(usage_cx.read(|app| usage.read(app).expanded_for_test()), [Agent::Claude]);
+        assert_eq!(
+            usage_cx.read(|app| usage.read(app).expanded_for_test()),
+            [Agent::Claude]
+        );
 
         // The content is taller than the window and scrolls.
         let before = usage_cx.debug_bounds("usage-card-opencode").unwrap();
         usage_cx.simulate_event(gpui_kit::ScrollEvent {
             position: before.center(),
-            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-400.))),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(-400.),
+            )),
             ..Default::default()
         });
         usage_cx.run_until_parked();
         let after = usage_cx.debug_bounds("usage-card-opencode").unwrap();
-        assert!(after.origin.y < before.origin.y, "did not scroll: {before:?} → {after:?}");
+        assert!(
+            after.origin.y < before.origin.y,
+            "did not scroll: {before:?} → {after:?}"
+        );
     }
 
     #[test]
@@ -4043,7 +5281,9 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), windows + 1, "no session window");
-        let notice = cx.read(|app| view.read(app).notice.clone()).unwrap_or_default();
+        let notice = cx
+            .read(|app| view.read(app).notice.clone())
+            .unwrap_or_default();
         assert!(notice.contains("New agent session"), "{notice}");
     }
 
@@ -4052,7 +5292,8 @@ mod tests {
         use files_ext_agents::Role;
         use std::io::Write as _;
 
-        let dir = std::env::temp_dir().join(format!("file-force-agents-live-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-agents-live-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let project = dir.join("claude/projects/-work");
         std::fs::create_dir_all(&project).unwrap();
@@ -4067,10 +5308,20 @@ mod tests {
         let appearance = cx.read(|app| view.read(app).appearance.clone());
         let weak = view.downgrade();
         let chat = cx
-            .update(|_, app| crate::views::agents::open_agent_window(Some(session), "/work".into(), appearance, weak, Vec::new(), app))
+            .update(|_, app| {
+                crate::views::agents::open_agent_window(
+                    Some(session),
+                    "/work".into(),
+                    appearance,
+                    weak,
+                    Vec::new(),
+                    app,
+                )
+            })
             .unwrap();
         let tick = |cx: &mut VisualTestContext| {
-            cx.executor().advance_clock(std::time::Duration::from_millis(1100));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(1100));
             cx.run_until_parked();
         };
         tick(cx);
@@ -4093,9 +5344,18 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let messages = cx.read(|app| chat.read(app).messages_for_test());
-        assert_eq!(messages.iter().map(|message| message.role).collect::<Vec<_>>(), [Role::User, Role::Assistant]);
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.role)
+                .collect::<Vec<_>>(),
+            [Role::User, Role::Assistant]
+        );
         assert_eq!(messages[1].text, "All 12 passed");
-        assert!(cx.read(|app| chat.read(app).is_live_for_test()), "a changing log is shown as live");
+        assert!(
+            cx.read(|app| chat.read(app).is_live_for_test()),
+            "a changing log is shown as live"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4106,7 +5366,16 @@ mod tests {
         let appearance = cx.read(|app| view.read(app).appearance.clone());
         let weak = view.downgrade();
         let chat = cx
-            .update(|_, app| crate::views::agents::open_agent_window(None, "/work".into(), appearance, weak, Vec::new(), app))
+            .update(|_, app| {
+                crate::views::agents::open_agent_window(
+                    None,
+                    "/work".into(),
+                    appearance,
+                    weak,
+                    Vec::new(),
+                    app,
+                )
+            })
             .unwrap();
         let window = *cx.windows().last().unwrap();
         let mut chat_cx = gpui_kit::VisualTestContext::from_window(window, cx);
@@ -4114,8 +5383,14 @@ mod tests {
         chat_cx.update(|_, app| {
             chat.update(app, |this, cx| {
                 this.set_messages_for_test(vec![
-                    ChatMessage { role: Role::User, text: "run tests".into() },
-                    ChatMessage { role: Role::Assistant, text: answer.into() },
+                    ChatMessage {
+                        role: Role::User,
+                        text: "run tests".into(),
+                    },
+                    ChatMessage {
+                        role: Role::Assistant,
+                        text: answer.into(),
+                    },
                 ]);
                 cx.notify();
             })
@@ -4123,15 +5398,28 @@ mod tests {
         chat_cx.run_until_parked();
 
         // Hovering the answer reveals its copy button; it copies the markdown source.
-        let bubble = chat_cx.debug_bounds("agent-bubble-1").expect("answer not rendered");
+        let bubble = chat_cx
+            .debug_bounds("agent-bubble-1")
+            .expect("answer not rendered");
         chat_cx.simulate_mouse_move(bubble.center(), None, gpui_kit::Modifiers::none());
         chat_cx.run_until_parked();
-        let copy = chat_cx.debug_bounds("agent-copy-1").expect("no copy button");
+        let copy = chat_cx
+            .debug_bounds("agent-copy-1")
+            .expect("no copy button");
         chat_cx.simulate_click(copy.center(), gpui_kit::Modifiers::none());
-        assert_eq!(chat_cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some(answer));
+        assert_eq!(
+            chat_cx
+                .read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some(answer)
+        );
 
         // Tool lines are shown literally, not as markdown.
-        assert_eq!(crate::views::agents::escape_markdown_for_test("⚙ rm *.tmp"), "⚙ rm \\*\\.tmp");
+        assert_eq!(
+            crate::views::agents::escape_markdown_for_test("⚙ rm *.tmp"),
+            "⚙ rm \\*\\.tmp"
+        );
     }
 
     #[test]
@@ -4141,7 +5429,16 @@ mod tests {
         let appearance = cx.read(|app| view.read(app).appearance.clone());
         let weak = view.downgrade();
         let chat = cx
-            .update(|_, app| crate::views::agents::open_agent_window(None, "/work".into(), appearance, weak, Vec::new(), app))
+            .update(|_, app| {
+                crate::views::agents::open_agent_window(
+                    None,
+                    "/work".into(),
+                    appearance,
+                    weak,
+                    Vec::new(),
+                    app,
+                )
+            })
             .unwrap();
         let window = *cx.windows().last().unwrap();
         let mut chat_cx = gpui_kit::VisualTestContext::from_window(window, cx);
@@ -4161,23 +5458,35 @@ mod tests {
             })
         });
         chat_cx.run_until_parked();
-        let first = chat_cx.debug_bounds("agent-bubble-0").expect("first message");
-        for target in [first.center(), first.center() + gpui_kit::point(gpui_kit::px(300.), gpui_kit::px(0.))] {
+        let first = chat_cx
+            .debug_bounds("agent-bubble-0")
+            .expect("first message");
+        for target in [
+            first.center(),
+            first.center() + gpui_kit::point(gpui_kit::px(300.), gpui_kit::px(0.)),
+        ] {
             chat_cx.simulate_event(gpui_kit::ScrollEvent {
                 position: target,
-                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-300.))),
+                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                    gpui_kit::px(0.),
+                    gpui_kit::px(-300.),
+                )),
                 ..Default::default()
             });
         }
         chat_cx.run_until_parked();
         let after = chat_cx.debug_bounds("agent-bubble-0").unwrap();
-        assert!(after.origin.y < first.origin.y, "chat did not scroll: {first:?} → {after:?}");
+        assert!(
+            after.origin.y < first.origin.y,
+            "chat did not scroll: {first:?} → {after:?}"
+        );
     }
 
     #[test]
     fn scrolling_up_in_a_live_chat_is_not_undone() {
         use std::io::Write as _;
-        let dir = std::env::temp_dir().join(format!("file-force-agents-scroll-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-agents-scroll-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let project = dir.join("claude/projects/-work");
         std::fs::create_dir_all(&project).unwrap();
@@ -4193,12 +5502,22 @@ mod tests {
         let appearance = cx.read(|app| view.read(app).appearance.clone());
         let weak = view.downgrade();
         let chat = cx
-            .update(|_, app| crate::views::agents::open_agent_window(Some(session), "/work".into(), appearance, weak, Vec::new(), app))
+            .update(|_, app| {
+                crate::views::agents::open_agent_window(
+                    Some(session),
+                    "/work".into(),
+                    appearance,
+                    weak,
+                    Vec::new(),
+                    app,
+                )
+            })
             .unwrap();
         let window = *cx.windows().last().unwrap();
         let mut chat_cx = gpui_kit::VisualTestContext::from_window(window, cx);
         let tick = |cx: &mut VisualTestContext| {
-            cx.executor().advance_clock(std::time::Duration::from_millis(1100));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(1100));
             cx.run_until_parked();
         };
         for _ in 0..20 {
@@ -4216,29 +5535,56 @@ mod tests {
         let bubble = chat_cx.debug_bounds("agent-bubble-59").unwrap();
         chat_cx.simulate_event(gpui_kit::ScrollEvent {
             position: bubble.center(),
-            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(30.))),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(30.),
+            )),
             ..Default::default()
         });
         chat_cx.run_until_parked();
         let scrolled = chat_cx.read(|app| chat.read(app).scroll_offset_for_test());
-        assert!(scrolled > bottom, "did not scroll up: {bottom:?} → {scrolled:?}");
+        assert!(
+            scrolled > bottom,
+            "did not scroll up: {bottom:?} → {scrolled:?}"
+        );
         for index in 60..63 {
             std::thread::sleep(std::time::Duration::from_millis(20));
-            std::fs::OpenOptions::new().append(true).open(&log).unwrap().write_all(line(index).as_bytes()).unwrap();
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log)
+                .unwrap()
+                .write_all(line(index).as_bytes())
+                .unwrap();
             tick(&mut chat_cx);
             tick(&mut chat_cx);
         }
-        assert_eq!(chat_cx.read(|app| chat.read(app).messages_for_test().len()), 63, "new messages still arrive");
-        assert_eq!(chat_cx.read(|app| chat.read(app).scroll_offset_for_test()), scrolled, "the reader was pulled back down");
+        assert_eq!(
+            chat_cx.read(|app| chat.read(app).messages_for_test().len()),
+            63,
+            "new messages still arrive"
+        );
+        assert_eq!(
+            chat_cx.read(|app| chat.read(app).scroll_offset_for_test()),
+            scrolled,
+            "the reader was pulled back down"
+        );
 
         // The floating button brings the reader back to the latest message.
-        let button = chat_cx.debug_bounds("agent-scroll-bottom").expect("no scroll-to-bottom button while scrolled up");
+        let button = chat_cx
+            .debug_bounds("agent-scroll-bottom")
+            .expect("no scroll-to-bottom button while scrolled up");
         chat_cx.simulate_click(button.center(), gpui_kit::Modifiers::none());
         chat_cx.run_until_parked();
         assert!(chat_cx.read(|app| chat.read(app).follows_for_test()));
-        assert!(chat_cx.read(|app| chat.read(app).scroll_offset_for_test()) < scrolled, "did not scroll down");
+        assert!(
+            chat_cx.read(|app| chat.read(app).scroll_offset_for_test()) < scrolled,
+            "did not scroll down"
+        );
         chat_cx.run_until_parked();
-        assert!(chat_cx.debug_bounds("agent-scroll-bottom").is_none(), "button stays while at the end");
+        assert!(
+            chat_cx.debug_bounds("agent-scroll-bottom").is_none(),
+            "button stays while at the end"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4247,7 +5593,8 @@ mod tests {
     fn the_picked_model_and_effort_reach_the_agent() {
         use files_ext_agents::Agent;
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!("file-force-agents-model-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-agents-model-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Answers with the arguments it was started with.
@@ -4264,7 +5611,16 @@ mod tests {
         let appearance = cx.read(|app| view.read(app).appearance.clone());
         let weak = view.downgrade();
         let chat = cx
-            .update(|_, app| crate::views::agents::open_agent_window(None, dir.clone(), appearance, weak, Vec::new(), app))
+            .update(|_, app| {
+                crate::views::agents::open_agent_window(
+                    None,
+                    dir.clone(),
+                    appearance,
+                    weak,
+                    Vec::new(),
+                    app,
+                )
+            })
             .unwrap();
         let window = *cx.windows().last().unwrap();
         cx.update_window(window, |_, window, app| {
@@ -4277,15 +5633,23 @@ mod tests {
         })
         .unwrap();
         for _ in 0..300 {
-            cx.executor().advance_clock(std::time::Duration::from_millis(100));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
             cx.run_until_parked();
             if cx.read(|app| !chat.read(app).is_running()) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let answer = cx.read(|app| chat.read(app).messages_for_test()).last().map(|message| message.text.clone()).unwrap_or_default();
-        assert!(answer.contains("-m gpt-5.5") && answer.contains("model_reasoning_effort='xhigh'"), "{answer}");
+        let answer = cx
+            .read(|app| chat.read(app).messages_for_test())
+            .last()
+            .map(|message| message.text.clone())
+            .unwrap_or_default();
+        assert!(
+            answer.contains("-m gpt-5.5") && answer.contains("model_reasoning_effort='xhigh'"),
+            "{answer}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4295,19 +5659,39 @@ mod tests {
         use gpui_kit::component::menu::PopupMenuItem;
 
         // A color makes a tinted element item; no color keeps the plain item.
-        let plain = crate::views::context_menu::tinted_item("Delete…", gpui_kit::assets::IconName::Trash, None);
+        let plain = crate::views::context_menu::tinted_item(
+            "Delete…",
+            gpui_kit::assets::IconName::Trash,
+            None,
+        );
         assert!(matches!(plain, PopupMenuItem::Item { .. }));
-        let red = crate::menu_colors::color_for(&crate::settings::AppSettings::default(), crate::menu_colors::DELETE);
-        let tinted = crate::views::context_menu::tinted_item("Delete…", gpui_kit::assets::IconName::Trash, red);
-        assert!(matches!(tinted, PopupMenuItem::ElementItem { .. }), "Delete is red by default");
+        let red = crate::menu_colors::color_for(
+            &crate::settings::AppSettings::default(),
+            crate::menu_colors::DELETE,
+        );
+        let tinted = crate::views::context_menu::tinted_item(
+            "Delete…",
+            gpui_kit::assets::IconName::Trash,
+            red,
+        );
+        assert!(
+            matches!(tinted, PopupMenuItem::ElementItem { .. }),
+            "Delete is red by default"
+        );
 
         // Text contrast: dark text gets a white outline, light text a dark one.
         let mut settings = crate::settings::AppSettings::default();
         settings.accessibility.text_contrast = Toggle::On;
         settings.scheme = crate::model::ColorScheme::Light;
-        assert_eq!(Palette::from_settings(&settings).text_outline, Some(gpui_kit::white()));
+        assert_eq!(
+            Palette::from_settings(&settings).text_outline,
+            Some(gpui_kit::white())
+        );
         settings.scheme = crate::model::ColorScheme::Dark;
-        assert_eq!(Palette::from_settings(&settings).text_outline, Some(gpui_kit::black()));
+        assert_eq!(
+            Palette::from_settings(&settings).text_outline,
+            Some(gpui_kit::black())
+        );
         settings.accessibility.text_contrast = Toggle::Off;
         assert_eq!(Palette::from_settings(&settings).text_outline, None);
 
@@ -4322,7 +5706,10 @@ mod tests {
         assert!(!Palette::from_settings(&settings).shimmer);
 
         let source = toml::to_string(&settings).unwrap();
-        assert!(source.contains("text_contrast = \"off\"") && source.contains("shimmer = \"off\""), "{source}");
+        assert!(
+            source.contains("text_contrast = \"off\"") && source.contains("shimmer = \"off\""),
+            "{source}"
+        );
     }
 
     #[test]
@@ -4330,61 +5717,114 @@ mod tests {
         let (view, cx) = pro_window();
         let names_with = |cx: &mut VisualTestContext, on: bool| {
             view.update(cx, |this, cx| {
-                this.accessibility.text_contrast =
-                    if on { crate::settings::Toggle::On } else { crate::settings::Toggle::Off };
+                this.accessibility.text_contrast = if on {
+                    crate::settings::Toggle::On
+                } else {
+                    crate::settings::Toggle::Off
+                };
                 cx.notify();
             });
             cx.run_until_parked();
             cx.read(|app| view.read(app).palette().text_outline.is_some())
         };
-        assert!(names_with(cx, true), "the explorer palette follows Text contrast");
+        assert!(
+            names_with(cx, true),
+            "the explorer palette follows Text contrast"
+        );
         assert!(!names_with(cx, false));
     }
 
     #[test]
     fn quick_look_on_a_folder_shows_what_is_inside() {
-        let dir = std::env::temp_dir().join(format!("file-force-quick-look-folder-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "file-force-quick-look-folder-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("project/src")).unwrap();
         for name in ["README.md", "main.rs", "notes.txt"] {
             std::fs::write(dir.join("project").join(name), "x").unwrap();
         }
         let (view, cx) = rooted_window(&dir);
-        let folder = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == "project").unwrap().id.clone());
+        let folder = cx.read(|app| {
+            view.read(app)
+                .current_entries()
+                .into_iter()
+                .find(|entry| entry.name == "project")
+                .unwrap()
+                .id
+                .clone()
+        });
         view.update(cx, |this, cx| this.select_entry(&folder, cx));
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
-        assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "Quick Look did not open");
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Quick Look did not open"
+        );
         crate::views::quick_look::settle(cx);
-        let tiles = (0..10).filter(|index| cx.debug_bounds(Box::leak(format!("quick-look-item-{index}").into_boxed_str())).is_some()).count();
-        assert_eq!(tiles, 4, "the folder's 1 subfolder and 3 files are previewed");
+        let tiles = (0..10)
+            .filter(|index| {
+                cx.debug_bounds(Box::leak(
+                    format!("quick-look-item-{index}").into_boxed_str(),
+                ))
+                .is_some()
+            })
+            .count();
+        assert_eq!(
+            tiles, 4,
+            "the folder's 1 subfolder and 3 files are previewed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn quick_look_plays_videos_and_stops_on_the_next_item() {
-        let dir = std::env::temp_dir().join(format!("file-force-quick-look-video-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "file-force-quick-look-video-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a-clip.mp4"), b"not really a video").unwrap();
         std::fs::write(dir.join("b-notes.txt"), "text").unwrap();
         std::fs::write(dir.join("c-song.mp3"), b"not really music").unwrap();
         let (view, cx) = rooted_window(&dir);
-        let id = |cx: &mut VisualTestContext, name: &str| cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id.clone());
+        let id = |cx: &mut VisualTestContext, name: &str| {
+            cx.read(|app| {
+                view.read(app)
+                    .current_entries()
+                    .into_iter()
+                    .find(|entry| entry.name == name)
+                    .unwrap()
+                    .id
+                    .clone()
+            })
+        };
         let clip = id(cx, "a-clip.mp4");
         view.update(cx, |this, cx| this.select_entry(&clip, cx));
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
         let look = crate::views::quick_look::last_for_test().expect("Quick Look did not open");
         // With VLC it plays, without it offers to get VLC: a player either way.
-        assert_eq!(cx.read(|app| look.read(app).video_for_test(app)), Some(dir.join("a-clip.mp4")));
+        assert_eq!(
+            cx.read(|app| look.read(app).video_for_test(app)),
+            Some(dir.join("a-clip.mp4"))
+        );
         cx.simulate_keystrokes("right");
         cx.run_until_parked();
-        assert_eq!(cx.read(|app| look.read(app).video_for_test(app)), None, "moving on stops the player");
+        assert_eq!(
+            cx.read(|app| look.read(app).video_for_test(app)),
+            None,
+            "moving on stops the player"
+        );
         // Music previews play too (with their cover and tags).
         cx.simulate_keystrokes("right");
         cx.run_until_parked();
-        assert_eq!(cx.read(|app| look.read(app).video_for_test(app)), Some(dir.join("c-song.mp3")));
+        assert_eq!(
+            cx.read(|app| look.read(app).video_for_test(app)),
+            Some(dir.join("c-song.mp3"))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4399,35 +5839,66 @@ mod tests {
         )
         .unwrap();
         let (view, cx) = rooted_window(&dir);
-        let file = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == "hello.eml").unwrap().id.clone());
+        let file = cx.read(|app| {
+            view.read(app)
+                .current_entries()
+                .into_iter()
+                .find(|entry| entry.name == "hello.eml")
+                .unwrap()
+                .id
+                .clone()
+        });
         view.update(cx, |this, cx| this.select_entry(&file, cx));
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(cx.debug_bounds("quick-look-email").is_some(), "the email preview with its details");
+        assert!(
+            cx.debug_bounds("quick-look-email").is_some(),
+            "the email preview with its details"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn quick_look_on_archives_lists_their_members() {
-        let dir = std::env::temp_dir().join(format!("file-force-quick-look-archive-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "file-force-quick-look-archive-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/ext-archive/tests/data/solid.rar"), dir.join("solid.rar")).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/ext-archive/tests/data/solid.rar"),
+            dir.join("solid.rar"),
+        )
+        .unwrap();
         let mut zip = zip::ZipWriter::new(std::fs::File::create(dir.join("docs.zip")).unwrap());
-        zip.start_file("readme.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.start_file("readme.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
         std::io::Write::write_all(&mut zip, b"hello").unwrap();
         zip.finish().unwrap();
         let (view, cx) = rooted_window(&dir);
         for name in ["docs.zip", "solid.rar"] {
-            let archive = cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap().id.clone());
+            let archive = cx.read(|app| {
+                view.read(app)
+                    .current_entries()
+                    .into_iter()
+                    .find(|entry| entry.name == name)
+                    .unwrap()
+                    .id
+                    .clone()
+            });
             view.update(cx, |this, cx| this.select_entry(&archive, cx));
             if !cx.update(|window, cx| window.has_active_dialog(cx)) {
                 cx.simulate_keystrokes("space");
             }
             cx.run_until_parked();
             crate::views::quick_look::settle(cx);
-            assert!(cx.debug_bounds("quick-look-archive").is_some(), "{name}: no archive listing in Quick Look");
+            assert!(
+                cx.debug_bounds("quick-look-archive").is_some(),
+                "{name}: no archive listing in Quick Look"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4439,7 +5910,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("file-force-git-ui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap().status.success());
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&dir)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            )
+        };
         git(&["init", "-q"]);
         git(&["config", "user.name", "T"]);
         git(&["config", "user.email", "t@e.com"]);
@@ -4453,7 +5934,9 @@ mod tests {
         let (view, cx) = pro_window();
         let appearance = cx.read(|app| view.read(app).appearance.clone());
         let git_view = cx
-            .update(|_, app| crate::views::git::open_git_window(dir.clone(), GitPage::Commit, appearance, app))
+            .update(|_, app| {
+                crate::views::git::open_git_window(dir.clone(), GitPage::Commit, appearance, app)
+            })
             .unwrap();
         let window = *cx.windows().last().unwrap();
         let mut git_cx = gpui_kit::VisualTestContext::from_window(window, cx);
@@ -4467,14 +5950,32 @@ mod tests {
             }
             panic!("timed out");
         };
-        settle(&mut git_cx, &|cx| cx.read(|app| git_view.read(app).status_for_test().is_some()));
+        settle(&mut git_cx, &|cx| {
+            cx.read(|app| git_view.read(app).status_for_test().is_some())
+        });
         // Untracked files start unticked, like TortoiseGit's commit dialog.
-        assert_eq!(git_cx.read(|app| git_view.read(app).ticked_for_test()), ["tracked.txt"]);
-        assert!(git_cx.debug_bounds("git-change-1").is_some(), "both changes are listed");
+        assert_eq!(
+            git_cx.read(|app| git_view.read(app).ticked_for_test()),
+            ["tracked.txt"]
+        );
+        assert!(
+            git_cx.debug_bounds("git-change-1").is_some(),
+            "both changes are listed"
+        );
 
-        git_cx.update(|_, app| git_view.update(app, |this, cx| this.show_diff_for_test("tracked.txt", cx)));
-        settle(&mut git_cx, &|cx| cx.read(|app| git_view.read(app).diff_for_test().is_some()));
-        assert!(git_cx.read(|app| git_view.read(app).diff_for_test()).unwrap().1.contains("+2"));
+        git_cx.update(|_, app| {
+            git_view.update(app, |this, cx| this.show_diff_for_test("tracked.txt", cx))
+        });
+        settle(&mut git_cx, &|cx| {
+            cx.read(|app| git_view.read(app).diff_for_test().is_some())
+        });
+        assert!(
+            git_cx
+                .read(|app| git_view.read(app).diff_for_test())
+                .unwrap()
+                .1
+                .contains("+2")
+        );
 
         git_cx.update(|window, app| {
             git_view.update(app, |this, cx| {
@@ -4482,19 +5983,47 @@ mod tests {
                 this.commit_for_test(window, cx);
             })
         });
-        settle(&mut git_cx, &|cx| cx.read(|app| !git_view.read(app).busy_for_test()));
+        settle(&mut git_cx, &|cx| {
+            cx.read(|app| !git_view.read(app).busy_for_test())
+        });
         let status = files_ext_git::status(&dir).unwrap();
-        assert_eq!(status.changes.iter().map(|change| change.path.as_str()).collect::<Vec<_>>(), ["new.txt"], "only the ticked file was committed");
+        assert_eq!(
+            status
+                .changes
+                .iter()
+                .map(|change| change.path.as_str())
+                .collect::<Vec<_>>(),
+            ["new.txt"],
+            "only the ticked file was committed"
+        );
 
-        git_cx.update(|_, app| git_view.update(app, |this, cx| this.set_page_for_test(GitPage::Log(None), cx)));
-        settle(&mut git_cx, &|cx| cx.read(|app| git_view.read(app).commits_for_test().len() == 2));
-        assert_eq!(git_cx.read(|app| git_view.read(app).commits_for_test())[0].subject, "Second line");
+        git_cx.update(|_, app| {
+            git_view.update(app, |this, cx| {
+                this.set_page_for_test(GitPage::Log(None), cx)
+            })
+        });
+        settle(&mut git_cx, &|cx| {
+            cx.read(|app| git_view.read(app).commits_for_test().len() == 2)
+        });
+        assert_eq!(
+            git_cx.read(|app| git_view.read(app).commits_for_test())[0].subject,
+            "Second line"
+        );
 
         // Outside a repository: "Create Repository Here".
         let plain = dir.with_extension("plain");
         let _ = std::fs::remove_dir_all(&plain);
         std::fs::create_dir_all(&plain).unwrap();
-        cx.update(|window, app| view.update(app, |this, cx| this.git_action(crate::views::git::GitAction::Init, plain.clone(), window, cx)));
+        cx.update(|window, app| {
+            view.update(app, |this, cx| {
+                this.git_action(
+                    crate::views::git::GitAction::Init,
+                    plain.clone(),
+                    window,
+                    cx,
+                )
+            })
+        });
         for _ in 0..300 {
             cx.run_until_parked();
             if plain.join(".git").exists() {
@@ -4502,19 +6031,33 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(files_ext_git::repo_root(&plain).is_some(), "git init did not run");
+        assert!(
+            files_ext_git::repo_root(&plain).is_some(),
+            "git init did not run"
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&plain);
     }
 
     #[test]
     fn extension_pages_preview_their_menu_items() {
-        let find = |id: &str| *crate::extensions::CATALOG.iter().find(|manifest| manifest.id == id).unwrap();
+        let find = |id: &str| {
+            *crate::extensions::CATALOG
+                .iter()
+                .find(|manifest| manifest.id == id)
+                .unwrap()
+        };
         let git = crate::settings_window::menu_preview_titles(find("git"));
         assert_eq!(git[0].0, "Git");
         assert!(git[0].1.contains(&"Git Commit…"), "{git:?}");
-        assert_eq!(crate::settings_window::menu_preview_titles(find("forks"))[0].0, "Fork folder");
-        assert!(crate::settings_window::menu_preview_titles(find("terminal")).is_empty(), "Terminal is a base item: colored in Appearance");
+        assert_eq!(
+            crate::settings_window::menu_preview_titles(find("forks"))[0].0,
+            "Fork folder"
+        );
+        assert!(
+            crate::settings_window::menu_preview_titles(find("terminal")).is_empty(),
+            "Terminal is a base item: colored in Appearance"
+        );
         // The real Git extension replaced the TortoiseGit demo in Settings.
         assert_eq!(find("git").source, "Built-in");
         assert_eq!(find("git").version, files_ext_git::MANIFEST.version);
@@ -4537,20 +6080,45 @@ mod tests {
         });
         cx.run_until_parked();
         let events = log::events();
-        assert_eq!(events.iter().filter(|event| event.message == "Copied 3 items").count(), 1);
-        assert!(events.iter().any(|event| event.kind == Kind::Error && event.message.starts_with("Open failed")));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.message == "Copied 3 items")
+                .count(),
+            1
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == Kind::Error && event.message.starts_with("Open failed"))
+        );
 
         // An extension runs a program: only Developer mode shows it.
         let mut command = std::process::Command::new("sh");
         command.args(["-c", "echo console-probe"]);
         log::run("git", &mut command).unwrap();
-        let process = log::events().into_iter().rev().find(|event| event.message.contains("console-probe")).unwrap();
+        let process = log::events()
+            .into_iter()
+            .rev()
+            .find(|event| event.message.contains("console-probe"))
+            .unwrap();
         let shows = |cx: &mut VisualTestContext, developer: bool| {
-            cx.read(|app| view.read(app).console_events(developer, "").iter().any(|event| event.id == process.id))
+            cx.read(|app| {
+                view.read(app)
+                    .console_events(developer, "")
+                    .iter()
+                    .any(|event| event.id == process.id)
+            })
         };
-        assert!(!shows(cx, false), "without Developer mode the console shows messages, not calls");
+        assert!(
+            !shows(cx, false),
+            "without Developer mode the console shows messages, not calls"
+        );
         assert!(shows(cx, true));
-        assert!(cx.read(|app| view.read(app).console_events(true, "probe").len()) >= 1, "filter by text");
+        assert!(
+            cx.read(|app| view.read(app).console_events(true, "probe").len()) >= 1,
+            "filter by text"
+        );
 
         // Other tests write to the same journal: narrow the console to this call.
         view.update_in(cx, |this, window, cx| {
@@ -4559,41 +6127,74 @@ mod tests {
                 settings.developer.show_console = true;
             });
             this.console_open = true;
-            this.console_query.update(cx, |input, cx| input.set_value("console-probe", window, cx));
+            this.console_query
+                .update(cx, |input, cx| input.set_value("console-probe", window, cx));
             cx.notify();
         });
         cx.run_until_parked();
-        let row = cx.debug_bounds(Box::leak(format!("console-event-{}", process.id).into_boxed_str())).expect("call not in the console");
+        let row = cx
+            .debug_bounds(Box::leak(
+                format!("console-event-{}", process.id).into_boxed_str(),
+            ))
+            .expect("call not in the console");
         cx.simulate_click(row.center(), gpui_kit::Modifiers::none());
-        assert_eq!(cx.read(|app| view.read(app).console_expanded), Some(process.id), "a click shows arguments and output");
+        assert_eq!(
+            cx.read(|app| view.read(app).console_expanded),
+            Some(process.id),
+            "a click shows arguments and output"
+        );
         // The copy button gives the exact command, ready to paste in a terminal.
         // Toasts from tests running alongside sit bottom right, over the row:
         // close them first.
         view.update(cx, |this, cx| {
-            this.hidden_toasts.extend(files_sdk::log::notifications().iter().map(|notification| notification.id));
+            this.hidden_toasts.extend(
+                files_sdk::log::notifications()
+                    .iter()
+                    .map(|notification| notification.id),
+            );
             cx.notify();
         });
         cx.run_until_parked();
-        let copy = cx.debug_bounds(Box::leak(format!("console-copy-{}", process.id).into_boxed_str())).expect("no copy button");
+        let copy = cx
+            .debug_bounds(Box::leak(
+                format!("console-copy-{}", process.id).into_boxed_str(),
+            ))
+            .expect("no copy button");
         cx.simulate_click(copy.center(), gpui_kit::Modifiers::none());
         assert_eq!(
-            cx.read_from_clipboard().and_then(|item| item.text()).as_deref(),
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
             Some("sh -c 'echo console-probe'")
         );
 
         // A notification: unread on the bell until the card is opened.
         let id = log::notify("git", Level::Success, "Git · Fetch done", None);
-        cx.executor().advance_clock(std::time::Duration::from_millis(500));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
         cx.run_until_parked();
-        let read = |id: u64| log::notifications().iter().find(|notification| notification.id == id).map(|notification| notification.read);
+        let read = |id: u64| {
+            log::notifications()
+                .iter()
+                .find(|notification| notification.id == id)
+                .map(|notification| notification.read)
+        };
         assert_eq!(read(id), Some(false));
         let bell = cx.debug_bounds("footer-bell").expect("no bell");
         cx.simulate_click(bell.center(), gpui_kit::Modifiers::none());
         cx.run_until_parked();
         assert_eq!(read(id), Some(true), "opening the card marks it read");
-        assert!(cx.debug_bounds(Box::leak(format!("notification-{id}").into_boxed_str())).is_some(), "notification not listed");
+        assert!(
+            cx.debug_bounds(Box::leak(format!("notification-{id}").into_boxed_str()))
+                .is_some(),
+            "notification not listed"
+        );
         log::dismiss(id);
-        assert!(!log::notifications().iter().any(|notification| notification.id == id));
+        assert!(
+            !log::notifications()
+                .iter()
+                .any(|notification| notification.id == id)
+        );
     }
 
     #[test]
@@ -4602,32 +6203,78 @@ mod tests {
         let (view, cx) = pro_window();
         let offered = |version: &str| {
             let title = format!("Files {version} is available");
-            log::notifications().into_iter().find(|notification| notification.title == title)
+            log::notifications()
+                .into_iter()
+                .find(|notification| notification.title == title)
         };
-        let signed = crate::updates::Download { url: "https://example.com/Files.dmg".into(), signature: Some("sig".into()) };
-        view.update(cx, |this, cx| this.offer_update("9.9.1".into(), None, Some(signed), cx));
+        let signed = crate::updates::Download {
+            url: "https://example.com/Files.dmg".into(),
+            signature: Some("sig".into()),
+        };
+        view.update(cx, |this, cx| {
+            this.offer_update("9.9.1".into(), None, Some(signed), cx)
+        });
         let notification = offered("9.9.1").expect("no update notification");
-        let labels: Vec<_> = notification.actions.iter().map(|action| action.label.as_str()).collect();
+        let labels: Vec<_> = notification
+            .actions
+            .iter()
+            .map(|action| action.label.as_str())
+            .collect();
         assert_eq!(labels, ["Install", "Later", "Skip this release"]);
-        assert_eq!(crate::updates::offered().as_ref().map(|(version, _)| version.clone()).as_deref(), Some("9.9.1"));
+        assert_eq!(
+            crate::updates::offered()
+                .as_ref()
+                .map(|(version, _)| version.clone())
+                .as_deref(),
+            Some("9.9.1")
+        );
 
         // Later: just dismissed, offered again by the next check.
-        view.update(cx, |this, cx| this.run_notification_command("update/later", notification.id, cx));
+        view.update(cx, |this, cx| {
+            this.run_notification_command("update/later", notification.id, cx)
+        });
         assert!(offered("9.9.1").is_none());
-        assert!(cx.read(|app| view.read(app).appearance.read(app).updates.skipped.is_empty()));
+        assert!(cx.read(|app| {
+            view.read(app)
+                .appearance
+                .read(app)
+                .updates
+                .skipped
+                .is_empty()
+        }));
 
         // Unsigned: a link to the release page instead of Install.
-        view.update(cx, |this, cx| this.offer_update("9.9.2".into(), Some("https://example.com/r".into()), None, cx));
+        view.update(cx, |this, cx| {
+            this.offer_update(
+                "9.9.2".into(),
+                Some("https://example.com/r".into()),
+                None,
+                cx,
+            )
+        });
         let notification = offered("9.9.2").unwrap();
         assert_eq!(notification.actions[0].url, "https://example.com/r");
 
         // Skip: remembered, never offered again; a newer one still is.
-        let skip = notification.actions[2].url.strip_prefix("files:").unwrap().to_string();
-        view.update(cx, |this, cx| this.run_notification_command(&skip, notification.id, cx));
-        assert_eq!(cx.read(|app| view.read(app).appearance.read(app).updates.skipped.clone()), "9.9.2");
-        view.update(cx, |this, cx| this.offer_update("9.9.2".into(), None, None, cx));
+        let skip = notification.actions[2]
+            .url
+            .strip_prefix("files:")
+            .unwrap()
+            .to_string();
+        view.update(cx, |this, cx| {
+            this.run_notification_command(&skip, notification.id, cx)
+        });
+        assert_eq!(
+            cx.read(|app| view.read(app).appearance.read(app).updates.skipped.clone()),
+            "9.9.2"
+        );
+        view.update(cx, |this, cx| {
+            this.offer_update("9.9.2".into(), None, None, cx)
+        });
         assert!(offered("9.9.2").is_none(), "a skipped release came back");
-        view.update(cx, |this, cx| this.offer_update("9.9.3".into(), None, None, cx));
+        view.update(cx, |this, cx| {
+            this.offer_update("9.9.3".into(), None, None, cx)
+        });
         let newer = offered("9.9.3").expect("a newer release must still be offered");
         log::dismiss(newer.id);
     }
@@ -4638,11 +6285,17 @@ mod tests {
         let mut settings: crate::settings::AppSettings = toml::from_str(old).unwrap();
         settings.migrate();
         assert!(!settings.extensions.git, "turned off before, still off");
-        assert_eq!(settings.menu_colors.get("git").map(String::as_str), Some("blue"));
+        assert_eq!(
+            settings.menu_colors.get("git").map(String::as_str),
+            Some("blue")
+        );
         assert!(settings.revoked("git", files_sdk::Permission::Network));
         assert!(!settings.menu_colors.contains_key("tortoise-git"));
         let written = toml::to_string(&settings).unwrap();
-        assert!(written.contains("git = false") && !written.contains("tortoise"), "{written}");
+        assert!(
+            written.contains("git = false") && !written.contains("tortoise"),
+            "{written}"
+        );
     }
 
     #[test]
@@ -4664,21 +6317,37 @@ mod tests {
         };
         let (_view, cx) = pro_window();
         // Not declared: refused, nothing plays.
-        let refused = files_sdk::audio::chime("no-sound-probe", files_sdk::log::Level::Info).unwrap_err();
+        let refused =
+            files_sdk::audio::chime("no-sound-probe", files_sdk::log::Level::Info).unwrap_err();
         assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
         files_sdk::permissions::declare(&WITH);
-        let track = files_sdk::audio::Track::new("Probe tune", files_sdk::audio::Source::Url("http://127.0.0.1:1/tune.mp3".into()));
+        let track = files_sdk::audio::Track::new(
+            "Probe tune",
+            files_sdk::audio::Source::Url("http://127.0.0.1:1/tune.mp3".into()),
+        );
         files_sdk::audio::queue("sound-probe", vec![track], true).unwrap();
         // The UI thread hands it to the music player.
-        cx.executor().advance_clock(std::time::Duration::from_millis(500));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
         cx.run_until_parked();
         let jukebox = cx.update(|_, app| crate::views::music::jukebox(app));
-        let queued = cx.read(|app| jukebox.read(app).queue.iter().map(|track| track.title.clone()).collect::<Vec<_>>());
+        let queued = cx.read(|app| {
+            jukebox
+                .read(app)
+                .queue
+                .iter()
+                .map(|track| track.title.clone())
+                .collect::<Vec<_>>()
+        });
         assert!(queued.contains(&"Probe tune".to_string()), "{queued:?}");
         files_sdk::audio::stop("sound-probe").unwrap();
-        cx.executor().advance_clock(std::time::Duration::from_millis(500));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
         cx.run_until_parked();
-        assert!(cx.read(|app| jukebox.read(app).queue.is_empty()), "Stop empties the queue");
+        assert!(
+            cx.read(|app| jukebox.read(app).queue.is_empty()),
+            "Stop empties the queue"
+        );
     }
 
     #[test]
@@ -4686,14 +6355,28 @@ mod tests {
         use std::sync::atomic::Ordering;
         let (view, cx) = pro_window();
         let appearance = cx.read(|app| view.read(app).appearance.clone());
-        let settings = cx.update(|window, cx| cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone())));
-        assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(9, cx))), 9, "Sound is the 10th section");
+        let settings = cx.update(|window, cx| {
+            cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone()))
+        });
+        assert_eq!(
+            cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(9, cx))),
+            9,
+            "Sound is the 10th section"
+        );
         // 5.1 lists six speakers; each plays its own tone.
-        settings.update(cx, |this, cx| this.set_layout_for_test(crate::settings::SpeakerLayout::Surround51, cx));
-        assert_eq!(crate::sound::speakers(crate::settings::SpeakerLayout::Surround51).len(), 6);
+        settings.update(cx, |this, cx| {
+            this.set_layout_for_test(crate::settings::SpeakerLayout::Surround51, cx)
+        });
+        assert_eq!(
+            crate::sound::speakers(crate::settings::SpeakerLayout::Surround51).len(),
+            6
+        );
         let before = crate::sound::PLAYED.load(Ordering::Relaxed);
         crate::sound::test_speaker(crate::settings::SpeakerLayout::Surround51, 3, 50);
-        assert!(crate::sound::PLAYED.load(Ordering::Relaxed) > before, "the subwoofer test played");
+        assert!(
+            crate::sound::PLAYED.load(Ordering::Relaxed) > before,
+            "the subwoofer test played"
+        );
 
         // A new notification chimes once (also with several windows). Windows
         // of tests running alongside may claim one first (their sound off):
@@ -4701,13 +6384,17 @@ mod tests {
         let before = crate::sound::PLAYED.load(Ordering::Relaxed);
         for _ in 0..5 {
             files_sdk::log::notify("files", files_sdk::log::Level::Success, "Chime probe", None);
-            cx.executor().advance_clock(std::time::Duration::from_millis(500));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(500));
             cx.run_until_parked();
             if crate::sound::PLAYED.load(Ordering::Relaxed) > before {
                 break;
             }
         }
-        assert!(crate::sound::PLAYED.load(Ordering::Relaxed) > before, "no chime for a new notification");
+        assert!(
+            crate::sound::PLAYED.load(Ordering::Relaxed) > before,
+            "no chime for a new notification"
+        );
     }
 
     #[test]
@@ -4725,9 +6412,15 @@ mod tests {
         crate::resources::sample();
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(cx.debug_bounds("console-resources").is_some(), "no Resources panel");
+        assert!(
+            cx.debug_bounds("console-resources").is_some(),
+            "no Resources panel"
+        );
         let parts = crate::resources::parts();
-        assert!(parts.iter().any(|part| part.name == "Mail in memory") && parts.iter().any(|part| part.name == "Thumbnails on disk"));
+        assert!(
+            parts.iter().any(|part| part.name == "Mail in memory")
+                && parts.iter().any(|part| part.name == "Thumbnails on disk")
+        );
     }
 
     /// Tests that change the global theme run one at a time.
@@ -4737,12 +6430,26 @@ mod tests {
     fn corners_override_the_theme_s() {
         let _look = LOOK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_view, cx) = pro_window();
-        let radius = |cx: &mut gpui_kit::VisualTestContext| cx.update(|_, app| app.global::<gpui_kit::component::Theme>().radius);
+        let radius = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, app| app.global::<gpui_kit::component::Theme>().radius)
+        };
         crate::palette::set_corners(crate::settings::Corners::Large);
-        cx.update(|_, app| crate::palette::apply_theme(app, crate::model::ColorScheme::Dark, crate::model::Accent::Iris));
+        cx.update(|_, app| {
+            crate::palette::apply_theme(
+                app,
+                crate::model::ColorScheme::Dark,
+                crate::model::Accent::Iris,
+            )
+        });
         assert_eq!(radius(cx), gpui_kit::px(12.));
         crate::palette::set_corners(crate::settings::Corners::Theme);
-        cx.update(|_, app| crate::palette::apply_theme(app, crate::model::ColorScheme::Dark, crate::model::Accent::Iris));
+        cx.update(|_, app| {
+            crate::palette::apply_theme(
+                app,
+                crate::model::ColorScheme::Dark,
+                crate::model::Accent::Iris,
+            )
+        });
         assert_eq!(radius(cx), gpui_kit::px(7.), "Theme: Files' own 7 px");
     }
 
@@ -4750,32 +6457,73 @@ mod tests {
     fn a_chosen_font_wins_over_the_theme_s() {
         let _look = LOOK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_view, cx) = pro_window();
-        let font = |cx: &mut gpui_kit::VisualTestContext| cx.update(|_, app| app.global::<gpui_kit::component::Theme>().font_family.to_string());
-        crate::palette::set_look(crate::settings::ThemePreset::Omarchy, crate::settings::IconTheme::Colorful);
+        let font = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, app| {
+                app.global::<gpui_kit::component::Theme>()
+                    .font_family
+                    .to_string()
+            })
+        };
+        crate::palette::set_look(
+            crate::settings::ThemePreset::Omarchy,
+            crate::settings::IconTheme::Colorful,
+        );
         crate::palette::set_font(Some("Georgia".into()));
-        cx.update(|_, app| crate::palette::apply_theme(app, crate::model::ColorScheme::Dark, crate::model::Accent::Iris));
-        assert_eq!(font(cx), "Georgia", "the user's font over Omarchy's monospace");
+        cx.update(|_, app| {
+            crate::palette::apply_theme(
+                app,
+                crate::model::ColorScheme::Dark,
+                crate::model::Accent::Iris,
+            )
+        });
+        assert_eq!(
+            font(cx),
+            "Georgia",
+            "the user's font over Omarchy's monospace"
+        );
         crate::palette::set_font(None);
-        cx.update(|_, app| crate::palette::apply_theme(app, crate::model::ColorScheme::Dark, crate::model::Accent::Iris));
-        assert_eq!(font(cx), crate::palette::terminal_font(), "Theme default: the theme's own");
-        crate::palette::set_look(crate::settings::ThemePreset::Default, crate::settings::IconTheme::Colorful);
+        cx.update(|_, app| {
+            crate::palette::apply_theme(
+                app,
+                crate::model::ColorScheme::Dark,
+                crate::model::Accent::Iris,
+            )
+        });
+        assert_eq!(
+            font(cx),
+            crate::palette::terminal_font(),
+            "Theme default: the theme's own"
+        );
+        crate::palette::set_look(
+            crate::settings::ThemePreset::Default,
+            crate::settings::IconTheme::Colorful,
+        );
     }
 
     #[test]
     fn dev_tools_open_with_their_shortcut_only_in_developer_mode() {
         use crate::views::console::ConsoleTab;
         let (view, cx) = pro_window();
-        view.update_in(cx, |this, window, cx| this.on_toggle_dev_tools(&ToggleDevTools, window, cx));
-        assert!(!cx.read(|app| view.read(app).console_open), "closed without Developer mode");
         view.update_in(cx, |this, window, cx| {
-            this.appearance.update(cx, |settings, _| settings.developer.enabled = true);
+            this.on_toggle_dev_tools(&ToggleDevTools, window, cx)
+        });
+        assert!(
+            !cx.read(|app| view.read(app).console_open),
+            "closed without Developer mode"
+        );
+        view.update_in(cx, |this, window, cx| {
+            this.appearance
+                .update(cx, |settings, _| settings.developer.enabled = true);
             this.on_toggle_dev_tools(&ToggleDevTools, window, cx);
         });
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert_eq!(cx.read(|app| view.read(app).console_tab), ConsoleTab::Tasks);
         assert!(cx.debug_bounds("console-tasks").is_some(), "no Tasks panel");
-        for (tab, selector) in [(ConsoleTab::Indexes, "console-indexes"), (ConsoleTab::Search, "console-search")] {
+        for (tab, selector) in [
+            (ConsoleTab::Indexes, "console-indexes"),
+            (ConsoleTab::Search, "console-search"),
+        ] {
             view.update(cx, |this, cx| {
                 this.console_tab = tab;
                 cx.notify();
@@ -4791,13 +6539,28 @@ mod tests {
     #[ignore]
     fn allocation_audit() {
         use crate::alloc_stats::counts;
-        let dir = std::env::temp_dir().join(format!("file-force-alloc-audit-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-alloc-audit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for index in 0..5000 {
-            std::fs::write(dir.join(format!("file-{index:05}.{}", ["txt", "png", "rs", "zip", "mp4"][index % 5])), b"x").unwrap();
+            std::fs::write(
+                dir.join(format!(
+                    "file-{index:05}.{}",
+                    ["txt", "png", "rs", "zip", "mp4"][index % 5]
+                )),
+                b"x",
+            )
+            .unwrap();
         }
         let report = |name: &str, frames: u64, delta: crate::alloc_stats::Counts| {
-            println!("{name:<34} allocs {:>9}  reallocs {:>8}  bytes {:>11}  (per frame: {} allocs, {} reallocs)", delta.allocs, delta.reallocs, delta.bytes, delta.allocs / frames.max(1), delta.reallocs / frames.max(1));
+            println!(
+                "{name:<34} allocs {:>9}  reallocs {:>8}  bytes {:>11}  (per frame: {} allocs, {} reallocs)",
+                delta.allocs,
+                delta.reallocs,
+                delta.bytes,
+                delta.allocs / frames.max(1),
+                delta.reallocs / frames.max(1)
+            );
         };
         let before = counts();
         let (view, cx) = rooted_window(&dir);
@@ -4818,19 +6581,23 @@ mod tests {
         let before = counts();
         for _ in 0..20 {
             view.update_in(cx, |this, _, cx| {
-                this.list_scroll.set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-60_000.)));
+                this.list_scroll
+                    .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-60_000.)));
                 cx.notify();
             });
             cx.run_until_parked();
             view.update_in(cx, |this, _, cx| {
-                this.list_scroll.set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
+                this.list_scroll
+                    .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
                 cx.notify();
             });
             cx.run_until_parked();
         }
         report("scroll jump ×40", 40, counts() - before);
         let before = counts();
-        view.update_in(cx, |this, window, cx| this.navigate(crate::model::Location::from_path(&dir), window, cx));
+        view.update_in(cx, |this, window, cx| {
+            this.navigate(crate::model::Location::from_path(&dir), window, cx)
+        });
         cx.run_until_parked();
         report("re-open the folder", 1, counts() - before);
         let before = counts();
@@ -4848,36 +6615,113 @@ mod tests {
         // Last time: a pinned folder in Pro, another one active.
         let session = crate::session::Session {
             tabs: vec![
-                crate::session::SavedTab { place: format!("path:{}", dir.join("a").display()), pinned: false, mode: ViewMode::Expressive },
-                crate::session::SavedTab { place: format!("path:{}", dir.join("b").display()), pinned: true, mode: ViewMode::Pro },
-                crate::session::SavedTab { place: "path:/no/such/folder".into(), pinned: false, mode: ViewMode::Expressive },
+                crate::session::SavedTab {
+                    place: format!("path:{}", dir.join("a").display()),
+                    pinned: false,
+                    mode: ViewMode::Expressive,
+                },
+                crate::session::SavedTab {
+                    place: format!("path:{}", dir.join("b").display()),
+                    pinned: true,
+                    mode: ViewMode::Pro,
+                },
+                crate::session::SavedTab {
+                    place: "path:/no/such/folder".into(),
+                    pinned: false,
+                    mode: ViewMode::Expressive,
+                },
             ],
             active: 1,
         };
-        let file = crate::settings::settings_path().unwrap().parent().unwrap().join("session.toml");
+        let file = crate::settings::settings_path()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("session.toml");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, toml::to_string(&session).unwrap()).unwrap();
         view.update_in(cx, |this, window, cx| this.restore_session(window, cx));
-        let tabs = cx.read(|app| view.read(app).tabs.iter().map(|tab| (tab.current, tab.pinned, tab.mode)).collect::<Vec<_>>());
+        let tabs = cx.read(|app| {
+            view.read(app)
+                .tabs
+                .iter()
+                .map(|tab| (tab.current, tab.pinned, tab.mode))
+                .collect::<Vec<_>>()
+        });
         assert_eq!(tabs.len(), 2, "a folder that is gone is left out");
-        assert_eq!(tabs[0], (Location::from_path(&dir.join("b")), true, ViewMode::Pro), "pinned first, its view kept");
-        assert_eq!(cx.read(|app| view.read(app).current), Location::from_path(&dir.join("a")), "the active tab was the second saved one");
+        assert_eq!(
+            tabs[0],
+            (Location::from_path(&dir.join("b")), true, ViewMode::Pro),
+            "pinned first, its view kept"
+        );
+        assert_eq!(
+            cx.read(|app| view.read(app).current),
+            Location::from_path(&dir.join("a")),
+            "the active tab was the second saved one"
+        );
         let _ = std::fs::remove_file(&file);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
+    fn explorer_windows_keep_their_frame_rate_when_inactive() {
+        assert_eq!(
+            crate::explorer_window_options(0).inactive_frame_interval,
+            None
+        );
+    }
+
+    #[test]
+    fn devtools_detach_into_their_own_window() {
+        let (view, cx) = rooted_window(&std::env::temp_dir());
+        let original = cx.read(|app| app.windows());
+        view.update(cx, |this, cx| {
+            this.appearance.update(cx, |settings, _| {
+                settings.developer.enabled = true;
+                settings.developer.show_console = true;
+            });
+            this.console_open = true;
+            this.detach_console(cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.read(|app| view.read(app).console_detached));
+        let detached = cx.read(|app| {
+            app.windows()
+                .into_iter()
+                .find(|handle| !original.contains(handle))
+                .expect("DevTools opened a separate window")
+        });
+        cx.update(|_, cx| {
+            let _ = detached.update(cx, |_, window, _| window.remove_window());
+        });
+        cx.run_until_parked();
+        assert!(
+            !cx.read(|app| view.read(app).console_detached),
+            "closing the window attaches DevTools back"
+        );
+    }
+
+    #[test]
     fn settings_open_in_a_tab_once() {
-        let (view, cx) = pro_window();
+        let (view, cx) = rooted_window(&std::env::temp_dir());
         let tabs = |cx: &mut gpui_kit::VisualTestContext| cx.read(|app| view.read(app).tabs.len());
         let before = tabs(cx);
         view.update_in(cx, |this, window, cx| this.open_settings_tab(window, cx));
         assert_eq!(tabs(cx), before + 1, "a Settings tab");
-        assert_eq!(cx.read(|app| view.read(app).tabs.last().map(|tab| tab.panel_title)), Some("Settings"));
+        assert_eq!(
+            cx.read(|app| view.read(app).tabs.last().map(|tab| tab.panel_title)),
+            Some("Settings")
+        );
         view.update_in(cx, |this, window, cx| {
             this.select_tab(0, window, cx);
-            this.open_settings_tab(window, cx);
+            this.on_show_settings(&ShowSettings, window, cx);
         });
+        assert_eq!(
+            cx.read(|app| view.read(app).active_tab),
+            0,
+            "the Settings dialog does not switch to an existing Settings tab"
+        );
+        view.update_in(cx, |this, window, cx| this.open_settings_tab(window, cx));
         assert_eq!(tabs(cx), before + 1, "the same tab again, not a second one");
         assert_eq!(cx.read(|app| view.read(app).active_tab), before);
         cx.run_until_parked();
@@ -4888,45 +6732,90 @@ mod tests {
         use files_sdk::log::{self, Level};
         let (view, cx) = pro_window();
         let appearance = cx.read(|app| view.read(app).appearance.clone());
-        let settings = cx.update(|window, cx| cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone())));
+        let settings = cx.update(|window, cx| {
+            cx.new(|cx| crate::settings_window::SettingsWindow::new(window, cx, appearance.clone()))
+        });
         // Developer is the 9th tab; it used to be clamped to Accessibility.
-        assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(8, cx))), 8);
-        assert_eq!(cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(42, cx))), 10, "clamped to the last section (Storage)");
+        assert_eq!(
+            cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(8, cx))),
+            8
+        );
+        assert_eq!(
+            cx.update(|_, app| settings.update(app, |this, cx| this.select_for_test(42, cx))),
+            10,
+            "clamped to the last section (Storage)"
+        );
 
         // No Console button until the user asks for it.
         cx.run_until_parked();
-        assert!(cx.debug_bounds("footer-console").is_none(), "Console must be opt-in");
+        assert!(
+            cx.debug_bounds("footer-console").is_none(),
+            "Console must be opt-in"
+        );
         view.update(cx, |this, cx| {
-            this.appearance.update(cx, |settings, _| settings.developer.show_console = true);
+            this.appearance
+                .update(cx, |settings, _| settings.developer.show_console = true);
             cx.notify();
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("footer-console").is_some(), "Show Console in the footer did not add it");
+        assert!(
+            cx.debug_bounds("footer-console").is_some(),
+            "Show Console in the footer did not add it"
+        );
 
         // A notification shows as a toast, × hides it, and it fades by itself.
-        let id = log::notify("git", Level::Success, "Git · Fetch done", Some("origin".into()));
-        cx.executor().advance_clock(std::time::Duration::from_millis(500));
+        let id = log::notify(
+            "git",
+            Level::Success,
+            "Git · Fetch done",
+            Some("origin".into()),
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
         cx.run_until_parked();
         let selector: &'static str = Box::leak(format!("toast-{id}").into_boxed_str());
         assert!(cx.debug_bounds(selector).is_some(), "no toast");
         // Bottom right, like the system's notifications.
         let toast = cx.debug_bounds(selector).unwrap();
         let window = cx.update(|window, _| window.viewport_size());
-        assert!(toast.center().y > window.height / 2. && toast.center().x > window.width / 2., "the toast is not bottom right: {toast:?}");
+        assert!(
+            toast.center().y > window.height / 2. && toast.center().x > window.width / 2.,
+            "the toast is not bottom right: {toast:?}"
+        );
         assert!(cx.read(|app| view.read(app).toasts().iter().any(|toast| toast.id == id)));
         view.update(cx, |this, cx| {
             this.hidden_toasts.insert(id);
             cx.notify();
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds(selector).is_none(), "× did not hide the toast");
-        assert!(log::notifications().iter().any(|notification| notification.id == id), "it stays in the list");
+        assert!(
+            cx.debug_bounds(selector).is_none(),
+            "× did not hide the toast"
+        );
+        assert!(
+            log::notifications()
+                .iter()
+                .any(|notification| notification.id == id),
+            "it stays in the list"
+        );
 
         let fading = log::notify("files", Level::Info, "Trash emptied", None);
         cx.run_until_parked();
-        assert!(cx.read(|app| view.read(app).toasts().iter().any(|toast| toast.id == fading)));
+        assert!(cx.read(|app| {
+            view.read(app)
+                .toasts()
+                .iter()
+                .any(|toast| toast.id == fading)
+        }));
         std::thread::sleep(std::time::Duration::from_millis(6100));
-        assert!(!cx.read(|app| view.read(app).toasts().iter().any(|toast| toast.id == fading)), "toasts fade after 6 s");
+        assert!(
+            !cx.read(|app| view
+                .read(app)
+                .toasts()
+                .iter()
+                .any(|toast| toast.id == fading)),
+            "toasts fade after 6 s"
+        );
     }
 
     #[test]
@@ -4937,17 +6826,34 @@ mod tests {
         std::fs::write(dir.join("deep").join("needle-report.txt"), "x").unwrap();
         let (view, cx) = rooted_window(&dir);
         let appearance = cx.read(|app| view.read(app).appearance.clone());
-        appearance.update(cx, |settings, _| settings.search_filters.global_folder = Some(dir.clone()));
+        appearance.update(cx, |settings, _| {
+            settings.search_filters.global_folder = Some(dir.clone())
+        });
         cx.update(|window, app| view.update(app, |this, cx| this.open_global_search(window, cx)));
         cx.run_until_parked();
-        let search = cx.read(|app| view.read(app).global_search.clone()).expect("Cmd-K did not open");
-        assert_eq!(cx.read(|app| search.read(app).root_for_test()), dir, "the folder from Settings");
-        cx.update(|window, app| search.update(app, |this, cx| this.type_for_test("needle", window, cx)));
+        let search = cx
+            .read(|app| view.read(app).global_search.clone())
+            .expect("Cmd-K did not open");
+        assert_eq!(
+            cx.read(|app| search.read(app).root_for_test()),
+            dir,
+            "the folder from Settings"
+        );
+        cx.update(|window, app| {
+            search.update(app, |this, cx| this.type_for_test("needle", window, cx))
+        });
         // Typing never waits for the search: it runs after a pause, off the UI thread.
-        assert!(cx.read(|app| search.read(app).searching_for_test()), "no Searching… while it runs");
-        cx.executor().advance_clock(std::time::Duration::from_millis(200));
+        assert!(
+            cx.read(|app| search.read(app).searching_for_test()),
+            "no Searching… while it runs"
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(200));
         cx.run_until_parked();
-        assert_eq!(cx.read(|app| search.read(app).results_for_test()), ["needle-report.txt"]);
+        assert_eq!(
+            cx.read(|app| search.read(app).results_for_test()),
+            ["needle-report.txt"]
+        );
         assert!(!cx.read(|app| search.read(app).searching_for_test()));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4955,7 +6861,15 @@ mod tests {
     #[test]
     fn tabs_close_around_the_clicked_one_and_pinned_tabs_stay() {
         let (view, cx) = pro_window();
-        let ids = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).tabs.iter().map(|tab| tab.id).collect::<Vec<_>>());
+        let ids = |cx: &mut VisualTestContext| {
+            cx.read(|app| {
+                view.read(app)
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.id)
+                    .collect::<Vec<_>>()
+            })
+        };
         cx.update(|window, app| {
             view.update(app, |this, cx| {
                 for _ in 0..4 {
@@ -4969,13 +6883,29 @@ mod tests {
         cx.update(|_, app| view.update(app, |this, cx| this.toggle_pin_tab(4, cx)));
         assert_eq!(ids(cx)[0], all[4]);
         // Order now: [p4, 0, 1, 2, 3]. Close to the right of tab 2 (id all[1]).
-        cx.update(|window, app| view.update(app, |this, cx| this.close_tabs_where(2, |at, clicked| at > clicked, window, cx)));
+        cx.update(|window, app| {
+            view.update(app, |this, cx| {
+                this.close_tabs_where(2, |at, clicked| at > clicked, window, cx)
+            })
+        });
         assert_eq!(ids(cx), [all[4], all[0], all[1]]);
-        cx.update(|window, app| view.update(app, |this, cx| this.close_tabs_where(2, |at, clicked| at < clicked, window, cx)));
+        cx.update(|window, app| {
+            view.update(app, |this, cx| {
+                this.close_tabs_where(2, |at, clicked| at < clicked, window, cx)
+            })
+        });
         assert_eq!(ids(cx), [all[4], all[1]], "the pinned tab is kept");
-        cx.update(|window, app| view.update(app, |this, cx| this.close_tabs_where(1, |at, clicked| at != clicked, window, cx)));
+        cx.update(|window, app| {
+            view.update(app, |this, cx| {
+                this.close_tabs_where(1, |at, clicked| at != clicked, window, cx)
+            })
+        });
         assert_eq!(ids(cx), [all[4], all[1]]);
-        cx.update(|window, app| view.update(app, |this, cx| this.close_tabs_where(0, |at, clicked| at != clicked, window, cx)));
+        cx.update(|window, app| {
+            view.update(app, |this, cx| {
+                this.close_tabs_where(0, |at, clicked| at != clicked, window, cx)
+            })
+        });
         assert_eq!(ids(cx), [all[4]], "others closed, the pinned one clicked");
 
         // Dragging: a tab moves to where it is dropped; pinned stay in front.
@@ -4998,7 +6928,13 @@ mod tests {
         let (view, cx) = rooted_window(&std::env::temp_dir());
         let selected_file = cx.read(|app| view.read(app).selected.clone());
         cx.update(|window, app| view.update(app, |this, cx| this.open_music(window, cx)));
-        let music = cx.read(|app| view.read(app).active_panel().and_then(|panel| panel.downcast::<crate::views::music::MusicView>().ok())).unwrap();
+        let music = cx
+            .read(|app| {
+                view.read(app)
+                    .active_panel()
+                    .and_then(|panel| panel.downcast::<crate::views::music::MusicView>().ok())
+            })
+            .unwrap();
         let track = |title: &str| files_ext_music::Track {
             source: files_ext_music::Source::Url(format!("https://example.com/{title}.mp3")),
             title: title.into(),
@@ -5015,7 +6951,11 @@ mod tests {
         });
         cx.run_until_parked();
         cx.simulate_keystrokes("down down");
-        assert_eq!(cx.read(|app| music.read(app).cursor_for_test()), Some(1), "↓ moves through the tracks");
+        assert_eq!(
+            cx.read(|app| music.read(app).cursor_for_test()),
+            Some(1),
+            "↓ moves through the tracks"
+        );
         cx.simulate_keystrokes("pagedown");
         assert_eq!(cx.read(|app| music.read(app).cursor_for_test()), Some(13));
         cx.simulate_keystrokes("end");
@@ -5024,26 +6964,51 @@ mod tests {
         assert!(last >= 29, "End goes to the last track, got {last}");
         cx.simulate_keystrokes("home");
         assert_eq!(cx.read(|app| music.read(app).cursor_for_test()), Some(0));
-        assert_eq!(cx.read(|app| view.read(app).tabs[0].selected.clone()), selected_file, "the file list underneath is left alone");
+        assert_eq!(
+            cx.read(|app| view.read(app).tabs[0].selected.clone()),
+            selected_file,
+            "the file list underneath is left alone"
+        );
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
-        assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "Space shows the track big");
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Space shows the track big"
+        );
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
-        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)), "Space again closes it");
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Space again closes it"
+        );
     }
 
     #[test]
     fn music_opens_once_and_the_queue_moves_on() {
         let (view, cx) = pro_window();
         let music_tabs = |cx: &mut VisualTestContext| {
-            cx.read(|app| view.read(app).tabs.iter().filter(|tab| tab.panel.as_ref().is_some_and(|panel| panel.clone().downcast::<crate::views::music::MusicView>().is_ok())).count())
+            cx.read(|app| {
+                view.read(app)
+                    .tabs
+                    .iter()
+                    .filter(|tab| {
+                        tab.panel.as_ref().is_some_and(|panel| {
+                            panel
+                                .clone()
+                                .downcast::<crate::views::music::MusicView>()
+                                .is_ok()
+                        })
+                    })
+                    .count()
+            })
         };
         cx.update(|window, app| view.update(app, |this, cx| this.open_music(window, cx)));
-        cx.update(|window, app| view.update(app, |this, cx| {
-            this.select_tab(0, window, cx);
-            this.open_music(window, cx);
-        }));
+        cx.update(|window, app| {
+            view.update(app, |this, cx| {
+                this.select_tab(0, window, cx);
+                this.open_music(window, cx);
+            })
+        });
         cx.run_until_parked();
         assert_eq!(music_tabs(cx), 1, "one Music tab, reused");
         // THIS COMPUTER folds and unfolds.
@@ -5052,7 +7017,9 @@ mod tests {
             cx.debug_bounds(selector).is_some()
         };
         assert!(drawn(cx, "music-library"), "the library row is shown");
-        let heading = cx.debug_bounds("music-group-local").expect("no THIS COMPUTER heading");
+        let heading = cx
+            .debug_bounds("music-group-local")
+            .expect("no THIS COMPUTER heading");
         cx.simulate_click(heading.center(), gpui_kit::Modifiers::none());
         assert!(!drawn(cx, "music-library"), "folded: the row is hidden");
         let heading = cx.debug_bounds("music-group-local").unwrap();
@@ -5060,7 +7027,14 @@ mod tests {
         assert!(drawn(cx, "music-library"), "unfolded again");
         // Every row spans the list, however long its text.
         let music = cx.read(|app| {
-            view.read(app).tabs.iter().find_map(|tab| tab.panel.as_ref().and_then(|panel| panel.clone().downcast::<crate::views::music::MusicView>().ok()))
+            view.read(app).tabs.iter().find_map(|tab| {
+                tab.panel.as_ref().and_then(|panel| {
+                    panel
+                        .clone()
+                        .downcast::<crate::views::music::MusicView>()
+                        .ok()
+                })
+            })
         });
         let named = |title: &str, album: &str| files_ext_music::Track {
             source: files_ext_music::Source::Spotify(format!("spotify:track:{title}")),
@@ -5072,17 +7046,30 @@ mod tests {
             artist_id: None,
             album_id: None,
         };
-        music.unwrap().update(cx, |music, cx| music.show_tracks_for_test(vec![named("Short", "LP"), named("A much, much longer title", "Long album name")], cx));
+        music.unwrap().update(cx, |music, cx| {
+            music.show_tracks_for_test(
+                vec![
+                    named("Short", "LP"),
+                    named("A much, much longer title", "Long album name"),
+                ],
+                cx,
+            )
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let list = cx.debug_bounds("music-track-list").expect("no track list");
         for row in ["music-track-0", "music-track-1"] {
             let bounds = cx.debug_bounds(row).expect("row not drawn");
-            assert_eq!(bounds.size.width, list.size.width, "{row} does not span the list");
+            assert_eq!(
+                bounds.size.width, list.size.width,
+                "{row} does not span the list"
+            );
         }
 
         // A queue of two tracks: Next walks it, then stops at the end.
         let track = |name: &str| files_ext_music::Track {
-            source: files_ext_music::Source::Local(std::path::PathBuf::from(format!("/nonexistent/{name}.mp3"))),
+            source: files_ext_music::Source::Local(std::path::PathBuf::from(format!(
+                "/nonexistent/{name}.mp3"
+            ))),
             title: name.into(),
             artist: String::new(),
             album: String::new(),
@@ -5092,18 +7079,38 @@ mod tests {
             album_id: None,
         };
         let jukebox = cx.update(|_, app| crate::views::music::jukebox(app));
-        jukebox.update(cx, |jukebox, cx| jukebox.play_queue(vec![track("one"), track("two")], 0, cx));
-        assert_eq!(cx.read(|app| jukebox.read(app).current().map(|track| track.title.clone())).as_deref(), Some("one"));
+        jukebox.update(cx, |jukebox, cx| {
+            jukebox.play_queue(vec![track("one"), track("two")], 0, cx)
+        });
+        assert_eq!(
+            cx.read(|app| jukebox.read(app).current().map(|track| track.title.clone()))
+                .as_deref(),
+            Some("one")
+        );
         jukebox.update(cx, |jukebox, cx| jukebox.next(cx));
-        assert_eq!(cx.read(|app| jukebox.read(app).current().map(|track| track.title.clone())).as_deref(), Some("two"));
+        assert_eq!(
+            cx.read(|app| jukebox.read(app).current().map(|track| track.title.clone()))
+                .as_deref(),
+            Some("two")
+        );
         jukebox.update(cx, |jukebox, cx| jukebox.next(cx));
-        assert!(!cx.read(|app| jukebox.read(app).playing), "the end of the queue stops");
+        assert!(
+            !cx.read(|app| jukebox.read(app).playing),
+            "the end of the queue stops"
+        );
         // Play Next goes right after the current track.
         jukebox.update(cx, |jukebox, cx| {
             jukebox.play_queue(vec![track("one"), track("two")], 0, cx);
             jukebox.play_next(track("next"), cx);
         });
-        let titles = cx.read(|app| jukebox.read(app).queue.iter().map(|track| track.title.clone()).collect::<Vec<_>>());
+        let titles = cx.read(|app| {
+            jukebox
+                .read(app)
+                .queue
+                .iter()
+                .map(|track| track.title.clone())
+                .collect::<Vec<_>>()
+        });
         assert_eq!(titles, ["one", "next", "two"]);
     }
 
@@ -5111,15 +7118,30 @@ mod tests {
     fn mail_opens_once_as_a_tab() {
         crate::views::mail::set_accounts_for_test(Vec::new());
         let (view, cx) = pro_window();
-        let mail_tabs = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).tabs.iter().filter(|tab| tab.panel.is_some()).count());
-        cx.update(|window, app| view.update(app, |this, cx| this.open_mail(None, false, window, cx)));
+        let mail_tabs = |cx: &mut VisualTestContext| {
+            cx.read(|app| {
+                view.read(app)
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.panel.is_some())
+                    .count()
+            })
+        };
+        cx.update(|window, app| {
+            view.update(app, |this, cx| this.open_mail(None, false, window, cx))
+        });
         cx.run_until_parked();
         assert_eq!(mail_tabs(cx), 1);
-        assert!(cx.read(|app| view.read(app).active_panel().is_some()), "Mail is the active tab");
-        cx.update(|window, app| view.update(app, |this, cx| {
-            this.select_tab(0, window, cx);
-            this.open_mail(None, true, window, cx);
-        }));
+        assert!(
+            cx.read(|app| view.read(app).active_panel().is_some()),
+            "Mail is the active tab"
+        );
+        cx.update(|window, app| {
+            view.update(app, |this, cx| {
+                this.select_tab(0, window, cx);
+                this.open_mail(None, true, window, cx);
+            })
+        });
         cx.run_until_parked();
         assert_eq!(mail_tabs(cx), 1, "the same Mail tab is reused");
         assert!(cx.read(|app| view.read(app).active_panel().is_some()));
@@ -5134,14 +7156,34 @@ mod tests {
             std::fs::write(dir.join(name), name).unwrap();
         }
         crate::views::mail::set_accounts_for_test(vec![
-            files_ext_mail::Account::for_provider("ann@gmail.com", "Ann", files_ext_mail::Provider::Gmail).unwrap(),
+            files_ext_mail::Account::for_provider(
+                "ann@gmail.com",
+                "Ann",
+                files_ext_mail::Provider::Gmail,
+            )
+            .unwrap(),
         ]);
         let (view, cx) = rooted_window(&dir);
         cx.run_until_parked();
-        let entry = |cx: &mut VisualTestContext, name: &str| cx.read(|app| view.read(app).current_entries().into_iter().find(|entry| entry.name == name).unwrap());
-        let (report, photo, notes) = (entry(cx, "report.pdf"), entry(cx, "photo.png"), entry(cx, "notes.txt"));
+        let entry = |cx: &mut VisualTestContext, name: &str| {
+            cx.read(|app| {
+                view.read(app)
+                    .current_entries()
+                    .into_iter()
+                    .find(|entry| entry.name == name)
+                    .unwrap()
+            })
+        };
+        let (report, photo, notes) = (
+            entry(cx, "report.pdf"),
+            entry(cx, "photo.png"),
+            entry(cx, "notes.txt"),
+        );
         // Right-click on an unselected file: just that file.
-        assert_eq!(cx.read(|app| view.read(app).attachment_files(notes)), [dir.join("notes.txt")]);
+        assert_eq!(
+            cx.read(|app| view.read(app).attachment_files(notes)),
+            [dir.join("notes.txt")]
+        );
         // Right-click inside a selection: the whole selection.
         view.update(cx, |this, cx| {
             this.select_entry(&report.id, cx);
@@ -5152,28 +7194,50 @@ mod tests {
         assert_eq!(files, [dir.join("photo.png"), dir.join("report.pdf")]);
 
         let appearance = cx.read(|app| view.read(app).appearance.clone());
-        let compose = cx.update(|_, app| crate::views::mail::open_compose(files.clone(), None, appearance, app)).expect("no compose window");
+        let compose = cx
+            .update(|_, app| crate::views::mail::open_compose(files.clone(), None, appearance, app))
+            .expect("no compose window");
         cx.run_until_parked();
         let draft = cx.read(|app| compose.read(app).draft(app));
         assert_eq!(draft.attachments, files);
-        assert_eq!(draft.subject, "photo.png, report.pdf", "the subject starts as the file names");
+        assert_eq!(
+            draft.subject, "photo.png, report.pdf",
+            "the subject starts as the file names"
+        );
         crate::views::mail::set_accounts_for_test(Vec::new());
         // No account yet: the Mail window opens on the sign-in form, offline.
         let appearance = cx.read(|app| view.read(app).appearance.clone());
-        let mail = cx.update(|_, app| crate::views::mail::open_mail_window(None, false, appearance, app)).expect("no mail window");
+        let mail = cx
+            .update(|_, app| crate::views::mail::open_mail_window(None, false, appearance, app))
+            .expect("no mail window");
         cx.run_until_parked();
-        assert!(cx.read(|app| mail.read(app).is_adding_for_test()), "the sign-in form should show");
+        assert!(
+            cx.read(|app| mail.read(app).is_adding_for_test()),
+            "the sign-in form should show"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn git_search_filter_matches_branch_and_status() {
-        let dir = std::env::temp_dir().join(format!("file-force-git-search-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-git-search-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("repo")).unwrap();
         std::fs::create_dir_all(dir.join("plain")).unwrap();
         let repo = dir.join("repo");
-        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&repo).output().unwrap().status.success(), "git {args:?}");
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&repo)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success(),
+                "git {args:?}"
+            )
+        };
         git(&["init", "-q", "-b", "Branch-A"]);
         git(&["config", "user.email", "t@example.com"]);
         git(&["config", "user.name", "T"]);
@@ -5190,18 +7254,32 @@ mod tests {
             .flat_map(|folder| crate::model::entries(Location::from_path(&dir.join(folder)), ""))
             .collect();
         let found = |query: &str| {
-            let mut names: Vec<_> = crate::model::rank_entries(entries.clone(), query).iter().map(|entry| entry.name.clone()).collect();
+            let mut names: Vec<_> = crate::model::rank_entries(entries.clone(), query)
+                .iter()
+                .map(|entry| entry.name.clone())
+                .collect();
             names.sort();
             names
         };
-        assert_eq!(found("git:branch-a"), ["fresh.txt", "kept.txt"], "branch, partial and case-insensitive");
+        assert_eq!(
+            found("git:branch-a"),
+            ["fresh.txt", "kept.txt"],
+            "branch, partial and case-insensitive"
+        );
         assert_eq!(found("git:main"), Vec::<&str>::new());
         assert_eq!(found("git:modified"), ["kept.txt"]);
         assert_eq!(found("git:untracked"), ["fresh.txt"]);
         // Off in Cmd-K only: still a filter in the folder box.
         crate::model::set_search_keys_off(Vec::new(), vec!["git".into()]);
-        assert!(crate::model::SearchQuery::parse_in("git:main", crate::model::SearchScope::Global).text == "git:main");
-        assert!(crate::model::SearchQuery::parse_in("git:main", crate::model::SearchScope::Folder).text.is_empty());
+        assert!(
+            crate::model::SearchQuery::parse_in("git:main", crate::model::SearchScope::Global).text
+                == "git:main"
+        );
+        assert!(
+            crate::model::SearchQuery::parse_in("git:main", crate::model::SearchScope::Folder)
+                .text
+                .is_empty()
+        );
         crate::model::set_search_keys_off(Vec::new(), Vec::new());
         // Git turned off: `git:` is plain text again, which no name contains.
         crate::model::set_search_disabled(vec!["git"]);
@@ -5217,7 +7295,9 @@ mod tests {
         assert!(shown(cx));
         for expected in [false, true, false, true] {
             cx.run_until_parked();
-            let button = cx.debug_bounds("toggle-inspector").expect("no inspector button");
+            let button = cx
+                .debug_bounds("toggle-inspector")
+                .expect("no inspector button");
             cx.simulate_click(button.center(), gpui_kit::Modifiers::none());
             assert_eq!(shown(cx), expected);
         }
@@ -5231,15 +7311,32 @@ mod tests {
         let (view, cx) = rooted_window(&dir);
         view.update(cx, |this, cx| this.set_mode(ViewMode::Expressive, cx));
         cx.run_until_parked();
-        assert!(cx.debug_bounds("empty-state-title").is_some(), "no empty state");
-        assert!(cx.debug_bounds("clear-search").is_none(), "nothing to clear in an empty folder");
-        // A search with no hits still offers to clear it.
+        assert!(
+            cx.debug_bounds("empty-state-title").is_some(),
+            "no empty state"
+        );
+        assert!(
+            cx.debug_bounds("clear-search").is_none(),
+            "nothing to clear in an empty folder"
+        );
+        // Filtering runs in the background and says so before showing no hits.
         view.update(cx, |this, cx| {
             this.query = "nothing-here".into();
-            cx.notify();
+            this.filter_current_folder(cx);
         });
+        assert!(cx.read(|app| view.read(app).filtering));
+        assert!(
+            cx.debug_bounds("folder-search-loading").is_some(),
+            "no folder search animation"
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(120));
         cx.run_until_parked();
-        assert!(cx.debug_bounds("clear-search").is_some(), "a search should offer Clear search");
+        assert!(!cx.read(|app| view.read(app).filtering));
+        assert!(
+            cx.debug_bounds("clear-search").is_some(),
+            "a search should offer Clear search"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -5259,25 +7356,49 @@ mod tests {
         // the scrollbar at the right edge and drag down.
         cx.simulate_event(gpui_kit::ScrollEvent {
             position: list.center(),
-            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-2.))),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(-2.),
+            )),
             ..Default::default()
         });
         cx.run_until_parked();
         let nudged = cx.read(|app| view.read(app).list_scroll.offset().y);
-        let thumb = gpui_kit::point(list.right() - gpui_kit::px(8.), list.top() + gpui_kit::px(12.));
+        let thumb = gpui_kit::point(
+            list.right() - gpui_kit::px(8.),
+            list.top() + gpui_kit::px(12.),
+        );
         let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
         let below = thumb + gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(160.));
         cx.simulate_mouse_move(thumb, None, gpui_kit::Modifiers::none());
         draw(cx);
-        cx.simulate_mouse_down(thumb, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::none());
+        cx.simulate_mouse_down(
+            thumb,
+            gpui_kit::MouseButton::Left,
+            gpui_kit::Modifiers::none(),
+        );
         draw(cx);
-        cx.simulate_mouse_move(below, Some(gpui_kit::MouseButton::Left), gpui_kit::Modifiers::none());
+        cx.simulate_mouse_move(
+            below,
+            Some(gpui_kit::MouseButton::Left),
+            gpui_kit::Modifiers::none(),
+        );
         draw(cx);
-        cx.simulate_mouse_up(below, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::none());
+        cx.simulate_mouse_up(
+            below,
+            gpui_kit::MouseButton::Left,
+            gpui_kit::Modifiers::none(),
+        );
         cx.run_until_parked();
         let offset = cx.read(|app| view.read(app).list_scroll.offset().y);
-        assert!(offset < nudged - gpui_kit::px(50.), "dragging the scrollbar did not scroll ({nudged:?} → {offset:?}): it is under the rows");
-        assert!(cx.read(|app| view.read(app).selection.is_empty()), "the press went to a row instead of the scrollbar");
+        assert!(
+            offset < nudged - gpui_kit::px(50.),
+            "dragging the scrollbar did not scroll ({nudged:?} → {offset:?}): it is under the rows"
+        );
+        assert!(
+            cx.read(|app| view.read(app).selection.is_empty()),
+            "the press went to a row instead of the scrollbar"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5291,25 +7412,50 @@ mod tests {
         }
         let (view, cx) = rooted_window(&dir);
         // Without the inspector the list runs under the card's corner.
-        let id = files_sdk::log::notify("files", files_sdk::log::Level::Info, "Behind me is the list", Some("a body line".into()));
+        let id = files_sdk::log::notify(
+            "files",
+            files_sdk::log::Level::Info,
+            "Behind me is the list",
+            Some("a body line".into()),
+        );
         view.update(cx, |this, cx| {
             this.show_inspector = false;
             this.notifications_open = true;
             cx.notify();
         });
         cx.run_until_parked();
-        let item = cx.debug_bounds(Box::leak(format!("notification-{id}").into_boxed_str())).expect("card not shown");
+        let item = cx
+            .debug_bounds(Box::leak(format!("notification-{id}").into_boxed_str()))
+            .expect("card not shown");
         let list = cx.read(|app| view.read(app).list_scroll.bounds());
-        assert!(list.contains(&item.center()), "the card should cover the list for this test");
+        assert!(
+            list.contains(&item.center()),
+            "the card should cover the list for this test"
+        );
         // Press and drag across the card, as when selecting its text.
         let start = item.origin + gpui_kit::point(gpui_kit::px(60.), gpui_kit::px(14.));
-        cx.simulate_mouse_down(start, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::none());
-        cx.simulate_mouse_move(start + gpui_kit::point(gpui_kit::px(120.), gpui_kit::px(0.)), Some(gpui_kit::MouseButton::Left), gpui_kit::Modifiers::none());
-        cx.simulate_mouse_up(start + gpui_kit::point(gpui_kit::px(120.), gpui_kit::px(0.)), gpui_kit::MouseButton::Left, gpui_kit::Modifiers::none());
+        cx.simulate_mouse_down(
+            start,
+            gpui_kit::MouseButton::Left,
+            gpui_kit::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            start + gpui_kit::point(gpui_kit::px(120.), gpui_kit::px(0.)),
+            Some(gpui_kit::MouseButton::Left),
+            gpui_kit::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            start + gpui_kit::point(gpui_kit::px(120.), gpui_kit::px(0.)),
+            gpui_kit::MouseButton::Left,
+            gpui_kit::Modifiers::none(),
+        );
         cx.run_until_parked();
         cx.simulate_click(start, gpui_kit::Modifiers::none());
         cx.run_until_parked();
-        assert!(cx.read(|app| view.read(app).selected.is_none() && view.read(app).selection.is_empty()), "a file behind the card got the click");
+        assert!(
+            cx.read(|app| view.read(app).selected.is_none() && view.read(app).selection.is_empty()),
+            "a file behind the card got the click"
+        );
         files_sdk::log::dismiss(id);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5322,22 +7468,36 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         crate::ssh::use_fake_ssh(&dir);
         let (view, cx) = rooted_window(&dir);
-        view.update_in(cx, |this, window, cx| this.connect_saved_ssh("me@auth-host:22", window, cx));
-        let dialog = cx.read(|app| view.read(app).ssh_dialog.clone()).expect("the SSH dialog did not open");
+        view.update_in(cx, |this, window, cx| {
+            this.connect_saved_ssh("me@auth-host:22", window, cx)
+        });
+        let dialog = cx
+            .read(|app| view.read(app).ssh_dialog.clone())
+            .expect("the SSH dialog did not open");
         let mut saw_link = None;
         for _ in 0..200 {
-            cx.executor().advance_clock(std::time::Duration::from_millis(200));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(200));
             cx.run_until_parked();
             if saw_link.is_none() {
-                saw_link = cx.read(|app| dialog.read(app).auth_for_test()).map(|auth| auth.url);
+                saw_link = cx
+                    .read(|app| dialog.read(app).auth_for_test())
+                    .map(|auth| auth.url);
             }
             if cx.read(|app| !view.read(app).ssh_sessions.is_empty()) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(saw_link.as_deref(), Some("https://login.tailscale.com/a/test123"), "the sign-in link was not shown");
-        assert!(cx.read(|app| !view.read(app).ssh_sessions.is_empty()), "it did not connect after the sign-in");
+        assert_eq!(
+            saw_link.as_deref(),
+            Some("https://login.tailscale.com/a/test123"),
+            "the sign-in link was not shown"
+        );
+        assert!(
+            cx.read(|app| !view.read(app).ssh_sessions.is_empty()),
+            "it did not connect after the sign-in"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5351,7 +7511,10 @@ mod tests {
             icon: None,
             targets: Targets::ALL,
             scope: Scope::Anywhere,
-            accessibility: Accessibility { label: None, hint: None },
+            accessibility: Accessibility {
+                label: None,
+                hint: None,
+            },
         }];
         static MANIFEST: Manifest = Manifest {
             id: "kube-test",
@@ -5366,7 +7529,9 @@ mod tests {
             menu: &MENU,
             sidebar: &[],
             menu_color: None,
-            tier: Tier::Pro { product: "kube-test" },
+            tier: Tier::Pro {
+                product: "kube-test",
+            },
         };
         impl Extension for Kube {
             fn manifest(&self) -> &'static Manifest {
@@ -5384,15 +7549,27 @@ mod tests {
                     .any(|(_, item)| item.command == "kube.pods")
             })
         };
-        assert!(!offered(cx), "a Pro extension must not appear without a license");
+        assert!(
+            !offered(cx),
+            "a Pro extension must not appear without a license"
+        );
         // A key that looks right but is not signed by the publisher changes nothing.
         let (private, _) = files_sdk::license::generate_keys().unwrap();
         let forged = files_sdk::license::issue(
-            &files_sdk::license::License { id: "X".into(), email: "x@y.z".into(), products: vec!["*".into()], issued: 0, expires: None },
+            &files_sdk::license::License {
+                id: "X".into(),
+                email: "x@y.z".into(),
+                products: vec!["*".into()],
+                issued: 0,
+                expires: None,
+            },
             &private,
         )
         .unwrap();
-        view.update(cx, |this, cx| this.appearance.update(cx, |settings, _| settings.license.key = forged));
+        view.update(cx, |this, cx| {
+            this.appearance
+                .update(cx, |settings, _| settings.license.key = forged)
+        });
         assert!(!offered(cx), "a self-made key unlocked a Pro extension");
         assert!(matches!(
             cx.read(|app| crate::licensing::status(view.read(app).appearance.read(app))),
@@ -5405,7 +7582,10 @@ mod tests {
         let (view, cx) = rooted_window(&std::env::temp_dir());
         view.update_in(cx, |this, window, cx| this.open_about_dialog(window, cx));
         cx.run_until_parked();
-        assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "About did not open");
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "About did not open"
+        );
         cx.update(|window, cx| window.close_dialog(cx));
         cx.run_until_parked();
         view.update_in(cx, |this, window, cx| this.open_update_dialog(window, cx));
@@ -5413,13 +7593,20 @@ mod tests {
             cx.run_until_parked();
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "Check for Updates did not open");
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Check for Updates did not open"
+        );
         // Daily checks: due after a day, never when turned off.
         let mut updates = crate::settings::UpdateSettings::default();
-        let configured = !crate::updates::UPDATE_URL.is_empty() || crate::updates::github_repository().is_some();
+        let configured =
+            !crate::updates::UPDATE_URL.is_empty() || crate::updates::github_repository().is_some();
         assert_eq!(crate::updates::auto_check_due(&updates), configured);
         updates.last_check = crate::updates::now_seconds();
-        assert!(!crate::updates::auto_check_due(&updates), "checked just now");
+        assert!(
+            !crate::updates::auto_check_due(&updates),
+            "checked just now"
+        );
         updates.last_check = 0;
         updates.automatic = false;
         assert!(!crate::updates::auto_check_due(&updates), "turned off");
@@ -5430,34 +7617,61 @@ mod tests {
         let (_view, cx) = rooted_window(&std::env::temp_dir());
         // A short window: the unfolded list cannot fit.
         cx.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(460.)));
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-," });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-,"
+        } else {
+            "ctrl-,"
+        });
         cx.run_until_parked();
-        let header = cx.debug_bounds("settings-extensions-header").expect("settings menu not shown");
+        let header = cx
+            .debug_bounds("settings-extensions-header")
+            .expect("settings menu not shown");
         cx.simulate_click(header.center(), gpui_kit::Modifiers::none());
         cx.run_until_parked();
         let before = cx.debug_bounds("settings-menu-items").unwrap();
         cx.simulate_event(gpui_kit::ScrollEvent {
             position: header.center(),
-            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-300.))),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(-300.),
+            )),
             ..Default::default()
         });
         cx.run_until_parked();
         let after = cx.debug_bounds("settings-menu-items").unwrap();
-        assert!(after.origin.y < before.origin.y, "the settings menu did not scroll: {before:?} → {after:?}");
+        assert!(
+            after.origin.y < before.origin.y,
+            "the settings menu did not scroll: {before:?} → {after:?}"
+        );
     }
 
     #[test]
     fn the_disk_carousel_moves_with_arrows_dots_and_swipes() {
         use crate::model::DiskUsage;
-        let disk = |path: &str, name: &str| (std::path::PathBuf::from(path), DiskUsage { name: name.into(), total: 100 << 30, available: 40 << 30 });
-        *crate::model::TEST_DISKS.lock().unwrap() = Some(vec![disk("C:\\", "System"), disk("D:\\", "Data"), disk("E:\\", "Backup")]);
+        let disk = |path: &str, name: &str| {
+            (
+                std::path::PathBuf::from(path),
+                DiskUsage {
+                    name: name.into(),
+                    total: 100 << 30,
+                    available: 40 << 30,
+                },
+            )
+        };
+        *crate::model::TEST_DISKS.lock().unwrap() = Some(vec![
+            disk("C:\\", "System"),
+            disk("D:\\", "Data"),
+            disk("E:\\", "Backup"),
+        ]);
         let (view, cx) = pro_window();
         view.update(cx, |this, _| this.disk_index = Some(0));
         cx.run_until_parked();
         let shown = |cx: &mut VisualTestContext| cx.read(|app| view.read(app).disk_index);
 
         // Dots: one per disk; a click jumps there.
-        let third = cx.debug_bounds("disk-dot-2").expect("no dots for three disks");
+        let third = cx
+            .debug_bounds("disk-dot-2")
+            .expect("no dots for three disks");
         cx.simulate_click(third.center(), gpui_kit::Modifiers::none());
         assert_eq!(shown(cx), Some(2));
         // Arrows and wrap-around.
@@ -5471,7 +7685,10 @@ mod tests {
         let swipe = |cx: &mut VisualTestContext, x: f32| {
             cx.simulate_event(gpui_kit::ScrollEvent {
                 position: card.center(),
-                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(x), gpui_kit::px(0.))),
+                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                    gpui_kit::px(x),
+                    gpui_kit::px(0.),
+                )),
                 ..Default::default()
             });
             cx.run_until_parked();
@@ -5488,26 +7705,49 @@ mod tests {
     #[test]
     fn settings_general_has_update_and_power_controls() {
         let (_view, cx) = rooted_window(&std::env::temp_dir());
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-," });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-,"
+        } else {
+            "ctrl-,"
+        });
         cx.run_until_parked();
         // Not clicked here: it would ask the real GitHub.
-        assert!(cx.debug_bounds("settings-check-updates").is_some(), "no Check now button in Settings → General");
-        assert!(cx.debug_bounds("settings-power-saving").is_some(), "no power saving controls in Settings → General");
+        assert!(
+            cx.debug_bounds("settings-check-updates").is_some(),
+            "no Check now button in Settings → General"
+        );
+        assert!(
+            cx.debug_bounds("settings-power-saving").is_some(),
+            "no power saving controls in Settings → General"
+        );
+        assert!(
+            cx.debug_bounds("settings-frame-rate").is_some(),
+            "no FPS slider in Settings → General"
+        );
         // Automatic (the default) shows when it starts, and the charge now.
-        assert!(cx.debug_bounds("settings-power-below").is_some(), "no battery threshold slider");
+        assert!(
+            cx.debug_bounds("settings-power-below").is_some(),
+            "no battery threshold slider"
+        );
         assert!(cx.debug_bounds("settings-power-now").is_some());
         // Always on: no threshold to set.
         let on = cx.debug_bounds("power-saving-on").expect("no On button");
         cx.simulate_click(on.center(), gpui_kit::Modifiers::none());
         cx.run_until_parked();
-        assert!(cx.debug_bounds("settings-power-below").is_none(), "the slider is only for Automatic");
+        assert!(
+            cx.debug_bounds("settings-power-below").is_none(),
+            "the slider is only for Automatic"
+        );
         // Saved, the switch shows up in the developer console.
         let save = cx.debug_bounds("settings-save").expect("no Save button");
         cx.simulate_click(save.center(), gpui_kit::Modifiers::none());
         cx.run_until_parked();
-        let logged = files_sdk::log::events()
-            .iter()
-            .any(|event| event.kind == files_sdk::log::Kind::Setting && event.message.contains("power_saving: \"automatic\" → \"on\""));
+        let logged = files_sdk::log::events().iter().any(|event| {
+            event.kind == files_sdk::log::Kind::Setting
+                && event
+                    .message
+                    .contains("power_saving: \"automatic\" → \"on\"")
+        });
         assert!(logged, "the change is not in the console journal");
     }
 }

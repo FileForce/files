@@ -9,8 +9,8 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement as _,
-    IntoElement,
-    ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, div, px,
+    IntoElement, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, div,
+    px,
 };
 
 use crate::app::{AppearanceSettings, FileExplorer};
@@ -20,7 +20,10 @@ use crate::palette::Palette;
 enum DeleteState {
     Confirm,
     Working,
-    Failed { message: String, retryable: bool },
+    Failed {
+        message: String,
+        retryable: bool,
+    },
     /// Protected items as (name, blacklist pattern); nothing is deleted.
     Protected(Vec<(gpui_kit::SharedString, String)>),
 }
@@ -71,7 +74,10 @@ impl DeleteDialog {
             let (deleted, failure) = cx
                 .background_executor()
                 .spawn(async move {
-                    match crate::delete::delete_many(&pending.iter().map(|path| &**path).collect::<Vec<_>>(), use_trash) {
+                    match crate::delete::delete_many(
+                        &pending.iter().map(|path| &**path).collect::<Vec<_>>(),
+                        use_trash,
+                    ) {
                         Ok(()) => (pending.len(), None),
                         Err((gone, error)) => (gone, Some(error)),
                     }
@@ -100,7 +106,12 @@ impl DeleteDialog {
                         } else {
                             format!("Deleted {what} permanently")
                         };
-                        files_sdk::log::record("files", files_sdk::log::Kind::Fs, message.clone(), None);
+                        files_sdk::log::record(
+                            "files",
+                            files_sdk::log::Kind::Fs,
+                            message.clone(),
+                            None,
+                        );
                         let _ = this.explorer.update(cx, |explorer, cx| {
                             explorer.notice = Some(message);
                             cx.notify();
@@ -148,10 +159,18 @@ impl DeleteDialog {
             .rounded_md()
             .bg(palette.surface)
             .text_xs()
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(entry.name.clone()))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(entry.name.clone()),
+            )
             .child(div().text_color(palette.muted).child(location))
             .child(div().text_color(palette.muted).child(if entry.is_folder() {
-                format!("Folder · {} · {size} · everything inside is deleted too", entry.metadata)
+                format!(
+                    "Folder · {} · {size} · everything inside is deleted too",
+                    entry.metadata
+                )
             } else {
                 format!("{} · {size}", entry.kind.label())
             }))
@@ -164,7 +183,11 @@ impl DeleteDialog {
         settings: &crate::settings::AppSettings,
     ) -> gpui_kit::AnyElement {
         const SHOWN: usize = 6;
-        let folders = self.entries.iter().filter(|entry| entry.is_folder()).count();
+        let folders = self
+            .entries
+            .iter()
+            .filter(|entry| entry.is_folder())
+            .count();
         let total: Option<u64> = self
             .entries
             .iter()
@@ -181,27 +204,43 @@ impl DeleteDialog {
             .rounded_md()
             .bg(palette.surface)
             .text_xs()
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(format!(
-                "{} items · {total}",
-                self.entries.len()
-            )))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(format!("{} items · {total}", self.entries.len())),
+            )
             .children((folders > 0).then(|| {
                 div().text_color(palette.muted).child(format!(
                     "Includes {folders} folder{} · everything inside is deleted too",
                     if folders == 1 { "" } else { "s" }
                 ))
             }))
-            .children(self.entries.iter().take(SHOWN).enumerate().map(|(index, entry)| {
+            .children(
+                self.entries
+                    .iter()
+                    .take(SHOWN)
+                    .enumerate()
+                    .map(|(index, entry)| {
+                        div()
+                            .truncate()
+                            .text_color(if index < self.done {
+                                palette.faint
+                            } else {
+                                palette.text
+                            })
+                            .child(if index < self.done {
+                                format!("✓ {}", entry.name)
+                            } else {
+                                entry.name.to_string()
+                            })
+                    }),
+            )
+            .children((more > 0).then(|| {
                 div()
-                    .truncate()
-                    .text_color(if index < self.done { palette.faint } else { palette.text })
-                    .child(if index < self.done {
-                        format!("✓ {}", entry.name)
-                    } else {
-                        entry.name.to_string()
-                    })
+                    .text_color(palette.faint)
+                    .child(format!("+{more} more"))
             }))
-            .children((more > 0).then(|| div().text_color(palette.faint).child(format!("+{more} more"))))
             .into_any_element()
     }
 }
@@ -265,7 +304,9 @@ impl Render for DeleteDialog {
                 if !self.in_trash {
                     body = body.child(
                         Checkbox::new("delete-permanently")
-                            .label("Delete permanently instead of moving to Trash (cannot be undone)")
+                            .label(
+                                "Delete permanently instead of moving to Trash (cannot be undone)",
+                            )
                             .checked(self.permanent)
                             .disabled(working)
                             .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -280,10 +321,21 @@ impl Render for DeleteDialog {
                             .gap_2()
                             .items_start()
                             .text_xs()
-                            .child(Icon::new(IconName::TriangleAlert).small().text_color(palette.video))
-                            .child(div().flex_1().text_color(palette.video).child(message.clone()))
+                            .child(
+                                Icon::new(IconName::TriangleAlert)
+                                    .small()
+                                    .text_color(palette.video),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_color(palette.video)
+                                    .child(message.clone()),
+                            )
                             .children(retryable.then(|| {
-                                div().text_color(palette.muted).child("Retry when it is closed.")
+                                div()
+                                    .text_color(palette.muted)
+                                    .child("Retry when it is closed.")
                             })),
                     );
                 }
@@ -344,14 +396,22 @@ impl EmptyTrashDialog {
         self.error = None;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async { crate::delete::empty_trash() }).await;
+            let result = cx
+                .background_executor()
+                .spawn(async { crate::delete::empty_trash() })
+                .await;
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(()) => {
                     crate::model::invalidate_listings();
                     let _ = this.explorer.update(cx, |explorer, cx| {
                         explorer.selected = None;
                         explorer.notice = Some(format!("{} emptied", Location::Trash.label()));
-                        files_sdk::log::notify("files", files_sdk::log::Level::Success, format!("{} emptied", Location::Trash.label()), None);
+                        files_sdk::log::notify(
+                            "files",
+                            files_sdk::log::Level::Success,
+                            format!("{} emptied", Location::Trash.label()),
+                            None,
+                        );
                         cx.notify();
                     });
                     window.close_dialog(cx);
@@ -389,7 +449,11 @@ impl Render for EmptyTrashDialog {
                     .gap_2()
                     .items_start()
                     .text_xs()
-                    .child(Icon::new(IconName::TriangleAlert).small().text_color(palette.video))
+                    .child(
+                        Icon::new(IconName::TriangleAlert)
+                            .small()
+                            .text_color(palette.video),
+                    )
                     .child(div().flex_1().text_color(palette.video).child(error))
             }))
             .child(
@@ -409,7 +473,11 @@ impl Render for EmptyTrashDialog {
                             .danger()
                             .small()
                             .icon(IconName::Trash)
-                            .label(if self.working { "Emptying…" } else { "Empty Trash" })
+                            .label(if self.working {
+                                "Emptying…"
+                            } else {
+                                "Empty Trash"
+                            })
                             .disabled(self.working)
                             .on_click(cx.listener(|this, _, window, cx| this.empty(window, cx))),
                     ),
@@ -481,13 +549,20 @@ impl FileExplorer {
         let trash = crate::model::trash_dir();
         let in_trash = self.active_location() == Location::Trash
             || entries.iter().all(|entry| {
-                trash.as_ref().zip(entry.path.as_deref()).is_some_and(|(trash, path)| path.starts_with(trash))
+                trash
+                    .as_ref()
+                    .zip(entry.path.as_deref())
+                    .is_some_and(|(trash, path)| path.starts_with(trash))
             });
         // One protected item blocks the whole batch: partial deletes surprise people.
         let protected: Vec<_> = entries
             .iter()
             .filter_map(|entry| {
-                let rule = crate::delete::protection(entry.path.as_deref()?, &settings.deletion.protected, &home)?;
+                let rule = crate::delete::protection(
+                    entry.path.as_deref()?,
+                    &settings.deletion.protected,
+                    &home,
+                )?;
                 Some((entry.name.clone(), rule.to_string()))
             })
             .collect();

@@ -9,8 +9,8 @@ use std::sync::{Mutex, OnceLock};
 
 /// Extensions listed in Settings even without an override.
 pub const COMMON: &[&str] = &[
-    "docx", "xlsx", "pptx", "pdf", "txt", "md", "json", "html", "csv", "png", "jpg", "heic",
-    "mp4", "mov", "mp3", "zip",
+    "docx", "xlsx", "pptx", "pdf", "txt", "md", "json", "html", "csv", "png", "jpg", "heic", "mp4",
+    "mov", "mp3", "zip",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,7 +36,8 @@ pub fn normalize_extension(extension: &str) -> String {
 }
 
 pub fn extension_of(path: &Path) -> Option<String> {
-    path.extension().map(|extension| normalize_extension(&extension.to_string_lossy()))
+    path.extension()
+        .map(|extension| normalize_extension(&extension.to_string_lossy()))
 }
 
 type Cache = HashMap<String, (Option<AppChoice>, Vec<AppChoice>)>;
@@ -49,7 +50,11 @@ fn cache() -> &'static Mutex<Cache> {
 /// System default and every app able to open `extension` (cached).
 fn lookup(extension: &str) -> (Option<AppChoice>, Vec<AppChoice>) {
     let extension = normalize_extension(extension);
-    if let Some(found) = cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&extension) {
+    if let Some(found) = cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&extension)
+    {
         return found.clone();
     }
     let found = platform::lookup(&extension);
@@ -88,7 +93,10 @@ pub fn open(path: &Path, overrides: &BTreeMap<String, String>) -> io::Result<Opt
     #[cfg(test)]
     {
         let app = override_for(path, overrides).map(|app| AppChoice::from_path(app).name);
-        opened().lock().unwrap().push((path.to_path_buf(), app.clone()));
+        opened()
+            .lock()
+            .unwrap()
+            .push((path.to_path_buf(), app.clone()));
         return Ok(app);
     }
     #[cfg(not(test))]
@@ -116,12 +124,18 @@ pub fn choose_application() -> io::Result<Option<PathBuf>> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("/usr/bin/osascript")
-            .args(["-e", "POSIX path of (path to (choose application with prompt \"Default app:\"))"])
+            .args([
+                "-e",
+                "POSIX path of (path to (choose application with prompt \"Default app:\"))",
+            ])
             .output()?;
         if !output.status.success() {
             return Ok(None);
         }
-        let path = String::from_utf8_lossy(&output.stdout).trim().trim_end_matches('/').to_string();
+        let path = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
         Ok((!path.is_empty()).then(|| PathBuf::from(path)))
     }
     #[cfg(not(target_os = "macos"))]
@@ -265,8 +279,14 @@ mod tests {
     #[test]
     fn extensions_are_normalized() {
         assert_eq!(normalize_extension(".DOCX "), "docx");
-        assert_eq!(extension_of(Path::new("/a/Report.PDF")).as_deref(), Some("pdf"));
-        assert_eq!(AppChoice::from_path("/Applications/LibreOffice.app").name, "LibreOffice");
+        assert_eq!(
+            extension_of(Path::new("/a/Report.PDF")).as_deref(),
+            Some("pdf")
+        );
+        assert_eq!(
+            AppChoice::from_path("/Applications/LibreOffice.app").name,
+            "LibreOffice"
+        );
     }
 
     #[test]
@@ -274,10 +294,17 @@ mod tests {
         let existing = std::env::temp_dir();
         let overrides = BTreeMap::from([
             ("docx".to_string(), existing.display().to_string()),
-            ("xlsx".to_string(), "/Applications/Missing Thing.app".to_string()),
+            (
+                "xlsx".to_string(),
+                "/Applications/Missing Thing.app".to_string(),
+            ),
         ]);
         assert!(override_for(Path::new("a.DOCX"), &overrides).is_some());
-        assert_eq!(override_for(Path::new("a.xlsx"), &overrides), None, "missing app falls back");
+        assert_eq!(
+            override_for(Path::new("a.xlsx"), &overrides),
+            None,
+            "missing app falls back"
+        );
         assert_eq!(override_for(Path::new("a.pdf"), &overrides), None);
     }
 
@@ -286,9 +313,18 @@ mod tests {
     fn reads_system_defaults_from_launch_services() {
         // Every Mac opens .txt with something, usually TextEdit.
         let default = system_default("txt").expect("txt has a default app");
-        assert!(default.path.extension().is_some_and(|extension| extension == "app"), "{default:?}");
+        assert!(
+            default
+                .path
+                .extension()
+                .is_some_and(|extension| extension == "app"),
+            "{default:?}"
+        );
         let all = candidates("txt");
-        assert!(all.iter().any(|app| app.path == default.path), "default is among candidates");
+        assert!(
+            all.iter().any(|app| app.path == default.path),
+            "default is among candidates"
+        );
         println!("txt → {} ({} candidates)", default.name, all.len());
     }
 }

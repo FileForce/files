@@ -58,7 +58,10 @@ fn le32(bytes: &[u8]) -> u32 {
 
 fn text(bytes: &[u8], joliet: bool) -> String {
     let text = if joliet {
-        let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect();
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect();
         String::from_utf16_lossy(&units)
     } else {
         String::from_utf8_lossy(bytes).into_owned()
@@ -72,12 +75,20 @@ fn long_date(bytes: &[u8]) -> String {
     if !digits.chars().all(|c| c.is_ascii_digit()) || digits.starts_with("0000") {
         return String::new();
     }
-    format!("{}-{}-{} {}:{}", &digits[0..4], &digits[4..6], &digits[6..8], &digits[8..10], &digits[10..12])
+    format!(
+        "{}-{}-{} {}:{}",
+        &digits[0..4],
+        &digits[4..6],
+        &digits[6..8],
+        &digits[8..10],
+        &digits[10..12]
+    )
 }
 
 /// A directory record's 7-byte date (years since 1900, GMT offset in 15 min).
 fn record_date(bytes: &[u8]) -> Option<i64> {
-    let date = chrono::NaiveDate::from_ymd_opt(1900 + bytes[0] as i32, bytes[1].into(), bytes[2].into())?;
+    let date =
+        chrono::NaiveDate::from_ymd_opt(1900 + bytes[0] as i32, bytes[1].into(), bytes[2].into())?;
     let time = date.and_hms_opt(bytes[3].into(), bytes[4].into(), bytes[5].into())?;
     Some(time.and_utc().timestamp() - (bytes[6] as i8 as i64) * 15 * 60)
 }
@@ -119,7 +130,9 @@ fn descriptors(file: &mut File) -> io::Result<(Volume, (u32, u32), bool)> {
         }
     }
     let joliet = joliet_root.is_some();
-    let root = joliet_root.or(primary_root).ok_or_else(|| invalid("no primary volume descriptor"))?;
+    let root = joliet_root
+        .or(primary_root)
+        .ok_or_else(|| invalid("no primary volume descriptor"))?;
     Ok((volume, root, joliet))
 }
 
@@ -138,7 +151,10 @@ pub fn entries(path: &Path) -> io::Result<Vec<Entry>> {
     let mut stack = vec![(root, String::new(), 0usize)];
     while let Some(((extent, length), prefix, depth)) = stack.pop() {
         // A directory pointing back up would loop forever.
-        if depth > MAX_DEPTH || !seen.insert(extent) || u64::from(extent) * SECTOR + u64::from(length) > image_size {
+        if depth > MAX_DEPTH
+            || !seen.insert(extent)
+            || u64::from(extent) * SECTOR + u64::from(length) > image_size
+        {
             continue;
         }
         let mut data = vec![0u8; length as usize];
@@ -152,10 +168,14 @@ pub fn entries(path: &Path) -> io::Result<Vec<Entry>> {
                 at = (at / SECTOR as usize + 1) * SECTOR as usize;
                 continue;
             }
-            let Some(record) = data.get(at..at + size).filter(|record| record.len() >= 33) else { break };
+            let Some(record) = data.get(at..at + size).filter(|record| record.len() >= 33) else {
+                break;
+            };
             at += size;
             let name_length = record[32] as usize;
-            let Some(raw) = record.get(33..33 + name_length) else { continue };
+            let Some(raw) = record.get(33..33 + name_length) else {
+                continue;
+            };
             // "." and "..".
             if name_length == 1 && raw[0] <= 1 {
                 continue;
@@ -174,14 +194,26 @@ pub fn entries(path: &Path) -> io::Result<Vec<Entry>> {
                 continue;
             }
             let entry = Entry {
-                path: if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") },
+                path: if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                },
                 dir: flags & 0x02 != 0,
-                size: if flags & 0x02 != 0 { 0 } else { u64::from(le32(&record[10..14])) },
+                size: if flags & 0x02 != 0 {
+                    0
+                } else {
+                    u64::from(le32(&record[10..14]))
+                },
                 offset: u64::from(le32(&record[2..6])) * SECTOR,
                 modified: record_date(&record[18..25]),
             };
             if entry.dir {
-                stack.push(((le32(&record[2..6]), le32(&record[10..14])), entry.path.clone(), depth + 1));
+                stack.push((
+                    (le32(&record[2..6]), le32(&record[10..14])),
+                    entry.path.clone(),
+                    depth + 1,
+                ));
             }
             entries.push(entry);
             if entries.len() > MAX_ENTRIES {
@@ -253,11 +285,24 @@ pub(crate) mod tests {
         let volume = volume(&path).unwrap();
         assert_eq!((volume.label.as_str(), volume.joliet), ("TESTISO", false));
         let entries = entries(&path).unwrap();
-        let names: Vec<(&str, bool)> = entries.iter().map(|entry| (entry.path.as_str(), entry.dir)).collect();
-        assert_eq!(names, [("DOCS", true), ("README.TXT", false)], "versions (;1) dropped, . and .. skipped");
-        let readme = entries.iter().find(|entry| entry.path == "README.TXT").unwrap();
+        let names: Vec<(&str, bool)> = entries
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.dir))
+            .collect();
+        assert_eq!(
+            names,
+            [("DOCS", true), ("README.TXT", false)],
+            "versions (;1) dropped, . and .. skipped"
+        );
+        let readme = entries
+            .iter()
+            .find(|entry| entry.path == "README.TXT")
+            .unwrap();
         let mut text = String::new();
-        reader(&path, readme).unwrap().read_to_string(&mut text).unwrap();
+        reader(&path, readme)
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
         assert_eq!(text, "hello");
         let _ = std::fs::remove_file(&path);
     }

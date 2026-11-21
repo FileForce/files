@@ -62,7 +62,10 @@ pub fn execute(line: &str, settings: &crate::settings::AppSettings) -> String {
                         event.kind.label(),
                         if event.ok { "" } else { "✗ " },
                         event.message,
-                        event.duration_ms.map(|ms| format!("  [{ms} ms]")).unwrap_or_default()
+                        event
+                            .duration_ms
+                            .map(|ms| format!("  [{ms} ms]"))
+                            .unwrap_or_default()
                     )
                 })
                 .collect::<Vec<_>>()
@@ -71,12 +74,18 @@ pub fn execute(line: &str, settings: &crate::settings::AppSettings) -> String {
         "stats" => {
             let mut counts = std::collections::BTreeMap::<(String, &str), usize>::new();
             for event in log::events() {
-                *counts.entry((event.source, event.kind.label())).or_default() += 1;
+                *counts
+                    .entry((event.source, event.kind.label()))
+                    .or_default() += 1;
             }
             if counts.is_empty() {
                 return "No events".to_string();
             }
-            counts.into_iter().map(|((source, kind), count)| format!("{source:<14} {kind:<13} {count}")).collect::<Vec<_>>().join("\n")
+            counts
+                .into_iter()
+                .map(|((source, kind), count)| format!("{source:<14} {kind:<13} {count}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         }
         "ext" => crate::extensions::CATALOG
             .iter()
@@ -87,12 +96,22 @@ pub fn execute(line: &str, settings: &crate::settings::AppSettings) -> String {
                     .permissions
                     .iter()
                     .map(|permission| {
-                        let mark = if files_sdk::permissions::granted(manifest.id, *permission) { "" } else { "✗" };
+                        let mark = if files_sdk::permissions::granted(manifest.id, *permission) {
+                            ""
+                        } else {
+                            "✗"
+                        };
                         format!("{mark}{}", permission.key())
                     })
                     .collect::<Vec<_>>()
                     .join(",");
-                format!("{:<13} {:<4} {:<8} {}", manifest.id, if enabled { "on" } else { "off" }, manifest.version, permissions)
+                format!(
+                    "{:<13} {:<4} {:<8} {}",
+                    manifest.id,
+                    if enabled { "on" } else { "off" },
+                    manifest.version,
+                    permissions
+                )
             })
             .collect::<Vec<_>>()
             .join("\n"),
@@ -100,7 +119,10 @@ pub fn execute(line: &str, settings: &crate::settings::AppSettings) -> String {
             let Some(id) = rest.first() else {
                 return "Usage: perm <extension id>".to_string();
             };
-            let Some(manifest) = crate::extensions::CATALOG.iter().find(|manifest| manifest.id == *id) else {
+            let Some(manifest) = crate::extensions::CATALOG
+                .iter()
+                .find(|manifest| manifest.id == *id)
+            else {
                 return format!("No extension {id} (see: ext)");
             };
             if manifest.permissions.is_empty() {
@@ -110,8 +132,16 @@ pub fn execute(line: &str, settings: &crate::settings::AppSettings) -> String {
                 .permissions
                 .iter()
                 .map(|permission| {
-                    let state = if files_sdk::permissions::granted(manifest.id, *permission) { "granted" } else { "revoked" };
-                    format!("{:<15} {state:<8} {}", permission.key(), permission.description())
+                    let state = if files_sdk::permissions::granted(manifest.id, *permission) {
+                        "granted"
+                    } else {
+                        "revoked"
+                    };
+                    format!(
+                        "{:<15} {state:<8} {}",
+                        permission.key(),
+                        permission.description()
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -121,7 +151,12 @@ pub fn execute(line: &str, settings: &crate::settings::AppSettings) -> String {
             if text.is_empty() {
                 return "Usage: notify <text>".to_string();
             }
-            log::notify("files", Level::Info, text, Some("Posted from the developer shell".to_string()));
+            log::notify(
+                "files",
+                Level::Info,
+                text,
+                Some("Posted from the developer shell".to_string()),
+            );
             "Notification posted".to_string()
         }
         "run" => {
@@ -138,12 +173,20 @@ pub fn execute(line: &str, settings: &crate::settings::AppSettings) -> String {
             }
             match log::run("dev-shell", &mut command) {
                 Ok(output) => {
-                    let mut text = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
+                    let mut text = String::from_utf8_lossy(&output.stdout)
+                        .trim_end()
+                        .to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     if !stderr.trim().is_empty() {
                         text.push_str(&format!("\n{}", stderr.trim_end()));
                     }
-                    format!("{text}\n(exit {})", output.status.code().map_or("signal".to_string(), |code| code.to_string()))
+                    format!(
+                        "{text}\n(exit {})",
+                        output
+                            .status
+                            .code()
+                            .map_or("signal".to_string(), |code| code.to_string())
+                    )
                 }
                 Err(error) => format!("Cannot run {program}: {error}"),
             }
@@ -154,8 +197,12 @@ pub fn execute(line: &str, settings: &crate::settings::AppSettings) -> String {
 
 /// `HH:MM:SS.mmm` in local time.
 pub fn clock(millis: u64) -> String {
-    let time = chrono::DateTime::from_timestamp_millis(millis as i64).map(|time| time.with_timezone(&chrono::Local));
-    time.map_or_else(|| "--:--:--".to_string(), |time| time.format("%H:%M:%S%.3f").to_string())
+    let time = chrono::DateTime::from_timestamp_millis(millis as i64)
+        .map(|time| time.with_timezone(&chrono::Local));
+    time.map_or_else(
+        || "--:--:--".to_string(),
+        |time| time.format("%H:%M:%S%.3f").to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -170,15 +217,31 @@ mod tests {
         assert!(execute("ext", &settings).contains("git "));
         assert!(execute("perm ssh", &settings).contains("network"));
         assert!(execute("perm nope", &settings).starts_with("No extension"));
-        assert_eq!(execute("notify Hello there", &settings), "Notification posted");
-        assert!(files_sdk::log::notifications().iter().any(|notification| notification.title == "Hello there"));
+        assert_eq!(
+            execute("notify Hello there", &settings),
+            "Notification posted"
+        );
+        assert!(
+            files_sdk::log::notifications()
+                .iter()
+                .any(|notification| notification.title == "Hello there")
+        );
         assert!(execute("log 50 kind:notification", &settings).contains("Hello there"));
         assert!(execute("log kind:bogus", &settings).starts_with("Unknown kind"));
-        assert!(execute("run echo hi", &settings).contains("Developer mode"), "run is dev-mode only");
+        assert!(
+            execute("run echo hi", &settings).contains("Developer mode"),
+            "run is dev-mode only"
+        );
         settings.developer.enabled = true;
         let output = execute("run echo hi", &settings);
-        assert!(output.starts_with("hi") && output.ends_with("(exit 0)"), "{output}");
-        assert!(execute("log 5 source:dev-shell", &settings).contains("echo hi"), "runs land in the journal");
+        assert!(
+            output.starts_with("hi") && output.ends_with("(exit 0)"),
+            "{output}"
+        );
+        assert!(
+            execute("log 5 source:dev-shell", &settings).contains("echo hi"),
+            "runs land in the journal"
+        );
         assert!(execute("stats", &settings).contains("dev-shell"));
         assert!(execute("frobnicate", &settings).starts_with("Unknown command"));
     }

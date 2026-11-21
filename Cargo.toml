@@ -3,7 +3,7 @@ members = ["crates/*"]
 
 [package]
 name = "file-force"
-version = "0.1.32"
+version = "0.1.33"
 edition = "2024"
 description = "Files: a fast file explorer for macOS and Linux with Git, SSH, AI agents and extensions."
 license = "FSL-1.1-MIT"
@@ -20,9 +20,11 @@ files-ext-agents = { path = "crates/ext-agents" }
 files-ext-mail = { path = "crates/ext-mail" }
 files-ext-music = { path = "crates/ext-music" }
 files-ext-git = { path = "crates/ext-git" }
+files-ext-smart-folders = { path = "crates/ext-smart-folders" }
 libloading = "0.8"
 libc = "0.2"
 gpui-kit = "=0.8.1"
+gpui-fps = "=0.8.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 dirs = "6"
 url = "2"
@@ -90,3 +92,8 @@ codegen-units = 1
 # the published crate leaves unimplemented — see vendor/gpui-pre-windows.
 [patch.crates-io]
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+
+# ld64 warns that the debug binary's __eh_frame is over 16MB; harmless
+# (only slows unwinding a panic), and it repeats on every build.
+[lints.rust]
+linker_messages = "allow"

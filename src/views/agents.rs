@@ -17,9 +17,10 @@ use gpui_kit::component::text::TextView;
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _,
-    Styled as _, Subscription, WeakEntity, Window, WindowBounds, WindowOptions, actions, div, point, px, size,
+    AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Entity, FocusHandle,
+    Focusable, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    ScrollHandle, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window,
+    WindowBounds, WindowOptions, actions, div, point, px, size,
 };
 
 use crate::app::{AppearanceSettings, FileExplorer};
@@ -37,7 +38,11 @@ const SHOWN_MESSAGES: usize = 200;
 fn roots() -> Roots {
     #[cfg(test)]
     {
-        if let Some(roots) = TEST_ROOTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone() {
+        if let Some(roots) = TEST_ROOTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
             return roots;
         }
         let empty = std::env::temp_dir().join("file-force-no-agents");
@@ -69,7 +74,9 @@ pub(crate) fn tokens(count: u64) -> String {
 }
 
 pub(crate) fn ago(seconds: i64) -> String {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_secs() as i64);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_secs() as i64);
     match (now - seconds).max(0) {
         0..=59 => "now".to_string(),
         delta @ 60..=3599 => format!("{}m", delta / 60),
@@ -79,7 +86,9 @@ pub(crate) fn ago(seconds: i64) -> String {
 }
 
 fn until(seconds: i64) -> String {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_secs() as i64);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_secs() as i64);
     match (seconds - now).max(0) {
         0..=59 => "now".to_string(),
         delta @ 60..=3599 => format!("in {} min", delta / 60),
@@ -139,7 +148,10 @@ fn folder_name(session: &Session) -> String {
         .cwd
         .as_ref()
         .and_then(|cwd| cwd.file_name())
-        .map_or_else(|| "—".to_string(), |name| name.to_string_lossy().into_owned())
+        .map_or_else(
+            || "—".to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        )
 }
 
 // ------------------------------------------------------------ sidebar
@@ -176,14 +188,21 @@ impl FileExplorer {
                     break;
                 }
                 cx.background_executor()
-                    .timer(crate::power::interval(std::time::Duration::from_secs(15), std::time::Duration::from_secs(120)))
+                    .timer(crate::power::interval(
+                        std::time::Duration::from_secs(15),
+                        std::time::Duration::from_secs(120),
+                    ))
                     .await;
             }
         })
         .detach();
     }
 
-    pub(crate) fn render_agents_section(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_agents_section(
+        &self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.appearance.read(cx).extensions.agents {
             return None;
         }
@@ -211,8 +230,18 @@ impl FileExplorer {
                     .icon(IconName::Plus)
                     .tooltip("New agent session in this folder")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let cwd = this.active_location().path().unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
-                        open_agent_window(None, cwd, this.appearance.clone(), cx.entity().downgrade(), this.agent_sessions.clone(), cx);
+                        let cwd = this
+                            .active_location()
+                            .path()
+                            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
+                        open_agent_window(
+                            None,
+                            cwd,
+                            this.appearance.clone(),
+                            cx.entity().downgrade(),
+                            this.agent_sessions.clone(),
+                            cx,
+                        );
                     })),
             );
         let mut section = v_flex().gap_0p5().child(header);
@@ -222,13 +251,24 @@ impl FileExplorer {
         if self.agent_sessions.is_empty() {
             let row = div().px_2().py_1().text_xs();
             section = section.child(if self.agents_scanning {
-                row.child(crate::views::text_fx::shimmer("agents-scanning", "Looking for sessions…", palette.faint, palette))
+                row.child(crate::views::text_fx::shimmer(
+                    "agents-scanning",
+                    "Looking for sessions…",
+                    palette.faint,
+                    palette,
+                ))
             } else {
-                row.text_color(palette.faint).child("No Claude Code, Codex, OpenCode, Kimi or GLM sessions yet")
+                row.text_color(palette.faint)
+                    .child("No Claude Code, Codex, OpenCode, Kimi or GLM sessions yet")
             });
             return Some(section.into_any_element());
         }
-        for (index, session) in self.agent_sessions.iter().take(SIDEBAR_SESSIONS).enumerate() {
+        for (index, session) in self
+            .agent_sessions
+            .iter()
+            .take(SIDEBAR_SESSIONS)
+            .enumerate()
+        {
             section = section.child(self.agent_row(index, session.clone(), palette, cx));
         }
         let total = self.agent_sessions.len();
@@ -250,15 +290,30 @@ impl FileExplorer {
         Some(section.into_any_element())
     }
 
-    fn agent_row(&self, index: usize, session: Session, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn agent_row(
+        &self,
+        index: usize,
+        session: Session,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let label = format!(
             "{} session {}{}{}",
             session.agent.name(),
             session.title,
             if session.running { ", running" } else { "" },
-            if session.external { ", started outside Files" } else { "" }
+            if session.external {
+                ", started outside Files"
+            } else {
+                ""
+            }
         );
-        let subtitle = format!("{} · {} · {} tok", folder_name(&session), ago(session.updated), tokens(session.usage.total()));
+        let subtitle = format!(
+            "{} · {} · {} tok",
+            folder_name(&session),
+            ago(session.updated),
+            tokens(session.usage.total())
+        );
         let open = session.clone();
         let row = h_flex()
             .id(("agent-session", index))
@@ -272,20 +327,47 @@ impl FileExplorer {
             .aria_label(label)
             .on_click(cx.listener(move |this, _, _, cx| {
                 let cwd = open.cwd.clone().unwrap_or_default();
-                open_agent_window(Some(open.clone()), cwd, this.appearance.clone(), cx.entity().downgrade(), this.agent_sessions.clone(), cx);
+                open_agent_window(
+                    Some(open.clone()),
+                    cwd,
+                    this.appearance.clone(),
+                    cx.entity().downgrade(),
+                    this.agent_sessions.clone(),
+                    cx,
+                );
             }))
             .child(agent_glyph(session.agent, palette, 18.))
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_xs().text_color(palette.text).truncate().child(session.title.clone()))
-                    .child(div().text_size(px(9.)).text_color(palette.faint).truncate().child(subtitle)),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.text)
+                            .truncate()
+                            .child(session.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.))
+                            .text_color(palette.faint)
+                            .truncate()
+                            .child(subtitle),
+                    ),
             )
             .when(session.running, |this| {
-                this.child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(palette.code))
+                this.child(
+                    div()
+                        .size(px(6.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(palette.code),
+                )
             })
-            .when(session.external, |this| this.child(tag("external", palette.faint, palette)));
+            .when(session.external, |this| {
+                this.child(tag("external", palette.faint, palette))
+            });
         #[cfg(test)]
         let row = row.debug_selector(move || format!("agent-session-{index}"));
         row.into_any_element()
@@ -297,24 +379,41 @@ impl FileExplorer {
 
     /// "Open in Agents": a new session in Files, the agent's CLI in the
     /// terminal, or the agent's desktop app (its CLI when there is none).
-    pub(crate) fn open_in_agents(&mut self, target: AgentTarget, folder: PathBuf, cx: &mut Context<Self>) {
+    pub(crate) fn open_in_agents(
+        &mut self,
+        target: AgentTarget,
+        folder: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
         let app = self.appearance.read(cx).extensions.terminal_app.effective();
         let terminal = |agent: Agent| {
             files_ext_agents::terminal_command(agent, &folder)
-                .and_then(|command| crate::views::ssh::run_in_terminal(&command, agent.short(), app))
+                .and_then(|command| {
+                    crate::views::ssh::run_in_terminal(&command, agent.short(), app)
+                })
                 .map(|()| format!("{} · terminal · {}", agent.name(), folder.display()))
         };
         let result = match target {
             AgentTarget::Files => {
-                open_agent_window(None, folder.clone(), self.appearance.clone(), cx.entity().downgrade(), self.agent_sessions.clone(), cx);
+                open_agent_window(
+                    None,
+                    folder.clone(),
+                    self.appearance.clone(),
+                    cx.entity().downgrade(),
+                    self.agent_sessions.clone(),
+                    cx,
+                );
                 Ok(format!("New agent session · {}", folder.display()))
             }
             AgentTarget::Terminal(agent) => terminal(agent),
-            AgentTarget::App(agent) if agent.has_desktop_app() => files_ext_agents::open_in_desktop(agent, &folder)
-                .map(|()| format!("{} · {}", agent.name(), folder.display())),
+            AgentTarget::App(agent) if agent.has_desktop_app() => {
+                files_ext_agents::open_in_desktop(agent, &folder)
+                    .map(|()| format!("{} · {}", agent.name(), folder.display()))
+            }
             AgentTarget::App(agent) => terminal(agent),
         };
-        self.notice = Some(result.unwrap_or_else(|error| format!("Open in Agents failed: {error}")));
+        self.notice =
+            Some(result.unwrap_or_else(|error| format!("Open in Agents failed: {error}")));
         cx.notify();
     }
 
@@ -348,47 +447,75 @@ pub(crate) fn agents_submenu(
     cx: &mut Context<gpui_kit::component::menu::PopupMenu>,
 ) -> gpui_kit::component::menu::PopupMenu {
     let icon = crate::views::context_menu::tinted_icon(crate::extensions::icon("Agents"), color);
-    menu.submenu_with_icon(Some(icon), "Open in Agents", window, cx, move |submenu, window, cx| {
-        let item = |label: String, target: AgentTarget, enabled: bool, window: &mut Window| {
-            let folder = folder.clone();
-            let tinted = if enabled { color } else { None };
-            crate::views::context_menu::tinted_item(label, crate::extensions::icon("Agents"), tinted)
+    menu.submenu_with_icon(
+        Some(icon),
+        "Open in Agents",
+        window,
+        cx,
+        move |submenu, window, cx| {
+            let item = |label: String, target: AgentTarget, enabled: bool, window: &mut Window| {
+                let folder = folder.clone();
+                let tinted = if enabled { color } else { None };
+                crate::views::context_menu::tinted_item(
+                    label,
+                    crate::extensions::icon("Agents"),
+                    tinted,
+                )
                 .disabled(!enabled)
                 .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                this.open_in_agents(target, folder.clone(), cx);
-            }))
-        };
-        let terminal_view = view.clone();
-        let terminal_folder = folder.clone();
-        let submenu = submenu
-            .item(item("Open in Files".into(), AgentTarget::Files, true, window))
-            .submenu_with_icon(Some(gpui_kit::component::Icon::new(IconName::SquareTerminal)), "Open in Terminal", window, cx, move |terminal, window, _| {
-                Agent::ALL.into_iter().fold(terminal, |terminal, agent| {
-                    let folder = terminal_folder.clone();
-                    terminal.item(
-                        crate::views::context_menu::tinted_item(
-                            agent.name(),
-                            gpui_kit::component::Icon::new(IconName::SquareTerminal),
-                            color.filter(|_| agent.installed()),
-                        )
-                        .disabled(!agent.installed())
-                            .on_click(window.listener_for(&terminal_view, move |this, _, _, cx| {
-                                this.open_in_agents(AgentTarget::Terminal(agent), folder.clone(), cx);
-                            })),
-                    )
-                })
-            })
-            .separator();
-        Agent::ALL.into_iter().fold(submenu, |submenu, agent| {
-            let label = match (agent, agent.has_desktop_app()) {
-                (Agent::Claude, true) => "Open in Claude (desktop)".to_string(),
-                (_, true) => format!("Open in {} (desktop)", agent.name()),
-                (_, false) => format!("Open in {} (terminal)", agent.name()),
+                    this.open_in_agents(target, folder.clone(), cx);
+                }))
             };
-            let enabled = agent.has_desktop_app() || agent.installed();
-            submenu.item(item(label, AgentTarget::App(agent), enabled, window))
-        })
-    })
+            let terminal_view = view.clone();
+            let terminal_folder = folder.clone();
+            let submenu = submenu
+                .item(item(
+                    "Open in Files".into(),
+                    AgentTarget::Files,
+                    true,
+                    window,
+                ))
+                .submenu_with_icon(
+                    Some(gpui_kit::component::Icon::new(IconName::SquareTerminal)),
+                    "Open in Terminal",
+                    window,
+                    cx,
+                    move |terminal, window, _| {
+                        Agent::ALL.into_iter().fold(terminal, |terminal, agent| {
+                            let folder = terminal_folder.clone();
+                            terminal.item(
+                                crate::views::context_menu::tinted_item(
+                                    agent.name(),
+                                    gpui_kit::component::Icon::new(IconName::SquareTerminal),
+                                    color.filter(|_| agent.installed()),
+                                )
+                                .disabled(!agent.installed())
+                                .on_click(window.listener_for(
+                                    &terminal_view,
+                                    move |this, _, _, cx| {
+                                        this.open_in_agents(
+                                            AgentTarget::Terminal(agent),
+                                            folder.clone(),
+                                            cx,
+                                        );
+                                    },
+                                )),
+                            )
+                        })
+                    },
+                )
+                .separator();
+            Agent::ALL.into_iter().fold(submenu, |submenu, agent| {
+                let label = match (agent, agent.has_desktop_app()) {
+                    (Agent::Claude, true) => "Open in Claude (desktop)".to_string(),
+                    (_, true) => format!("Open in {} (desktop)", agent.name()),
+                    (_, false) => format!("Open in {} (terminal)", agent.name()),
+                };
+                let enabled = agent.has_desktop_app() || agent.installed();
+                submenu.item(item(label, AgentTarget::App(agent), enabled, window))
+            })
+        },
+    )
 }
 
 // ------------------------------------------------------------ session window
@@ -445,7 +572,11 @@ impl AgentWindow {
         explorer: WeakEntity<FileExplorer>,
         known_sessions: Vec<Session>,
     ) -> Self {
-        let placeholder = if session.is_some() { "Reply… (Enter to send)" } else { "What should the agent do in this folder?" };
+        let placeholder = if session.is_some() {
+            "Reply… (Enter to send)"
+        } else {
+            "What should the agent do in this folder?"
+        };
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let subscriptions = vec![
             cx.observe(&appearance, |_, _, cx| cx.notify()),
@@ -458,7 +589,12 @@ impl AgentWindow {
         let focus = input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let agent = session.as_ref().map_or_else(
-            || Agent::RUNNABLE.into_iter().find(|agent| agent.installed()).unwrap_or(Agent::Claude),
+            || {
+                Agent::RUNNABLE
+                    .into_iter()
+                    .find(|agent| agent.installed())
+                    .unwrap_or(Agent::Claude)
+            },
             |session| session.agent,
         );
         let mut this = Self {
@@ -494,7 +630,11 @@ impl AgentWindow {
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = self.session.clone().filter(|session| session.source.is_some() || session.agent == Agent::OpenCode) else {
+        let Some(session) = self
+            .session
+            .clone()
+            .filter(|session| session.source.is_some() || session.agent == Agent::OpenCode)
+        else {
             return;
         };
         if self.reloading {
@@ -562,7 +702,10 @@ impl AgentWindow {
 
     /// The efforts the picked model accepts (the default model's when none is picked).
     fn efforts(&self) -> Vec<String> {
-        let picked = self.model.as_ref().and_then(|model| self.models.iter().find(|choice| &choice.id == model));
+        let picked = self
+            .model
+            .as_ref()
+            .and_then(|model| self.models.iter().find(|choice| &choice.id == model));
         picked
             .or_else(|| self.models.iter().find(|choice| choice.is_default))
             .or(self.models.first())
@@ -572,7 +715,11 @@ impl AgentWindow {
 
     fn model_label(&self) -> String {
         match &self.model {
-            Some(model) => self.models.iter().find(|choice| &choice.id == model).map_or(model.clone(), |choice| choice.label.clone()),
+            Some(model) => self
+                .models
+                .iter()
+                .find(|choice| &choice.id == model)
+                .map_or(model.clone(), |choice| choice.label.clone()),
             None => match self.models.iter().find(|choice| choice.is_default) {
                 Some(choice) => format!("Default · {}", choice.label),
                 None => "Default model".to_string(),
@@ -598,19 +745,26 @@ impl AgentWindow {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(crate::power::interval(std::time::Duration::from_secs(1), std::time::Duration::from_secs(5)))
+                    .timer(crate::power::interval(
+                        std::time::Duration::from_secs(1),
+                        std::time::Duration::from_secs(5),
+                    ))
                     .await;
                 let Ok(Some(session)) = this.update(cx, |this, _| {
                     // Our own turn streams directly; the log is re-read after it.
-                    (!this.running && !this.reloading).then(|| this.session.clone()).flatten()
+                    (!this.running && !this.reloading)
+                        .then(|| this.session.clone())
+                        .flatten()
                 }) else {
                     if this.upgrade().is_none() {
                         break;
                     }
                     continue;
                 };
-                let fingerprint =
-                    cx.background_executor().spawn(async move { files_ext_agents::fingerprint(&roots(), &session) }).await;
+                let fingerprint = cx
+                    .background_executor()
+                    .spawn(async move { files_ext_agents::fingerprint(&roots(), &session) })
+                    .await;
                 let alive = this.update(cx, |this, cx| {
                     if fingerprint.is_some() && fingerprint != this.fingerprint {
                         if this.fingerprint.is_some() {
@@ -630,13 +784,16 @@ impl AgentWindow {
 
     /// The log changed within the last few seconds: someone is working in it.
     fn is_live(&self) -> bool {
-        self.last_change.is_some_and(|time| time.elapsed() < std::time::Duration::from_secs(10))
+        self.last_change
+            .is_some_and(|time| time.elapsed() < std::time::Duration::from_secs(10))
     }
 
     /// After a turn: find the log of a session Files just started, then show
     /// the conversation as the agent saved it.
     fn after_turn(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = self.session.clone() else { return };
+        let Some(session) = self.session.clone() else {
+            return;
+        };
         if session.source.is_some() || session.agent == Agent::OpenCode {
             self.reload(cx);
             return;
@@ -664,8 +821,12 @@ impl AgentWindow {
         if prompt.is_empty() || self.running {
             return;
         }
-        self.input.update(cx, |input, cx| input.set_value("", window, cx));
-        self.messages.push(ChatMessage { role: Role::User, text: prompt.clone() });
+        self.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.messages.push(ChatMessage {
+            role: Role::User,
+            text: prompt.clone(),
+        });
         // Sending a message jumps back to the conversation's end.
         self.follow = true;
         self.running = true;
@@ -678,25 +839,47 @@ impl AgentWindow {
         let agent = self.agent;
         let cwd = self.cwd.clone();
         let resume = self.session.as_ref().map(|session| session.id.clone());
-        let options = files_ext_agents::RunOptions { model: self.model.clone(), effort: self.effort.clone() };
+        let options = files_ext_agents::RunOptions {
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        };
         let writer = live.clone();
         std::thread::spawn(move || {
-            let push = |event| writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).events.push(event);
+            let push = |event| {
+                writer
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .events
+                    .push(event)
+            };
             match files_ext_agents::start(agent, &cwd, &prompt, resume.as_deref(), &options) {
                 Ok(mut run) => {
                     if let Err(error) = files_ext_agents::follow(&mut run, push) {
-                        writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).events.push(StreamEvent::Error(error.to_string()));
+                        writer
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .events
+                            .push(StreamEvent::Error(error.to_string()));
                     }
                 }
                 Err(error) => push(StreamEvent::Error(error.to_string())),
             }
-            writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).done = true;
+            writer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .done = true;
         });
 
-        let title = self.messages.last().map(|message| message.text.clone()).unwrap_or_default();
+        let title = self
+            .messages
+            .last()
+            .map(|message| message.text.clone())
+            .unwrap_or_default();
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(60)).await;
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(60))
+                    .await;
                 let (events, done) = {
                     let mut live = live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     (std::mem::take(&mut live.events), live.done)
@@ -738,16 +921,24 @@ impl AgentWindow {
                         source: None,
                     });
                 }
-                let _ = self.explorer.update(cx, |explorer, cx| explorer.remember_agent_session(id, cx));
+                let _ = self
+                    .explorer
+                    .update(cx, |explorer, cx| explorer.remember_agent_session(id, cx));
             }
             StreamEvent::Text(delta) => self.streaming.push_str(&delta),
             StreamEvent::Message(text) => {
                 self.streaming.clear();
-                self.messages.push(ChatMessage { role: Role::Assistant, text });
+                self.messages.push(ChatMessage {
+                    role: Role::Assistant,
+                    text,
+                });
             }
             StreamEvent::Tool(name) => {
                 self.flush_streaming();
-                self.messages.push(ChatMessage { role: Role::Tool, text: format!("⚙ {name}") });
+                self.messages.push(ChatMessage {
+                    role: Role::Tool,
+                    text: format!("⚙ {name}"),
+                });
             }
             StreamEvent::Done { usage } => {
                 self.flush_streaming();
@@ -766,7 +957,10 @@ impl AgentWindow {
     fn flush_streaming(&mut self) {
         if !self.streaming.trim().is_empty() {
             let text = std::mem::take(&mut self.streaming);
-            self.messages.push(ChatMessage { role: Role::Assistant, text });
+            self.messages.push(ChatMessage {
+                role: Role::Assistant,
+                text,
+            });
         }
         self.streaming.clear();
     }
@@ -783,7 +977,13 @@ impl AgentWindow {
         window.remove_window();
     }
 
-    fn render_message(&self, index: usize, message: &ChatMessage, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_message(
+        &self,
+        index: usize,
+        message: &ChatMessage,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if message.role == Role::Tool {
             // Tool lines stay one compact line, but can still be selected.
             return div()
@@ -791,7 +991,10 @@ impl AgentWindow {
                 .text_xs()
                 .font_family("Menlo")
                 .text_color(palette.faint)
-                .child(TextView::markdown(("agent-tool", index), escape_markdown(&message.text)).selectable(true))
+                .child(
+                    TextView::markdown(("agent-tool", index), escape_markdown(&message.text))
+                        .selectable(true),
+                )
                 .into_any_element();
         }
         let user = message.role == Role::User;
@@ -802,7 +1005,9 @@ impl AgentWindow {
             .xsmall()
             .icon(IconName::Copy)
             .tooltip("Copy message")
-            .on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))));
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
+            }));
         let bubble = div()
             .id(("agent-message", index))
             .max_w(gpui_kit::relative(0.86))
@@ -813,18 +1018,32 @@ impl AgentWindow {
             .text_sm()
             .text_color(palette.text)
             .when(user, |bubble| bubble.bg(palette.accent_soft))
-            .when(!user, |bubble| bubble.bg(palette.surface).border_1().border_color(palette.border))
+            .when(!user, |bubble| {
+                bubble
+                    .bg(palette.surface)
+                    .border_1()
+                    .border_color(palette.border)
+            })
             // Markdown (bold, code, lists, tables…) that can be selected and copied.
-            .child(TextView::markdown(("agent-markdown", index), message.text.clone()).selectable(true));
+            .child(
+                TextView::markdown(("agent-markdown", index), message.text.clone())
+                    .selectable(true),
+            );
         // The copy button shows on hover, on the inner side of the bubble.
-        let copy = div().invisible().group_hover(group.clone(), |style| style.visible()).child(copy);
+        let copy = div()
+            .invisible()
+            .group_hover(group.clone(), |style| style.visible())
+            .child(copy);
         #[cfg(test)]
         let copy = copy.debug_selector(move || format!("agent-copy-{index}"));
         #[cfg(test)]
         let bubble = bubble.debug_selector(move || format!("agent-bubble-{index}"));
         let row = h_flex().group(group).w_full().gap_1().items_start();
         if user {
-            row.justify_end().child(copy).child(bubble).into_any_element()
+            row.justify_end()
+                .child(copy)
+                .child(bubble)
+                .into_any_element()
         } else {
             row.child(bubble).child(copy).into_any_element()
         }
@@ -850,8 +1069,15 @@ fn escape_markdown(text: &str) -> String {
 
 #[cfg(test)]
 impl AgentWindow {
-    pub(crate) fn set_prompt_for_test(&mut self, prompt: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| input.set_value(prompt.to_string(), window, cx));
+    pub(crate) fn set_prompt_for_test(
+        &mut self,
+        prompt: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            input.set_value(prompt.to_string(), window, cx)
+        });
     }
 
     pub(crate) fn send_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -871,7 +1097,6 @@ impl AgentWindow {
         self.model = model.map(str::to_string);
         self.effort = effort.map(str::to_string);
     }
-
 
     pub(crate) fn follows_for_test(&self) -> bool {
         self.follow
@@ -914,27 +1139,31 @@ impl Render for AgentWindow {
         let palette = Palette::from_settings(&settings);
         let new_session = self.session.is_none();
 
-        let header = h_flex()
-            .px_4()
-            .py_3()
-            .gap_3()
-            .items_center()
-            .border_b_1()
-            .border_color(palette.border)
-            .child(agent_glyph(self.agent, palette, 28.))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .truncate()
-                            .child(self.session.as_ref().map_or_else(|| "New session".to_string(), |session| session.title.clone())),
-                    )
-                    .child(
-                        div().text_xs().text_color(palette.muted).truncate().child(format!(
+        let header =
+            h_flex()
+                .px_4()
+                .py_3()
+                .gap_3()
+                .items_center()
+                .border_b_1()
+                .border_color(palette.border)
+                .child(agent_glyph(self.agent, palette, 28.))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_base()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .truncate()
+                                .child(self.session.as_ref().map_or_else(
+                                    || "New session".to_string(),
+                                    |session| session.title.clone(),
+                                )),
+                        )
+                        .child(div().text_xs().text_color(palette.muted).truncate().child(
+                            format!(
                             "{} · {}{}",
                             self.agent.name(),
                             self.cwd.display(),
@@ -943,21 +1172,32 @@ impl Render for AgentWindow {
                                 .and_then(|session| session.model.clone())
                                 .map(|model| format!(" · {model}"))
                                 .unwrap_or_default()
+                        ),
                         )),
-                    ),
-            )
-            .children(self.session.as_ref().map(|session| {
-                h_flex()
-                    .gap_1()
-                    .when(session.running || self.running || self.is_live(), |this| this.child(tag("live", palette.code, palette)))
-                    .when(session.external, |this| this.child(tag("external", palette.faint, palette)))
-                    .children(session.origin.clone().map(|origin| {
-                        div().text_size(px(9.)).text_color(palette.faint).child(origin)
-                    }))
-            }));
+                )
+                .children(self.session.as_ref().map(|session| {
+                    h_flex()
+                        .gap_1()
+                        .when(session.running || self.running || self.is_live(), |this| {
+                            this.child(tag("live", palette.code, palette))
+                        })
+                        .when(session.external, |this| {
+                            this.child(tag("external", palette.faint, palette))
+                        })
+                        .children(session.origin.clone().map(|origin| {
+                            div()
+                                .text_size(px(9.))
+                                .text_color(palette.faint)
+                                .child(origin)
+                        }))
+                }));
 
         // Tokens of the session so far, plus what this window's turns used.
-        let mut usage = self.session.as_ref().map(|session| session.usage).unwrap_or_default();
+        let mut usage = self
+            .session
+            .as_ref()
+            .map(|session| session.usage)
+            .unwrap_or_default();
         usage.add(&self.turn_usage);
         let usage_bar = h_flex()
             .px_4()
@@ -971,10 +1211,16 @@ impl Render for AgentWindow {
             .child(format!("out {}", tokens(usage.output)))
             .child(format!("cache read {}", tokens(usage.cache_read)))
             .child(format!("cache write {}", tokens(usage.cache_write)))
-            .when(usage.reasoning > 0, |this| this.child(format!("reasoning {}", tokens(usage.reasoning))))
+            .when(usage.reasoning > 0, |this| {
+                this.child(format!("reasoning {}", tokens(usage.reasoning)))
+            })
             .children(usage.cost.map(|cost| format!("${cost:.2}")));
 
-        let hidden = if self.show_all { 0 } else { self.messages.len().saturating_sub(SHOWN_MESSAGES) };
+        let hidden = if self.show_all {
+            0
+        } else {
+            self.messages.len().saturating_sub(SHOWN_MESSAGES)
+        };
         let mut chat = v_flex().p_4().gap_2();
         if hidden > 0 {
             chat = chat.child(
@@ -992,13 +1238,26 @@ impl Render for AgentWindow {
             chat = chat.child(self.render_message(index, message, palette, cx));
         }
         if !self.streaming.is_empty() {
-            let live = ChatMessage { role: Role::Assistant, text: format!("{}▍", self.streaming) };
+            let live = ChatMessage {
+                role: Role::Assistant,
+                text: format!("{}▍", self.streaming),
+            };
             chat = chat.child(self.render_message(usize::MAX, &live, palette, cx));
         } else if self.running {
-            chat = chat.child(div().px_3().text_xs().child(crate::views::text_fx::shimmer("agent-thinking", "Thinking…", palette.faint, palette)));
+            chat = chat.child(div().px_3().text_xs().child(crate::views::text_fx::shimmer(
+                "agent-thinking",
+                "Thinking…",
+                palette.faint,
+                palette,
+            )));
         }
         if self.loading {
-            chat = chat.child(div().text_xs().child(crate::views::text_fx::shimmer("agent-loading", "Loading the conversation…", palette.faint, palette)));
+            chat = chat.child(div().text_xs().child(crate::views::text_fx::shimmer(
+                "agent-loading",
+                "Loading the conversation…",
+                palette.faint,
+                palette,
+            )));
         } else if self.messages.is_empty() && !self.running {
             chat = chat.child(div().text_xs().text_color(palette.faint).child(if new_session {
                 "Pick an agent and describe the task. It runs in the folder above with the agent's own settings."
@@ -1008,17 +1267,25 @@ impl Render for AgentWindow {
         }
 
         let picker = new_session.then(|| {
-            h_flex().gap_1().children(Agent::RUNNABLE.into_iter().map(|agent| {
-                let installed = agent.installed();
-                Button::new(gpui_kit::ElementId::Name(format!("pick-{}", agent.short()).into()))
+            h_flex()
+                .gap_1()
+                .children(Agent::RUNNABLE.into_iter().map(|agent| {
+                    let installed = agent.installed();
+                    Button::new(gpui_kit::ElementId::Name(
+                        format!("pick-{}", agent.short()).into(),
+                    ))
                     .small()
                     .when(agent == self.agent, |button| button.primary())
                     .when(agent != self.agent, |button| button.ghost())
                     .label(agent.name())
                     .disabled(!installed || self.running)
-                    .tooltip(if installed { "Use this agent" } else { "Not installed" })
+                    .tooltip(if installed {
+                        "Use this agent"
+                    } else {
+                        "Not installed"
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| this.set_agent(agent, cx)))
-            }))
+                }))
         });
 
         // Model and effort for the next turn; "Default" keeps the agent's own settings.
@@ -1035,7 +1302,10 @@ impl Render for AgentWindow {
             .dropdown_menu({
                 let entity = entity.clone();
                 move |menu, window, _| {
-                    let pick = |menu: gpui_kit::component::menu::PopupMenu, id: Option<String>, label: String, window: &mut Window| {
+                    let pick = |menu: gpui_kit::component::menu::PopupMenu,
+                                id: Option<String>,
+                                label: String,
+                                window: &mut Window| {
                         let checked = id == picked_model;
                         menu.item(
                             gpui_kit::component::menu::PopupMenuItem::new(label)
@@ -1043,16 +1313,30 @@ impl Render for AgentWindow {
                                 .on_click(window.listener_for(&entity, move |this, _, _, cx| {
                                     this.model = id.clone();
                                     // An effort the new model does not accept falls back to its default.
-                                    if this.effort.as_ref().is_some_and(|effort| !this.efforts().contains(effort)) {
+                                    if this
+                                        .effort
+                                        .as_ref()
+                                        .is_some_and(|effort| !this.efforts().contains(effort))
+                                    {
                                         this.effort = None;
                                     }
                                     cx.notify();
                                 })),
                         )
                     };
-                    let menu = pick(menu.scrollable(true).max_h(px(360.)), None, "Default (agent settings)".to_string(), window).separator();
+                    let menu = pick(
+                        menu.scrollable(true).max_h(px(360.)),
+                        None,
+                        "Default (agent settings)".to_string(),
+                        window,
+                    )
+                    .separator();
                     models.iter().fold(menu, |menu, choice| {
-                        let label = if choice.is_default { format!("{} · default", choice.label) } else { choice.label.clone() };
+                        let label = if choice.is_default {
+                            format!("{} · default", choice.label)
+                        } else {
+                            choice.label.clone()
+                        };
                         pick(menu, Some(choice.id.clone()), label, window)
                     })
                 }
@@ -1078,7 +1362,9 @@ impl Render for AgentWindow {
             .disabled(self.running || efforts.is_empty())
             .tooltip("Reasoning effort for the next message")
             .dropdown_menu(move |menu, window, _| {
-                let pick = |menu: gpui_kit::component::menu::PopupMenu, effort: Option<String>, window: &mut Window| {
+                let pick = |menu: gpui_kit::component::menu::PopupMenu,
+                            effort: Option<String>,
+                            window: &mut Window| {
                     let label = effort.clone().unwrap_or_else(|| "Default".to_string());
                     let checked = effort == picked_effort;
                     menu.item(
@@ -1091,11 +1377,21 @@ impl Render for AgentWindow {
                     )
                 };
                 let menu = pick(menu, None, window).separator();
-                efforts.iter().fold(menu, |menu, effort| pick(menu, Some(effort.clone()), window))
+                efforts.iter().fold(menu, |menu, effort| {
+                    pick(menu, Some(effort.clone()), window)
+                })
             });
-        let options_row = h_flex().gap_1().items_center().child(model_menu).child(effort_menu);
+        let options_row = h_flex()
+            .gap_1()
+            .items_center()
+            .child(model_menu)
+            .child(effort_menu);
 
-        let can_reply = self.session.as_ref().is_none_or(|session| !session.running || self.running) && self.agent.installed();
+        let can_reply = self
+            .session
+            .as_ref()
+            .is_none_or(|session| !session.running || self.running)
+            && self.agent.installed();
         let composer = v_flex()
             .p_3()
             .gap_2()
@@ -1144,7 +1440,11 @@ impl Render for AgentWindow {
                     .track_scroll(&self.scroll)
                     .on_scroll(cx.listener(|this, event: &gpui_kit::ScrollEvent, _, cx| {
                         let delta = event.delta.pixel_delta(px(16.)).y;
-                        let follow = if delta > px(0.) { false } else { this.follow || this.at_bottom() };
+                        let follow = if delta > px(0.) {
+                            false
+                        } else {
+                            this.follow || this.at_bottom()
+                        };
                         if follow != this.follow {
                             this.follow = follow;
                             cx.notify();
@@ -1157,14 +1457,19 @@ impl Render for AgentWindow {
             .when(!self.follow, |this| {
                 this.child(
                     div().relative().h_0().child(
-                        div().absolute().bottom(px(12.)).right(px(20.)).debug_selector(|| "agent-scroll-bottom".into()).child(
-                            Button::new("agent-scroll-bottom")
-                                .icon(IconName::ArrowDown)
-                                .rounded_full()
-                                .with_size(gpui_kit::component::Size::Medium)
-                                .tooltip("Scroll to the latest message")
-                                .on_click(cx.listener(|this, _, _, cx| this.scroll_to_end(cx))),
-                        ),
+                        div()
+                            .absolute()
+                            .bottom(px(12.))
+                            .right(px(20.))
+                            .debug_selector(|| "agent-scroll-bottom".into())
+                            .child(
+                                Button::new("agent-scroll-bottom")
+                                    .icon(IconName::ArrowDown)
+                                    .rounded_full()
+                                    .with_size(gpui_kit::component::Size::Medium)
+                                    .tooltip("Scroll to the latest message")
+                                    .on_click(cx.listener(|this, _, _, cx| this.scroll_to_end(cx))),
+                            ),
                     ),
                 )
             })
@@ -1180,17 +1485,36 @@ pub(crate) fn open_agent_window(
     known_sessions: Vec<Session>,
     cx: &mut App,
 ) -> Option<Entity<AgentWindow>> {
-    let title = session.as_ref().map_or_else(|| "New agent session".to_string(), |session| format!("{} — {}", session.title, session.agent.name()));
+    let title = session.as_ref().map_or_else(
+        || "New agent session".to_string(),
+        |session| format!("{} — {}", session.title, session.agent.name()),
+    );
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds { origin: point(px(220.), px(90.)), size: size(px(760.), px(720.)) })),
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(220.), px(90.)),
+            size: size(px(760.), px(720.)),
+        })),
         window_min_size: Some(size(px(480.), px(420.))),
-        titlebar: Some(gpui_kit::TitlebarOptions { title: Some(title.into()), ..Default::default() }),
+        titlebar: Some(gpui_kit::TitlebarOptions {
+            title: Some(title.into()),
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let created = std::rc::Rc::new(std::cell::RefCell::new(None));
     let slot = created.clone();
     gpui_kit::open_window(options, cx, move |window, cx| {
-        let view = cx.new(|cx| AgentWindow::new(window, cx, session, cwd, appearance, explorer, known_sessions));
+        let view = cx.new(|cx| {
+            AgentWindow::new(
+                window,
+                cx,
+                session,
+                cwd,
+                appearance,
+                explorer,
+                known_sessions,
+            )
+        });
         *slot.borrow_mut() = Some(view.clone());
         view
     })
@@ -1212,12 +1536,21 @@ pub struct UsageWindow {
 }
 
 impl UsageWindow {
-    fn new(window: &mut Window, cx: &mut Context<Self>, sessions: Vec<Session>, appearance: Entity<AppearanceSettings>) -> Self {
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        sessions: Vec<Session>,
+        appearance: Entity<AppearanceSettings>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         let known = sessions.clone();
         // The agent used most recently starts unfolded.
-        let expanded = sessions.first().map(|session| session.agent).into_iter().collect();
+        let expanded = sessions
+            .first()
+            .map(|session| session.agent)
+            .into_iter()
+            .collect();
         cx.spawn(async move |this, cx| {
             let accounts = cx
                 .background_executor()
@@ -1246,8 +1579,15 @@ impl UsageWindow {
     }
 
     fn agent_card(&self, agent: Agent, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let sessions: Vec<&Session> = self.sessions.iter().filter(|session| session.agent == agent).collect();
-        let week_ago = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_secs() as i64) - 7 * 86_400;
+        let sessions: Vec<&Session> = self
+            .sessions
+            .iter()
+            .filter(|session| session.agent == agent)
+            .collect();
+        let week_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.as_secs() as i64)
+            - 7 * 86_400;
         let mut all = Usage::default();
         let mut week = Usage::default();
         for session in &sessions {
@@ -1256,20 +1596,39 @@ impl UsageWindow {
                 week.add(&session.usage);
             }
         }
-        let mut models: Vec<String> = sessions.iter().filter_map(|session| session.model.clone()).collect();
+        let mut models: Vec<String> = sessions
+            .iter()
+            .filter_map(|session| session.model.clone())
+            .collect();
         models.sort();
         models.dedup();
         let running = sessions.iter().filter(|session| session.running).count();
         let external = sessions.iter().filter(|session| session.external).count();
-        let account = self.accounts.iter().find(|(known, _)| *known == agent).map(|(_, account)| account);
+        let account = self
+            .accounts
+            .iter()
+            .find(|(known, _)| *known == agent)
+            .map(|(_, account)| account);
 
         let row = |label: &str, value: String| {
             h_flex()
                 .gap_3()
                 .text_xs()
-                .child(div().w(px(120.)).flex_shrink_0().text_color(palette.muted).child(label.to_string()))
+                .child(
+                    div()
+                        .w(px(120.))
+                        .flex_shrink_0()
+                        .text_color(palette.muted)
+                        .child(label.to_string()),
+                )
                 // Long values (model lists, tiers) wrap instead of widening the window.
-                .child(div().flex_1().min_w_0().text_color(palette.text).child(value))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(palette.text)
+                        .child(value),
+                )
         };
         let usage_rows = |usage: &Usage| {
             v_flex()
@@ -1278,26 +1637,43 @@ impl UsageWindow {
                 .child(row("Output", tokens(usage.output)))
                 .child(row("Cache read", tokens(usage.cache_read)))
                 .child(row("Cache write", tokens(usage.cache_write)))
-                .when(usage.reasoning > 0, |this| this.child(row("Reasoning", tokens(usage.reasoning))))
+                .when(usage.reasoning > 0, |this| {
+                    this.child(row("Reasoning", tokens(usage.reasoning)))
+                })
                 .children(usage.cost.map(|cost| row("Cost", format!("${cost:.2}"))))
         };
 
         let expanded = self.expanded.contains(&agent);
         // The folded card still says the essentials: sessions, tokens, the tightest limit.
         let tightest = account
-            .and_then(|account| account.limits.iter().max_by(|a, b| a.used_percent.total_cmp(&b.used_percent)))
+            .and_then(|account| {
+                account
+                    .limits
+                    .iter()
+                    .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
+            })
             .map(|limit| format!(" · {:.0}% of {}", limit.used_percent, limit.name))
             .unwrap_or_default();
-        let summary = format!("{} sessions · {} tok{tightest}", sessions.len(), tokens(all.total()));
+        let summary = format!(
+            "{} sessions · {} tok{tightest}",
+            sessions.len(),
+            tokens(all.total())
+        );
         let header = h_flex()
-            .id(gpui_kit::ElementId::Name(format!("usage-card-{}", agent.short()).into()))
+            .id(gpui_kit::ElementId::Name(
+                format!("usage-card-{}", agent.short()).into(),
+            ))
             .px_4()
             .py_3()
             .gap_2()
             .items_center()
             .cursor_pointer()
             .hover(|style| style.bg(palette.hover))
-            .aria_label(format!("{}, {summary}, {}", agent.name(), if expanded { "expanded" } else { "collapsed" }))
+            .aria_label(format!(
+                "{}, {summary}, {}",
+                agent.name(),
+                if expanded { "expanded" } else { "collapsed" }
+            ))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !this.expanded.remove(&agent) {
                     this.expanded.insert(agent);
@@ -1305,14 +1681,41 @@ impl UsageWindow {
                 cx.notify();
             }))
             .child(
-                gpui_kit::component::Icon::new(if expanded { IconName::ChevronDown } else { IconName::ChevronRight })
-                    .xsmall()
-                    .text_color(palette.faint),
+                gpui_kit::component::Icon::new(if expanded {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .xsmall()
+                .text_color(palette.faint),
             )
             .child(agent_glyph(agent, palette, 22.))
-            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child(agent.name()))
-            .child(div().flex_1().min_w_0().truncate().text_xs().text_color(palette.muted).child(summary))
-            .child(div().flex_shrink_0().text_xs().text_color(palette.faint).child(if agent.installed() { "installed" } else { "not installed" }));
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(agent.name()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(palette.muted)
+                    .child(summary),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(palette.faint)
+                    .child(if agent.installed() {
+                        "installed"
+                    } else {
+                        "not installed"
+                    }),
+            );
         #[cfg(test)]
         let header = header.debug_selector(move || format!("usage-card-{}", agent.short()));
         let wrapper = v_flex()
@@ -1331,17 +1734,46 @@ impl UsageWindow {
             .pb_4()
             .pt_1()
             .gap_3()
-            .child(row("Sessions", format!("{} · {running} running · {external} external", sessions.len())))
-            .child(row("Models", if models.is_empty() { "—".to_string() } else { models.join(", ") }));
+            .child(row(
+                "Sessions",
+                format!(
+                    "{} · {running} running · {external} external",
+                    sessions.len()
+                ),
+            ))
+            .child(row(
+                "Models",
+                if models.is_empty() {
+                    "—".to_string()
+                } else {
+                    models.join(", ")
+                },
+            ));
 
         if let Some(account) = account {
             card = card
                 .children(account.plan.clone().map(|plan| row("Plan", plan)))
-                .children(account.organization.clone().map(|organization| row("Organization", organization)))
-                .children(account.details.iter().map(|(label, value)| row(label, value.clone())));
+                .children(
+                    account
+                        .organization
+                        .clone()
+                        .map(|organization| row("Organization", organization)),
+                )
+                .children(
+                    account
+                        .details
+                        .iter()
+                        .map(|(label, value)| row(label, value.clone())),
+                );
             for limit in &account.limits {
                 let used = limit.used_percent.clamp(0., 100.) as f32;
-                let color = if used >= 90. { palette.video } else if used >= 70. { palette.archive } else { palette.code };
+                let color = if used >= 90. {
+                    palette.video
+                } else if used >= 70. {
+                    palette.archive
+                } else {
+                    palette.code
+                };
                 card = card.child(
                     v_flex()
                         .gap_1()
@@ -1349,7 +1781,10 @@ impl UsageWindow {
                             &format!("Limit · {}", limit.name),
                             format!(
                                 "{used:.0}% used{}",
-                                limit.resets_at.map(|reset| format!(" · resets {}", until(reset))).unwrap_or_default()
+                                limit
+                                    .resets_at
+                                    .map(|reset| format!(" · resets {}", until(reset)))
+                                    .unwrap_or_default()
                             ),
                         ))
                         .child(
@@ -1358,7 +1793,13 @@ impl UsageWindow {
                                 .w_full()
                                 .rounded_full()
                                 .bg(palette.hover)
-                                .child(div().h_full().w(gpui_kit::relative(used / 100.)).rounded_full().bg(color)),
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(gpui_kit::relative(used / 100.))
+                                        .rounded_full()
+                                        .bg(color),
+                                ),
                         ),
                 );
             }
@@ -1370,9 +1811,22 @@ impl UsageWindow {
                 "Claude Code does not store its rate-limit windows on disk; run /usage in Claude Code to see them.",
             ));
         }
-        let card = card.child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(palette.muted).child("LAST 7 DAYS"))
+        let card = card
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(palette.muted)
+                    .child("LAST 7 DAYS"),
+            )
             .child(usage_rows(&week))
-            .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(palette.muted).child("ALL TIME"))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(palette.muted)
+                    .child("ALL TIME"),
+            )
             .child(usage_rows(&all));
         wrapper.child(card).into_any_element()
     }
@@ -1407,12 +1861,38 @@ impl Render for UsageWindow {
                 .rounded_md()
                 .text_xs()
                 .child(agent_glyph(session.agent, palette, 14.))
-                .child(div().flex_1().min_w_0().truncate().child(session.title.clone()))
-                .child(div().w(px(110.)).text_color(palette.faint).truncate().child(folder_name(session)))
-                .child(div().w(px(70.)).text_color(palette.muted).child(format!("{} tok", tokens(session.usage.total()))))
-                .child(div().w(px(36.)).text_color(palette.faint).child(ago(session.updated)))
-                .when(session.running, |this| this.child(tag("running", palette.code, palette)))
-                .when(session.external, |this| this.child(tag("external", palette.faint, palette)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(session.title.clone()),
+                )
+                .child(
+                    div()
+                        .w(px(110.))
+                        .text_color(palette.faint)
+                        .truncate()
+                        .child(folder_name(session)),
+                )
+                .child(
+                    div()
+                        .w(px(70.))
+                        .text_color(palette.muted)
+                        .child(format!("{} tok", tokens(session.usage.total()))),
+                )
+                .child(
+                    div()
+                        .w(px(36.))
+                        .text_color(palette.faint)
+                        .child(ago(session.updated)),
+                )
+                .when(session.running, |this| {
+                    this.child(tag("running", palette.code, palette))
+                })
+                .when(session.external, |this| {
+                    this.child(tag("external", palette.faint, palette))
+                })
         });
         v_flex()
             .key_context("Agents")
@@ -1451,11 +1931,21 @@ impl Render for UsageWindow {
     }
 }
 
-pub(crate) fn open_usage_window(sessions: Vec<Session>, appearance: Entity<AppearanceSettings>, cx: &mut App) -> Option<Entity<UsageWindow>> {
+pub(crate) fn open_usage_window(
+    sessions: Vec<Session>,
+    appearance: Entity<AppearanceSettings>,
+    cx: &mut App,
+) -> Option<Entity<UsageWindow>> {
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds { origin: point(px(160.), px(80.)), size: size(px(1080.), px(760.)) })),
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(160.), px(80.)),
+            size: size(px(1080.), px(760.)),
+        })),
         window_min_size: Some(size(px(760.), px(480.))),
-        titlebar: Some(gpui_kit::TitlebarOptions { title: Some("Agents usage".into()), ..Default::default() }),
+        titlebar: Some(gpui_kit::TitlebarOptions {
+            title: Some("Agents usage".into()),
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let created = std::rc::Rc::new(std::cell::RefCell::new(None));

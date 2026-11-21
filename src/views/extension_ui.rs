@@ -2,14 +2,17 @@
 //! folders or the empty area), their sidebar sections, and the app events
 //! they receive (window active/inactive, wake from sleep).
 
-use files_sdk::{Context as ExtContext, Event, Extension, Manifest, MenuItem, Outcome, Permission, Scope, Targets};
+use files_sdk::{
+    Context as ExtContext, Event, Extension, Manifest, MenuItem, Outcome, Permission, Scope,
+    Targets,
+};
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::menu::{ContextMenuExt as _};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, ClipboardItem, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    AnyElement, App, ClipboardItem, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 
 use crate::app::FileExplorer;
@@ -19,16 +22,15 @@ use crate::palette::Palette;
 /// Every extension with code behind its manifest.
 pub(crate) fn registry() -> Vec<&'static dyn Extension> {
     #[allow(unused_mut)]
-    let mut all: Vec<&'static dyn Extension> =
-        vec![
-            &files_ext_archive::EXTENSION,
-            &files_ext_ssh::EXTENSION,
-            &files_ext_forks::EXTENSION,
-            &files_ext_agents::EXTENSION,
-            &files_ext_git::EXTENSION,
-            &files_ext_mail::EXTENSION,
-            &files_ext_music::EXTENSION,
-        ];
+    let mut all: Vec<&'static dyn Extension> = vec![
+        &files_ext_archive::EXTENSION,
+        &files_ext_ssh::EXTENSION,
+        &files_ext_forks::EXTENSION,
+        &files_ext_agents::EXTENSION,
+        &files_ext_git::EXTENSION,
+        &files_ext_mail::EXTENSION,
+        &files_ext_music::EXTENSION,
+    ];
     // Signed, licensed plugins installed outside the app.
     all.extend(crate::plugins::registry());
     #[cfg(test)]
@@ -39,7 +41,10 @@ pub(crate) fn registry() -> Vec<&'static dyn Extension> {
 /// Whether the user has the extension turned on in Settings.
 fn is_enabled(manifest: &Manifest, cx: &App, explorer: &FileExplorer) -> bool {
     let settings = explorer.appearance.read(cx);
-    match crate::extensions::CATALOG.iter().position(|known| known.id == manifest.id) {
+    match crate::extensions::CATALOG
+        .iter()
+        .position(|known| known.id == manifest.id)
+    {
         Some(index) => crate::licensing::active(settings, index),
         // Not in the catalog (tests): on, unless it is Pro without a license.
         None => crate::licensing::unlocked(manifest, settings),
@@ -55,12 +60,23 @@ fn icon_for(manifest: &Manifest, icon: Option<files_sdk::Icon>) -> Icon {
 
 impl FileExplorer {
     /// Context-menu items extensions add for `target`, in the current place.
-    pub(crate) fn extension_menu_items(&self, target: Targets, location: Location, cx: &App) -> Vec<(&'static dyn Extension, MenuItem)> {
+    pub(crate) fn extension_menu_items(
+        &self,
+        target: Targets,
+        location: Location,
+        cx: &App,
+    ) -> Vec<(&'static dyn Extension, MenuItem)> {
         let remote = location.is_remote();
         registry()
             .into_iter()
             .filter(|extension| is_enabled(extension.manifest(), cx, self))
-            .flat_map(|extension| extension.manifest().menu.iter().map(move |item| (extension, *item)))
+            .flat_map(|extension| {
+                extension
+                    .manifest()
+                    .menu
+                    .iter()
+                    .map(move |item| (extension, *item))
+            })
             .filter(|(_, item)| item.targets.contains(target))
             .filter(|(_, item)| match item.scope {
                 Scope::Anywhere => true,
@@ -70,7 +86,11 @@ impl FileExplorer {
             .collect()
     }
 
-    fn extension_context(&self, entry: Option<crate::model::Entry>, location: Location) -> ExtContext {
+    fn extension_context(
+        &self,
+        entry: Option<crate::model::Entry>,
+        location: Location,
+    ) -> ExtContext {
         let path_of = |entry: crate::model::Entry| {
             crate::model::remote::entry_path(&entry)
                 .map(str::to_string)
@@ -79,7 +99,11 @@ impl FileExplorer {
         let selection = match entry {
             Some(entry) => {
                 let selected = self.selected_entries();
-                let items = if selected.iter().any(|item| item.id == entry.id) { selected } else { vec![entry] };
+                let items = if selected.iter().any(|item| item.id == entry.id) {
+                    selected
+                } else {
+                    vec![entry]
+                };
                 items.into_iter().filter_map(path_of).collect()
             }
             None => Vec::new(),
@@ -111,7 +135,13 @@ impl FileExplorer {
         cx.notify();
     }
 
-    fn apply_outcome(&mut self, manifest: &Manifest, outcome: Outcome, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_outcome(
+        &mut self,
+        manifest: &Manifest,
+        outcome: Outcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.notice = outcome.notice;
         if let Some(text) = outcome.clipboard {
             match files_sdk::permissions::check(manifest.id, Permission::Clipboard) {
@@ -132,7 +162,9 @@ impl FileExplorer {
             if !is_enabled(manifest, cx, self) {
                 continue;
             }
-            if event == Event::WindowActive(false) && !files_sdk::permissions::granted(manifest.id, Permission::Background) {
+            if event == Event::WindowActive(false)
+                && !files_sdk::permissions::granted(manifest.id, Permission::Background)
+            {
                 continue;
             }
             extension.on_event(event);
@@ -142,15 +174,23 @@ impl FileExplorer {
     /// Watches the window and the clock: the window going to the background,
     /// and the computer waking up (wall time jumps ahead of the monotonic
     /// clock, which stops while asleep).
-    pub(crate) fn watch_extension_events(window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::Subscription {
+    pub(crate) fn watch_extension_events(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Subscription {
         cx.spawn(async move |this, cx| {
             const TICK: std::time::Duration = std::time::Duration::from_secs(5);
             const SAVING_TICK: std::time::Duration = std::time::Duration::from_secs(30);
             loop {
                 let wall = std::time::SystemTime::now();
                 let monotonic = std::time::Instant::now();
-                cx.background_executor().timer(crate::power::interval(TICK, SAVING_TICK)).await;
-                let slept = wall.elapsed().unwrap_or_default().saturating_sub(monotonic.elapsed());
+                cx.background_executor()
+                    .timer(crate::power::interval(TICK, SAVING_TICK))
+                    .await;
+                let slept = wall
+                    .elapsed()
+                    .unwrap_or_default()
+                    .saturating_sub(monotonic.elapsed());
                 if slept > std::time::Duration::from_secs(30) {
                     let alive = this.update(cx, |this, cx| this.woke_up(cx));
                     if alive.is_err() {
@@ -178,7 +218,11 @@ impl FileExplorer {
     }
 
     /// Sidebar sections extensions add.
-    pub(crate) fn render_extension_sections(&self, palette: Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    pub(crate) fn render_extension_sections(
+        &self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let mut sections = Vec::new();
         for extension in registry() {
             let manifest = extension.manifest();
@@ -187,7 +231,9 @@ impl FileExplorer {
             }
             for section in manifest.sidebar {
                 let mut column = v_flex()
-                    .id(gpui_kit::ElementId::Name(format!("ext-section-{}", section.id).into()))
+                    .id(gpui_kit::ElementId::Name(
+                        format!("ext-section-{}", section.id).into(),
+                    ))
                     .gap_1()
                     .aria_label(section.accessibility.label.unwrap_or(section.title))
                     .child(self.section_header(section.id, section.title, palette, cx));
@@ -195,8 +241,11 @@ impl FileExplorer {
                     column = column.aria_description(hint);
                 }
                 if !self.section_collapsed(section.id, cx) {
-                    for (index, item) in extension.sidebar_items(section.id).into_iter().enumerate() {
-                        column = column.child(self.extension_sidebar_row(extension, section.id, index, item, palette, cx));
+                    for (index, item) in extension.sidebar_items(section.id).into_iter().enumerate()
+                    {
+                        column = column.child(self.extension_sidebar_row(
+                            extension, section.id, index, item, palette, cx,
+                        ));
                     }
                 }
                 sections.push(column.into_any_element());
@@ -218,7 +267,9 @@ impl FileExplorer {
         let command = item.command;
         let item_id = item.id.clone();
         let row = h_flex()
-            .id(gpui_kit::ElementId::Name(format!("ext-{section}-{index}").into()))
+            .id(gpui_kit::ElementId::Name(
+                format!("ext-{section}-{index}").into(),
+            ))
             .h(px(31.))
             .px_2()
             .items_center()
@@ -227,7 +278,11 @@ impl FileExplorer {
             .text_sm()
             .text_color(palette.muted)
             .hover(|style| style.bg(palette.hover).text_color(palette.text))
-            .aria_label(item.accessibility_label.clone().unwrap_or_else(|| item.title.clone()))
+            .aria_label(
+                item.accessibility_label
+                    .clone()
+                    .unwrap_or_else(|| item.title.clone()),
+            )
             .aria_description(format!("{} extension", manifest.name))
             .on_click(cx.listener(move |this, _, window, cx| {
                 let location = this.active_location();
@@ -237,7 +292,10 @@ impl FileExplorer {
             }))
             .child(icon_for(manifest, item.icon).small())
             .child(div().flex_1().min_w_0().truncate().child(item.title))
-            .children(item.badge.map(|badge| div().text_xs().text_color(palette.faint).child(badge)));
+            .children(
+                item.badge
+                    .map(|badge| div().text_xs().text_color(palette.faint).child(badge)),
+            );
         #[cfg(test)]
         let row = row.debug_selector(move || format!("ext-{section}-{index}"));
         // The extension's own right-click menu for the row.
@@ -248,18 +306,26 @@ impl FileExplorer {
             if menu_items.is_empty() {
                 return menu;
             }
-            let color = crate::menu_colors::color_for(view.read(cx).appearance.read(cx), manifest.id);
+            let color =
+                crate::menu_colors::color_for(view.read(cx).appearance.read(cx), manifest.id);
             for entry in &menu_items {
                 let (command, id) = (entry.command, menu_id.clone());
                 menu = menu.item(
-                    crate::views::context_menu::tinted_item(entry.title.clone(), icon_for(manifest, entry.icon), color)
-                        .disabled(entry.disabled)
-                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                    crate::views::context_menu::tinted_item(
+                        entry.title.clone(),
+                        icon_for(manifest, entry.icon),
+                        color,
+                    )
+                    .disabled(entry.disabled)
+                    .on_click(window.listener_for(
+                        &view,
+                        move |this, _, window, cx| {
                             let location = this.active_location();
                             let mut context = this.extension_context(None, location);
                             context.sidebar_item = Some(id.clone());
                             this.run_extension_command(extension, command, context, window, cx);
-                        })),
+                        },
+                    )),
                 );
             }
             menu
@@ -288,11 +354,15 @@ pub(crate) fn add_extension_items(
         let color = crate::menu_colors::color_for(view.read(cx).appearance.read(cx), manifest.id);
         let entry = entry.clone();
         menu = menu.item(
-            crate::views::context_menu::tinted_item(item.title, icon_for(manifest, item.icon), color)
-                .on_click(window.listener_for(view, move |this, _, window, cx| {
-                    let context = this.extension_context(entry.clone(), location);
-                    this.run_extension_command(extension, item.command, context, window, cx);
-                })),
+            crate::views::context_menu::tinted_item(
+                item.title,
+                icon_for(manifest, item.icon),
+                color,
+            )
+            .on_click(window.listener_for(view, move |this, _, window, cx| {
+                let context = this.extension_context(entry.clone(), location);
+                this.run_extension_command(extension, item.command, context, window, cx);
+            })),
         );
     }
     menu

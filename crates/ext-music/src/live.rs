@@ -35,14 +35,19 @@ impl Growing {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, (Vec<u8>, bool)> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Copies what is at `at` into `into`, waiting for it; 0 only at the end.
     pub fn read_at(&self, at: usize, into: &mut [u8]) -> usize {
         let mut state = self.lock();
         while state.0.len() <= at && !state.1 {
-            state = self.more.wait(state).unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = self
+                .more
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         let available = state.0.len().saturating_sub(at).min(into.len());
         into[..available].copy_from_slice(&state.0[at..at + available]);
@@ -72,8 +77,16 @@ impl Seek for Reader {
     fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
         self.at = match to {
             SeekFrom::Start(at) => at as usize,
-            SeekFrom::Current(by) => self.at.checked_add_signed(by as isize).ok_or_else(|| io::Error::other("Seek before the start"))?,
-            SeekFrom::End(_) => return Err(io::Error::new(io::ErrorKind::Unsupported, "The end is still downloading")),
+            SeekFrom::Current(by) => self
+                .at
+                .checked_add_signed(by as isize)
+                .ok_or_else(|| io::Error::other("Seek before the start"))?,
+            SeekFrom::End(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "The end is still downloading",
+                ));
+            }
         };
         Ok(self.at as u64)
     }
@@ -114,31 +127,41 @@ fn wav_header(rate: u32, channels: u16) -> Vec<u8> {
 pub fn soft_limit(sample: f32) -> f32 {
     const KNEE: f32 = 0.9;
     let level = sample.abs();
-    if level <= KNEE { sample } else { sample.signum() * (KNEE + (1.0 - KNEE) * ((level - KNEE) / (1.0 - KNEE)).tanh()) }
+    if level <= KNEE {
+        sample
+    } else {
+        sample.signum() * (KNEE + (1.0 - KNEE) * ((level - KNEE) / (1.0 - KNEE)).tanh())
+    }
 }
 
 /// Decodes `mp3` as it arrives, excites it and writes 16-bit WAV to `wav`.
 pub fn enhance_stream(mp3: Arc<Growing>, wav: &Growing, strength: Strength) -> io::Result<()> {
     let mut exciters: Vec<Exciter> = Vec::new();
     let mut out = Vec::new();
-    crate::enhance::decode_stream(Box::new(Reader { source: mp3, at: 0 }), Some("mp3"), |rate, count, interleaved| {
-        if exciters.is_empty() {
-            exciters = (0..count).map(|_| Exciter::new(rate, strength)).collect();
-            wav.push(&wav_header(rate, count as u16));
-        }
-        if count != exciters.len() {
-            return Ok(());
-        }
-        out.clear();
-        for frame in interleaved.chunks_exact(count) {
-            for (exciter, sample) in exciters.iter_mut().zip(frame) {
-                let level = soft_limit(exciter.run(*sample));
-                out.extend_from_slice(&((level * i16::MAX as f32).round() as i16).to_le_bytes());
+    crate::enhance::decode_stream(
+        Box::new(Reader { source: mp3, at: 0 }),
+        Some("mp3"),
+        |rate, count, interleaved| {
+            if exciters.is_empty() {
+                exciters = (0..count).map(|_| Exciter::new(rate, strength)).collect();
+                wav.push(&wav_header(rate, count as u16));
             }
-        }
-        wav.push(&out);
-        Ok(())
-    })
+            if count != exciters.len() {
+                return Ok(());
+            }
+            out.clear();
+            for frame in interleaved.chunks_exact(count) {
+                for (exciter, sample) in exciters.iter_mut().zip(frame) {
+                    let level = soft_limit(exciter.run(*sample));
+                    out.extend_from_slice(
+                        &((level * i16::MAX as f32).round() as i16).to_le_bytes(),
+                    );
+                }
+            }
+            wav.push(&out);
+            Ok(())
+        },
+    )
 }
 
 /// Serves `wav` to the player: each request from the byte it asks for
@@ -155,11 +178,22 @@ fn serve(mut stream: TcpStream, wav: &Growing) -> io::Result<()> {
     let request = String::from_utf8_lossy(&request);
     let from = request
         .lines()
-        .find_map(|line| line.to_ascii_lowercase().strip_prefix("range: bytes=").map(str::to_string))
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("range: bytes=")
+                .map(str::to_string)
+        })
         .and_then(|range| range.split('-').next()?.trim().parse::<usize>().ok())
         .unwrap_or(0);
-    let status = if from > 0 { "206 Partial Content" } else { "200 OK" };
-    write!(stream, "HTTP/1.1 {status}\r\nContent-Type: audio/wav\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n")?;
+    let status = if from > 0 {
+        "206 Partial Content"
+    } else {
+        "200 OK"
+    };
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: audio/wav\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
+    )?;
     let mut at = from;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -175,7 +209,12 @@ fn serve(mut stream: TcpStream, wav: &Growing) -> io::Result<()> {
 /// Downloads track `id` from `url` in the background: its MP3 as it
 /// arrives (into the cache too). With `enhance`, the full enhancement is
 /// cached as FLAC once the whole track is in, for later plays.
-pub fn download(id: &str, url: &str, enhance: Option<Strength>, progress: Arc<Progress>) -> Arc<Growing> {
+pub fn download(
+    id: &str,
+    url: &str,
+    enhance: Option<Strength>,
+    progress: Arc<Progress>,
+) -> Arc<Growing> {
     let mp3 = Arc::new(Growing::default());
     let (id, url, arriving) = (id.to_string(), url.to_string(), mp3.clone());
     std::thread::spawn(move || {
@@ -196,9 +235,17 @@ pub fn reader(source: Arc<Growing>) -> Box<dyn MediaSource> {
 /// Starts enhanced streaming of track `id` from `url` at `strength`: the
 /// local address to play, at once. Downloading, enhancing and serving go
 /// on in the background; `progress` fills as the MP3 arrives.
-pub fn start(id: &str, url: &str, strength: Strength, progress: Arc<Progress>) -> io::Result<String> {
+pub fn start(
+    id: &str,
+    url: &str,
+    strength: Strength,
+    progress: Arc<Progress>,
+) -> io::Result<String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let address = format!("http://127.0.0.1:{}/{id}.wav", listener.local_addr()?.port());
+    let address = format!(
+        "http://127.0.0.1:{}/{id}.wav",
+        listener.local_addr()?.port()
+    );
     let mp3 = download(id, url, Some(strength), progress);
     let wav = Arc::new(Growing::default());
 
@@ -261,7 +308,12 @@ mod tests {
             writer.finish();
         });
         let mut all = Vec::new();
-        Reader { source: growing, at: 0 }.read_to_end(&mut all).unwrap();
+        Reader {
+            source: growing,
+            at: 0,
+        }
+        .read_to_end(&mut all)
+        .unwrap();
         feeding.join().unwrap();
         assert_eq!(all, b"abcdef", "the reader waited for the second piece");
     }
@@ -269,12 +321,21 @@ mod tests {
     #[test]
     fn an_mp3_arriving_in_pieces_comes_out_as_enhanced_wav() {
         let rate = 44_100;
-        let tone: Vec<f32> = (0..rate as usize).map(|index| 0.5 * (std::f32::consts::TAU * 440.0 * index as f32 / rate as f32).sin()).collect();
+        let tone: Vec<f32> = (0..rate as usize)
+            .map(|index| 0.5 * (std::f32::consts::TAU * 440.0 * index as f32 / rate as f32).sin())
+            .collect();
         let dir = std::env::temp_dir().join(format!("files-music-live-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // A FLAC stands in for the MP3: the decoder probes either.
         let file = dir.join("tone.flac");
-        crate::enhance::encode_flac(&crate::enhance::Audio { rate, channels: vec![tone.clone(), tone] }, &file).unwrap();
+        crate::enhance::encode_flac(
+            &crate::enhance::Audio {
+                rate,
+                channels: vec![tone.clone(), tone],
+            },
+            &file,
+        )
+        .unwrap();
         let bytes = std::fs::read(&file).unwrap();
         let mp3 = Arc::new(Growing::default());
         let feeder = mp3.clone();
@@ -290,7 +351,11 @@ mod tests {
         feeding.join().unwrap();
         let made = wav.lock().0.clone();
         assert_eq!(&made[..4], b"RIFF");
-        assert_eq!(made.len(), 44 + rate as usize * 2 * 2, "every frame, 16-bit stereo");
+        assert_eq!(
+            made.len(),
+            44 + rate as usize * 2 * 2,
+            "every frame, 16-bit stereo"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -316,6 +381,9 @@ mod tests {
         };
         assert!(get("").ends_with("\r\n\r\n0123456789"));
         let ranged = get("Range: bytes=4-\r\n");
-        assert!(ranged.starts_with("HTTP/1.1 206") && ranged.ends_with("\r\n\r\n456789"), "{ranged}");
+        assert!(
+            ranged.starts_with("HTTP/1.1 206") && ranged.ends_with("\r\n\r\n456789"),
+            "{ranged}"
+        );
     }
 }

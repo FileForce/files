@@ -21,7 +21,12 @@ pub static MANIFEST: Manifest = Manifest {
         "Context menu → Git Clone… / Git Create repository here… (outside one)",
         "Windows: Commit, Log, Diff, Switch/Create branch, Clone",
     ],
-    permissions: &[Permission::ReadFiles, Permission::WriteFiles, Permission::LaunchApps, Permission::Network],
+    permissions: &[
+        Permission::ReadFiles,
+        Permission::WriteFiles,
+        Permission::LaunchApps,
+        Permission::Network,
+    ],
     commands: &[],
     menu: &[],
     sidebar: &[],
@@ -78,7 +83,10 @@ mod search {
 
     fn cache() -> std::sync::MutexGuard<'static, Cache> {
         static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-        CACHE.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        CACHE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// The current branch from `.git/HEAD` (a worktree's `.git` file points
@@ -88,18 +96,26 @@ mod search {
         let folder = if dot_git.is_file() {
             let pointer = std::fs::read_to_string(&dot_git).ok()?;
             let target = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
-            if target.is_absolute() { target } else { root.join(target) }
+            if target.is_absolute() {
+                target
+            } else {
+                root.join(target)
+            }
         } else {
             dot_git
         };
         let head = std::fs::read_to_string(folder.join("HEAD")).ok()?;
-        head.trim().strip_prefix("ref: refs/heads/").map(str::to_string)
+        head.trim()
+            .strip_prefix("ref: refs/heads/")
+            .map(str::to_string)
     }
 
     fn status_matches(value: &str, changes: &[&Change]) -> Option<bool> {
         let any = |test: &dyn Fn(&Change) -> bool| changes.iter().any(|change| test(change));
         Some(match value {
-            "modified" | "changed" | "dirty" => !changes.is_empty() && any(&|change| change.kind != ChangeKind::Untracked),
+            "modified" | "changed" | "dirty" => {
+                !changes.is_empty() && any(&|change| change.kind != ChangeKind::Untracked)
+            }
             "staged" => any(&|change| change.staged),
             "untracked" | "new" => any(&|change| change.kind == ChangeKind::Untracked),
             "conflicted" | "conflict" => any(&|change| change.kind == ChangeKind::Conflicted),
@@ -109,7 +125,11 @@ mod search {
     }
 
     pub(super) fn matches(value: &str, path: &Path) -> bool {
-        let dir = if path.is_dir() { path.to_path_buf() } else { path.parent().map(Path::to_path_buf).unwrap_or_default() };
+        let dir = if path.is_dir() {
+            path.to_path_buf()
+        } else {
+            path.parent().map(Path::to_path_buf).unwrap_or_default()
+        };
         let now = Instant::now();
         let root = {
             let mut cache = cache();
@@ -123,14 +143,28 @@ mod search {
             }
         };
         let Some(root) = root else { return false };
-        let fresh = cache().repos.get(&root).is_some_and(|repo| now.duration_since(repo.read) < FRESH);
+        let fresh = cache()
+            .repos
+            .get(&root)
+            .is_some_and(|repo| now.duration_since(repo.read) < FRESH);
         if !fresh {
             // Outside the lock: git status can take a moment on big repositories.
-            let changes = super::status(&root).map(|status| status.changes).unwrap_or_default();
-            cache().repos.insert(root.clone(), Repo { read: now, branch: head_branch(&root), changes });
+            let changes = super::status(&root)
+                .map(|status| status.changes)
+                .unwrap_or_default();
+            cache().repos.insert(
+                root.clone(),
+                Repo {
+                    read: now,
+                    branch: head_branch(&root),
+                    changes,
+                },
+            );
         }
         let cache = cache();
-        let Some(repo) = cache.repos.get(&root) else { return false };
+        let Some(repo) = cache.repos.get(&root) else {
+            return false;
+        };
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let relative = canonical
             .strip_prefix(&root)
@@ -140,10 +174,17 @@ mod search {
         let under: Vec<&Change> = repo
             .changes
             .iter()
-            .filter(|change| relative.is_empty() || change.path == relative || change.path.starts_with(&format!("{relative}/")))
+            .filter(|change| {
+                relative.is_empty()
+                    || change.path == relative
+                    || change.path.starts_with(&format!("{relative}/"))
+            })
             .collect();
-        status_matches(value, &under)
-            .unwrap_or_else(|| repo.branch.as_deref().is_some_and(|branch| branch.to_lowercase().contains(value)))
+        status_matches(value, &under).unwrap_or_else(|| {
+            repo.branch
+                .as_deref()
+                .is_some_and(|branch| branch.to_lowercase().contains(value))
+        })
     }
 }
 
@@ -169,8 +210,16 @@ fn run(dir: &Path, args: &[&str]) -> io::Result<String> {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let message = stderr.lines().filter(|line| !line.trim().is_empty()).collect::<Vec<_>>().join("\n");
-    Err(io::Error::other(if message.is_empty() { format!("git {} failed", args.join(" ")) } else { message }))
+    let message = stderr
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(io::Error::other(if message.is_empty() {
+        format!("git {} failed", args.join(" "))
+    } else {
+        message
+    }))
 }
 
 fn write_allowed() -> io::Result<()> {
@@ -182,7 +231,12 @@ fn network_allowed() -> io::Result<()> {
 }
 
 pub fn installed() -> bool {
-    files_sdk::log::command("git").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|status| status.success())
+    files_sdk::log::command("git")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// The top folder of the repository `path` is in.
@@ -192,7 +246,9 @@ pub fn installed() -> bool {
 pub fn repo_root(path: &Path) -> Option<PathBuf> {
     let dir = if path.is_dir() { path } else { path.parent()? };
     let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let root = dir.ancestors().find(|folder| folder.join(".git").exists())?;
+    let root = dir
+        .ancestors()
+        .find(|folder| folder.join(".git").exists())?;
     Some(strip_verbatim(root))
 }
 
@@ -209,10 +265,13 @@ fn strip_verbatim(path: &Path) -> PathBuf {
 fn relative(root: &Path, path: &Path) -> String {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    path.strip_prefix(&root).map_or_else(|_| path.display().to_string(), |rel| {
-        let rel = rel.display().to_string();
-        if rel.is_empty() { ".".to_string() } else { rel }
-    })
+    path.strip_prefix(&root).map_or_else(
+        |_| path.display().to_string(),
+        |rel| {
+            let rel = rel.display().to_string();
+            if rel.is_empty() { ".".to_string() } else { rel }
+        },
+    )
 }
 
 // ------------------------------------------------------------ status
@@ -270,7 +329,15 @@ pub struct Status {
 }
 
 pub fn status(root: &Path) -> io::Result<Status> {
-    Ok(parse_status(&run(root, &["status", "--porcelain=v2", "--branch", "--untracked-files=all"])?))
+    Ok(parse_status(&run(
+        root,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=all",
+        ],
+    )?))
 }
 
 /// `git status --porcelain=v2 --branch`.
@@ -290,10 +357,18 @@ pub fn parse_status(output: &str) -> Status {
                 }
             }
         } else if let Some(path) = line.strip_prefix("? ") {
-            status.changes.push(Change { path: path.to_string(), kind: ChangeKind::Untracked, staged: false });
+            status.changes.push(Change {
+                path: path.to_string(),
+                kind: ChangeKind::Untracked,
+                staged: false,
+            });
         } else if let Some(rest) = line.strip_prefix("u ") {
             let path = rest.splitn(10, ' ').nth(9).unwrap_or_default();
-            status.changes.push(Change { path: path.to_string(), kind: ChangeKind::Conflicted, staged: false });
+            status.changes.push(Change {
+                path: path.to_string(),
+                kind: ChangeKind::Conflicted,
+                staged: false,
+            });
         } else if line.starts_with("1 ") || line.starts_with("2 ") {
             let renamed = line.starts_with("2 ");
             let fields: Vec<&str> = line.splitn(if renamed { 10 } else { 9 }, ' ').collect();
@@ -303,7 +378,10 @@ pub fn parse_status(output: &str) -> Status {
                 // `new\told`
                 path = path.split('\t').next().unwrap_or(path);
             }
-            let (index, tree) = (xy.chars().next().unwrap_or('.'), xy.chars().nth(1).unwrap_or('.'));
+            let (index, tree) = (
+                xy.chars().next().unwrap_or('.'),
+                xy.chars().nth(1).unwrap_or('.'),
+            );
             let code = if tree != '.' { tree } else { index };
             let kind = match code {
                 'A' => ChangeKind::Added,
@@ -311,7 +389,11 @@ pub fn parse_status(output: &str) -> Status {
                 'R' | 'C' => ChangeKind::Renamed,
                 _ => ChangeKind::Modified,
             };
-            status.changes.push(Change { path: path.to_string(), kind, staged: index != '.' });
+            status.changes.push(Change {
+                path: path.to_string(),
+                kind,
+                staged: index != '.',
+            });
         }
     }
     status
@@ -323,10 +405,16 @@ pub fn parse_status(output: &str) -> Status {
 pub fn commit(root: &Path, paths: &[String], message: &str) -> io::Result<String> {
     write_allowed()?;
     if message.trim().is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "The commit message is empty"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "The commit message is empty",
+        ));
     }
     if paths.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Nothing selected to commit"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Nothing selected to commit",
+        ));
     }
     let mut add = vec!["add", "--all", "--"];
     add.extend(paths.iter().map(String::as_str));
@@ -334,7 +422,9 @@ pub fn commit(root: &Path, paths: &[String], message: &str) -> io::Result<String
     let mut commit = vec!["commit", "-m", message, "--"];
     commit.extend(paths.iter().map(String::as_str));
     run(root, &commit)?;
-    Ok(run(root, &["log", "-1", "--format=%h %s"])?.trim().to_string())
+    Ok(run(root, &["log", "-1", "--format=%h %s"])?
+        .trim()
+        .to_string())
 }
 
 pub fn add(root: &Path, paths: &[PathBuf]) -> io::Result<()> {
@@ -372,14 +462,23 @@ pub fn fetch(root: &Path) -> io::Result<String> {
 pub fn push(root: &Path) -> io::Result<String> {
     network_allowed()?;
     let status = status(root)?;
-    let branch = status.branch.ok_or_else(|| io::Error::other("Detached HEAD: switch to a branch first"))?;
+    let branch = status
+        .branch
+        .ok_or_else(|| io::Error::other("Detached HEAD: switch to a branch first"))?;
     let output = if status.upstream.is_some() {
         files_sdk::log::run(MANIFEST.id, git(root).args(["push"]))?
     } else {
-        files_sdk::log::run(MANIFEST.id, git(root).args(["push", "--set-upstream", "origin", &branch]))?
+        files_sdk::log::run(
+            MANIFEST.id,
+            git(root).args(["push", "--set-upstream", "origin", &branch]),
+        )?
     };
     // git push reports progress on stderr even when it works.
-    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     if output.status.success() {
         Ok(summary(&text, &format!("Pushed {branch}")))
     } else {
@@ -388,7 +487,13 @@ pub fn push(root: &Path) -> io::Result<String> {
 }
 
 fn summary(output: &str, fallback: &str) -> String {
-    output.lines().rev().map(str::trim).find(|line| !line.is_empty()).unwrap_or(fallback).to_string()
+    output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 // ------------------------------------------------------------ log
@@ -408,7 +513,11 @@ pub struct Commit {
 /// Newest first; only commits touching `path` when given.
 pub fn log(root: &Path, path: Option<&Path>, limit: usize) -> io::Result<Vec<Commit>> {
     let limit = format!("-{limit}");
-    let mut args = vec!["log", &limit, "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x1f%D%x1e"];
+    let mut args = vec![
+        "log",
+        &limit,
+        "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x1f%D%x1e",
+    ];
     let rel = path.map(|path| relative(root, path));
     if let Some(rel) = &rel {
         args.extend(["--", rel.as_str()]);
@@ -436,7 +545,11 @@ pub fn parse_log(output: &str) -> Vec<Commit> {
                 author: fields[2].to_string(),
                 time: fields[3].parse().unwrap_or(0),
                 subject: fields[4].to_string(),
-                refs: fields[5].split(", ").filter(|name| !name.is_empty()).map(str::to_string).collect(),
+                refs: fields[5]
+                    .split(", ")
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             })
         })
         .collect()
@@ -444,7 +557,10 @@ pub fn parse_log(output: &str) -> Vec<Commit> {
 
 /// Files a commit changed, with their kind.
 pub fn commit_files(root: &Path, hash: &str) -> io::Result<Vec<Change>> {
-    let output = run(root, &["show", "--format=", "--name-status", "--no-renames", hash])?;
+    let output = run(
+        root,
+        &["show", "--format=", "--name-status", "--no-renames", hash],
+    )?;
     Ok(output
         .lines()
         .filter_map(|line| {
@@ -454,7 +570,11 @@ pub fn commit_files(root: &Path, hash: &str) -> io::Result<Vec<Change>> {
                 'D' => ChangeKind::Deleted,
                 _ => ChangeKind::Modified,
             };
-            Some(Change { path: path.to_string(), kind, staged: true })
+            Some(Change {
+                path: path.to_string(),
+                kind,
+                staged: true,
+            })
         })
         .collect())
 }
@@ -474,7 +594,11 @@ pub enum LineKind {
 pub fn diff_lines(diff: &str) -> Vec<(LineKind, String)> {
     diff.lines()
         .map(|line| {
-            let kind = if line.starts_with("+++") || line.starts_with("---") || line.starts_with("diff ") || line.starts_with("index ") {
+            let kind = if line.starts_with("+++")
+                || line.starts_with("---")
+                || line.starts_with("diff ")
+                || line.starts_with("index ")
+            {
                 LineKind::Header
             } else if line.starts_with("@@") {
                 LineKind::Hunk
@@ -492,12 +616,16 @@ pub fn diff_lines(diff: &str) -> Vec<(LineKind, String)> {
 
 /// Working tree against HEAD for `path` (a new file shows whole).
 pub fn diff_worktree(root: &Path, path: &str) -> io::Result<String> {
-    let diff = run(root, &["diff", "HEAD", "--", path]).or_else(|_| run(root, &["diff", "--", path]))?;
+    let diff =
+        run(root, &["diff", "HEAD", "--", path]).or_else(|_| run(root, &["diff", "--", path]))?;
     if !diff.trim().is_empty() {
         return Ok(diff);
     }
     // Untracked: show it as all added.
-    let output = files_sdk::log::run(MANIFEST.id, git(root).args(["diff", "--no-index", "--", "/dev/null", path]))?;
+    let output = files_sdk::log::run(
+        MANIFEST.id,
+        git(root).args(["diff", "--no-index", "--", "/dev/null", path]),
+    )?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -523,10 +651,18 @@ pub fn branches(root: &Path) -> io::Result<Vec<Branch>> {
             let current = line.starts_with('*');
             let name = line.trim_start_matches(['*', ' ']);
             if let Some(local) = name.strip_prefix("refs/heads/") {
-                Some(Branch { name: local.to_string(), current, remote: false })
+                Some(Branch {
+                    name: local.to_string(),
+                    current,
+                    remote: false,
+                })
             } else {
                 let remote = name.strip_prefix("refs/remotes/")?;
-                (!remote.ends_with("/HEAD")).then(|| Branch { name: remote.to_string(), current: false, remote: true })
+                (!remote.ends_with("/HEAD")).then(|| Branch {
+                    name: remote.to_string(),
+                    current: false,
+                    remote: true,
+                })
             }
         })
         .collect())
@@ -545,7 +681,10 @@ pub fn switch(root: &Path, name: &str, remote: bool) -> io::Result<()> {
 pub fn create_branch(root: &Path, name: &str, switch_to: bool) -> io::Result<()> {
     write_allowed()?;
     if name.trim().is_empty() || name.contains(' ') {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "A branch name cannot be empty or contain spaces"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "A branch name cannot be empty or contain spaces",
+        ));
     }
     if switch_to {
         run(root, &["switch", "-c", name]).map(drop)
@@ -592,7 +731,10 @@ pub fn clone(url: &str, parent: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Not a repository URL"))?;
     let target = parent.join(name);
     if target.exists() {
-        return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} already exists", target.display())));
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} already exists", target.display()),
+        ));
     }
     run(parent, &["clone", "--", url, name])?;
     Ok(target)

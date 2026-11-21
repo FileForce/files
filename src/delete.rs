@@ -186,16 +186,19 @@ pub fn describe(error: &io::Error) -> DeleteFailure {
     let raw = error.raw_os_error();
     // Windows: ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33).
     // Unix: EBUSY (16), ETXTBSY (26).
-    let busy = matches!(error.kind(), io::ErrorKind::ResourceBusy | io::ErrorKind::ExecutableFileBusy)
-        || if cfg!(windows) {
-            matches!(raw, Some(32 | 33))
-        } else {
-            matches!(raw, Some(16 | 26))
-        };
+    let busy = matches!(
+        error.kind(),
+        io::ErrorKind::ResourceBusy | io::ErrorKind::ExecutableFileBusy
+    ) || if cfg!(windows) {
+        matches!(raw, Some(32 | 33))
+    } else {
+        matches!(raw, Some(16 | 26))
+    };
     let message = if busy {
         "The file is in use by another program. Close it there and try again.".to_string()
     } else if error.kind() == io::ErrorKind::PermissionDenied {
-        "Permission denied. The file or its folder is read-only or owned by another user.".to_string()
+        "Permission denied. The file or its folder is read-only or owned by another user."
+            .to_string()
     } else if error.kind() == io::ErrorKind::NotFound {
         "The file no longer exists.".to_string()
     } else {
@@ -271,8 +274,10 @@ pub fn empty_trash() -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        let items = trash::os_limited::list().map_err(|error| io::Error::other(error.to_string()))?;
-        return trash::os_limited::purge_all(items).map_err(|error| io::Error::other(error.to_string()));
+        let items =
+            trash::os_limited::list().map_err(|error| io::Error::other(error.to_string()))?;
+        return trash::os_limited::purge_all(items)
+            .map_err(|error| io::Error::other(error.to_string()));
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -297,7 +302,10 @@ mod tests {
     use super::*;
 
     fn defaults() -> Vec<String> {
-        default_protected().iter().map(|pattern| pattern.to_string()).collect()
+        default_protected()
+            .iter()
+            .map(|pattern| pattern.to_string())
+            .collect()
     }
 
     #[test]
@@ -313,7 +321,10 @@ mod tests {
         assert!(protected("/Users/me"));
         assert!(protected("/users/ME/documents"), "APFS is case-insensitive");
         assert!(protected("/Users/me/.ssh/id_ed25519"));
-        assert!(!protected("/Users/me/Documents/report.pdf"), "user files stay deletable");
+        assert!(
+            !protected("/Users/me/Documents/report.pdf"),
+            "user files stay deletable"
+        );
         assert!(!protected("/Users/me/Downloads/old.zip"));
         assert!(!protected("/usr/local/bin/tool"));
     }
@@ -328,7 +339,10 @@ mod tests {
         assert!(protected("/data/vault/a/b"));
         assert!(protected("/data"), "ancestor of a protected folder");
         assert!(!protected("/data/other"));
-        assert_eq!(protection(Path::new("/data/vault/x"), &patterns, home), Some("/data/vault/**"));
+        assert_eq!(
+            protection(Path::new("/data/vault/x"), &patterns, home),
+            Some("/data/vault/**")
+        );
     }
 
     #[test]
@@ -374,6 +388,9 @@ mod tests {
         delete(&root.join("dir"), false).unwrap();
         assert!(!root.join("file.txt").exists());
         assert!(!root.join("dir").exists());
-        assert_eq!(delete(&root.join("file.txt"), false).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            delete(&root.join("file.txt"), false).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
     }
 }

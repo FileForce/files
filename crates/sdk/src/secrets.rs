@@ -26,7 +26,8 @@ pub fn set(extension: &str, account: &str, secret: &str) -> io::Result<()> {
     {
         // Commands go through stdin (`security -i`), so the secret never
         // shows up in the process list.
-        let quote = |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
+        let quote =
+            |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
         let mut child = Command::new("/usr/bin/security")
             .arg("-i")
             .stdin(Stdio::piped())
@@ -49,12 +50,24 @@ pub fn set(extension: &str, account: &str, secret: &str) -> io::Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         let mut child = Command::new("secret-tool")
-            .args(["store", "--label", &format!("Files · {extension} · {account}"), "service", &service(extension), "account", account])
+            .args([
+                "store",
+                "--label",
+                &format!("Files · {extension} · {account}"),
+                "service",
+                &service(extension),
+                "account",
+                account,
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()?;
-        child.stdin.take().expect("piped").write_all(secret.as_bytes())?;
+        child
+            .stdin
+            .take()
+            .expect("piped")
+            .write_all(secret.as_bytes())?;
         status(child.wait_with_output()?)
     }
 }
@@ -64,7 +77,14 @@ pub fn get(extension: &str, account: &str) -> io::Result<Option<String>> {
     check(extension, Permission::Secrets)?;
     #[cfg(target_os = "macos")]
     let output = Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", &service(extension), "-a", account, "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            &service(extension),
+            "-a",
+            account,
+            "-w",
+        ])
         .stdin(Stdio::null())
         .output()?;
     #[cfg(not(target_os = "macos"))]
@@ -75,7 +95,9 @@ pub fn get(extension: &str, account: &str) -> io::Result<Option<String>> {
     if !output.status.success() {
         return Ok(None);
     }
-    let secret = String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string();
+    let secret = String::from_utf8_lossy(&output.stdout)
+        .trim_end_matches('\n')
+        .to_string();
     Ok((!secret.is_empty()).then_some(secret))
 }
 
@@ -83,7 +105,13 @@ pub fn delete(extension: &str, account: &str) -> io::Result<()> {
     check(extension, Permission::Secrets)?;
     #[cfg(target_os = "macos")]
     let output = Command::new("/usr/bin/security")
-        .args(["delete-generic-password", "-s", &service(extension), "-a", account])
+        .args([
+            "delete-generic-password",
+            "-s",
+            &service(extension),
+            "-a",
+            account,
+        ])
         .stdin(Stdio::null())
         .output()?;
     #[cfg(not(target_os = "macos"))]
@@ -100,7 +128,9 @@ fn status(output: std::process::Output) -> io::Result<()> {
     if output.status.success() {
         return Ok(());
     }
-    Err(io::Error::other(String::from_utf8_lossy(&output.stderr).trim().to_string()))
+    Err(io::Error::other(
+        String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    ))
 }
 
 #[cfg(test)]

@@ -61,8 +61,10 @@ impl FileExplorer {
             DemoCommand::OpenWithChooser => match file.path.clone() {
                 Some(path) => self.open_with_chooser(&path, &file.name, cx),
                 None => {
-                    self.notice =
-                        Some(format!("Open With · Choose Application · {} (demo)", file.name));
+                    self.notice = Some(format!(
+                        "Open With · Choose Application · {} (demo)",
+                        file.name
+                    ));
                 }
             },
             DemoCommand::Compress => {
@@ -81,7 +83,10 @@ impl FileExplorer {
                         cx,
                     );
                 } else {
-                    self.notice = Some(format!("Not a supported archive (.zip, .tar, .tar.gz, .tgz, .gz) · {}", file.name));
+                    self.notice = Some(format!(
+                        "Not a supported archive (.zip, .tar, .tar.gz, .tgz, .gz) · {}",
+                        file.name
+                    ));
                 }
             }
             DemoCommand::CopyName => {
@@ -206,11 +211,18 @@ impl FileExplorer {
         if let Some(folder) = location.remote_path() {
             let app = self.appearance.read(cx).extensions.terminal_app;
             let connection = self.ssh_for(location);
-            self.notice = Some(match (&connection, crate::views::ssh::open_remote_terminal(connection.as_ref(), folder, app)) {
-                (Some(connection), Ok(())) => format!("Terminal · ssh {} · {folder}", connection.address()),
-                (_, Err(error)) => format!("Terminal failed: {error}"),
-                (None, Ok(())) => "Not connected".to_string(),
-            });
+            self.notice = Some(
+                match (
+                    &connection,
+                    crate::views::ssh::open_remote_terminal(connection.as_ref(), folder, app),
+                ) {
+                    (Some(connection), Ok(())) => {
+                        format!("Terminal · ssh {} · {folder}", connection.address())
+                    }
+                    (_, Err(error)) => format!("Terminal failed: {error}"),
+                    (None, Ok(())) => "Not connected".to_string(),
+                },
+            );
             cx.notify();
             return;
         }
@@ -292,7 +304,9 @@ fn choose_and_open(path: &Path) -> std::io::Result<Option<String>> {
     }
     let label = Path::new(application.trim_end_matches('/'))
         .file_stem()
-        .map_or(application.clone(), |stem| stem.to_string_lossy().into_owned());
+        .map_or(application.clone(), |stem| {
+            stem.to_string_lossy().into_owned()
+        });
     Ok(Some(label))
 }
 
@@ -305,7 +319,6 @@ fn choose_and_open(path: &Path) -> std::io::Result<Option<String>> {
         .spawn()?;
     Ok(Some("chosen application".to_string()))
 }
-
 
 #[cfg(target_os = "macos")]
 fn spawn_terminal(
@@ -321,7 +334,10 @@ fn spawn_terminal(
 }
 
 #[cfg(target_os = "windows")]
-fn spawn_terminal(current_dir: &Path, app: crate::settings::TerminalApp) -> std::io::Result<std::process::Child> {
+fn spawn_terminal(
+    current_dir: &Path,
+    app: crate::settings::TerminalApp,
+) -> std::io::Result<std::process::Child> {
     use crate::settings::TerminalApp;
     let mut command = if app == TerminalApp::WindowsTerminal {
         let mut command = Command::new("wt");
@@ -337,17 +353,29 @@ fn spawn_terminal(current_dir: &Path, app: crate::settings::TerminalApp) -> std:
         }
         command
     };
-    files_sdk::log::hide_window(&mut command).current_dir(current_dir).spawn()
+    files_sdk::log::hide_window(&mut command)
+        .current_dir(current_dir)
+        .spawn()
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn spawn_terminal(current_dir: &Path, app: crate::settings::TerminalApp) -> std::io::Result<std::process::Child> {
-    let program = if app == crate::settings::TerminalApp::Ghostty { "ghostty" } else { "x-terminal-emulator" };
+fn spawn_terminal(
+    current_dir: &Path,
+    app: crate::settings::TerminalApp,
+) -> std::io::Result<std::process::Child> {
+    let program = if app == crate::settings::TerminalApp::Ghostty {
+        "ghostty"
+    } else {
+        "x-terminal-emulator"
+    };
     Command::new(program).current_dir(current_dir).spawn()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]
-fn spawn_terminal(_: &Path, _: crate::settings::TerminalApp) -> std::io::Result<std::process::Child> {
+fn spawn_terminal(
+    _: &Path,
+    _: crate::settings::TerminalApp,
+) -> std::io::Result<std::process::Child> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "Terminal is not supported on this platform",

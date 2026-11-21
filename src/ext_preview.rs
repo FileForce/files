@@ -11,13 +11,17 @@ use files_sdk::preview::PreviewContent;
 
 /// Index of Preview in the catalog.
 fn index() -> usize {
-    crate::extensions::CATALOG.iter().position(|manifest| manifest.id == "preview").unwrap_or(usize::MAX)
+    crate::extensions::CATALOG
+        .iter()
+        .position(|manifest| manifest.id == "preview")
+        .unwrap_or(usize::MAX)
 }
 
 /// Quick Look and the preview panel look inside files: Preview is on and
 /// keeps its permission to read files.
 pub fn enabled(settings: &crate::settings::AppSettings) -> bool {
-    crate::licensing::active(settings, index()) && files_sdk::permissions::check("preview", files_sdk::Permission::ReadFiles).is_ok()
+    crate::licensing::active(settings, index())
+        && files_sdk::permissions::check("preview", files_sdk::Permission::ReadFiles).is_ok()
 }
 
 static READY: AtomicU64 = AtomicU64::new(0);
@@ -27,6 +31,16 @@ pub fn generation() -> u64 {
 }
 
 type Key = (PathBuf, Option<std::time::SystemTime>);
+
+const MAX_PREVIEWS: usize = 64;
+
+/// Previews kept now (DevTools, the memory log).
+pub fn cached() -> usize {
+    cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len()
+}
 
 fn cache() -> &'static Mutex<HashMap<Key, Option<(String, PreviewContent)>>> {
     static CACHE: OnceLock<Mutex<HashMap<Key, Option<(String, PreviewContent)>>>> = OnceLock::new();
@@ -38,12 +52,24 @@ fn cache() -> &'static Mutex<HashMap<Key, Option<(String, PreviewContent)>>> {
 pub fn preview(path: &Path) -> Option<(String, PreviewContent)> {
     let extensions: Vec<_> = crate::views::extension_ui::registry()
         .into_iter()
-        .filter(|extension| extension.preview().is_some_and(|provider| provider.handles(path)))
-        .filter(|extension| files_sdk::permissions::check(extension.manifest().id, files_sdk::Permission::ReadFiles).is_ok())
+        .filter(|extension| {
+            extension
+                .preview()
+                .is_some_and(|provider| provider.handles(path))
+        })
+        .filter(|extension| {
+            files_sdk::permissions::check(extension.manifest().id, files_sdk::Permission::ReadFiles)
+                .is_ok()
+        })
         .collect();
     let extension = *extensions.first()?;
-    let key = (path.to_path_buf(), std::fs::metadata(path).ok()?.modified().ok());
-    let mut known = cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = (
+        path.to_path_buf(),
+        std::fs::metadata(path).ok()?.modified().ok(),
+    );
+    let mut known = cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(done) = known.get(&key) {
         return done.clone();
     }
@@ -56,7 +82,16 @@ pub fn preview(path: &Path) -> Option<(String, PreviewContent)> {
         let made = extension.preview().map(|provider| provider.preview(&key.0));
         let result = match made {
             Some(Ok(content)) => {
-                cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(key, Some((name, content)));
+                let mut cache = cache()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                // One preview per file (its older versions go), and only the
+                // last files looked at: previews of archives can be big.
+                cache.retain(|(path, _), done| *path != key.0 || done.is_none());
+                if cache.len() >= MAX_PREVIEWS {
+                    cache.clear();
+                }
+                cache.insert(key, Some((name, content)));
                 Ok(())
             }
             Some(Err(error)) => Err(error.to_string()),

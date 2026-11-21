@@ -49,12 +49,18 @@ impl Job {
     /// How long it ran (or has been running).
     pub fn duration(&self) -> Option<Duration> {
         let started = self.started?;
-        Some(self.finished.unwrap_or_else(Instant::now).duration_since(started))
+        Some(
+            self.finished
+                .unwrap_or_else(Instant::now)
+                .duration_since(started),
+        )
     }
 
     /// How long it waited in the queue.
     pub fn wait(&self) -> Duration {
-        self.started.unwrap_or_else(Instant::now).duration_since(self.queued)
+        self.started
+            .unwrap_or_else(Instant::now)
+            .duration_since(self.queued)
     }
 }
 
@@ -71,7 +77,9 @@ struct Registry {
 static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
 
 fn with<T>(change: impl FnOnce(&mut Registry) -> T) -> T {
-    let mut guard = REGISTRY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = REGISTRY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     change(guard.get_or_insert_with(Default::default))
 }
 
@@ -80,7 +88,15 @@ pub fn queue(kind: &'static str, label: impl Into<String>) -> u64 {
     with(|registry| {
         registry.next += 1;
         let id = registry.next;
-        registry.jobs.push_back(Job { id, kind, label: label.into(), state: State::Queued, queued: Instant::now(), started: None, finished: None });
+        registry.jobs.push_back(Job {
+            id,
+            kind,
+            label: label.into(),
+            state: State::Queued,
+            queued: Instant::now(),
+            started: None,
+            finished: None,
+        });
         trim(registry);
         id
     })
@@ -88,15 +104,17 @@ pub fn queue(kind: &'static str, label: impl Into<String>) -> u64 {
 
 /// The worker takes it; `false` when it was cancelled meanwhile (skip it).
 pub fn start(id: u64) -> bool {
-    with(|registry| match registry.jobs.iter_mut().find(|job| job.id == id) {
-        Some(job) if job.state == State::Cancelled => false,
-        Some(job) => {
-            job.state = State::Running;
-            job.started = Some(Instant::now());
-            true
-        }
-        None => true,
-    })
+    with(
+        |registry| match registry.jobs.iter_mut().find(|job| job.id == id) {
+            Some(job) if job.state == State::Cancelled => false,
+            Some(job) => {
+                job.state = State::Running;
+                job.started = Some(Instant::now());
+                true
+            }
+            None => true,
+        },
+    )
 }
 
 pub fn finish(id: u64, result: Result<(), String>) {
@@ -113,7 +131,11 @@ pub fn finish(id: u64, result: Result<(), String>) {
 }
 
 /// A job run right here, start to finish.
-pub fn run<T, E: std::fmt::Display>(kind: &'static str, label: impl Into<String>, work: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+pub fn run<T, E: std::fmt::Display>(
+    kind: &'static str,
+    label: impl Into<String>,
+    work: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
     let id = queue(kind, label);
     start(id);
     let result = work();
@@ -124,7 +146,11 @@ pub fn run<T, E: std::fmt::Display>(kind: &'static str, label: impl Into<String>
 /// Queued jobs are dropped before they run; a running one finishes.
 pub fn cancel(id: u64) {
     with(|registry| {
-        if let Some(job) = registry.jobs.iter_mut().find(|job| job.id == id && job.state == State::Queued) {
+        if let Some(job) = registry
+            .jobs
+            .iter_mut()
+            .find(|job| job.id == id && job.state == State::Queued)
+        {
             job.state = State::Cancelled;
             job.finished = Some(Instant::now());
         }
@@ -165,7 +191,11 @@ pub fn jobs() -> Vec<Job> {
 }
 
 fn trim(registry: &mut Registry) {
-    let finished = registry.jobs.iter().filter(|job| job.state.finished()).count();
+    let finished = registry
+        .jobs
+        .iter()
+        .filter(|job| job.state.finished())
+        .count();
     let mut extra = finished.saturating_sub(KEEP_FINISHED);
     registry.jobs.retain(|job| {
         if extra > 0 && job.state.finished() {
@@ -202,7 +232,9 @@ impl SearchProfile {
 static SEARCHES: Mutex<VecDeque<SearchProfile>> = Mutex::new(VecDeque::new());
 
 pub fn record_search(profile: SearchProfile) {
-    let mut searches = SEARCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut searches = SEARCHES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     searches.push_back(profile);
     while searches.len() > 50 {
         searches.pop_front();
@@ -210,7 +242,12 @@ pub fn record_search(profile: SearchProfile) {
 }
 
 pub fn searches() -> Vec<SearchProfile> {
-    SEARCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().cloned().collect()
+    SEARCHES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -227,13 +264,23 @@ mod tests {
         let skipped = queue("test-kind", "c");
         cancel(skipped);
         assert!(!start(skipped), "a cancelled job is skipped by its worker");
-        let state = |id: u64| jobs().into_iter().find(|job| job.id == id).map(|job| job.state);
+        let state = |id: u64| {
+            jobs()
+                .into_iter()
+                .find(|job| job.id == id)
+                .map(|job| job.state)
+        };
         assert_eq!(state(done), Some(State::Done));
         assert_eq!(state(skipped), Some(State::Cancelled));
         assert!(matches!(state(done + 1), Some(State::Failed(error)) if error == "broken"));
         static RETRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        on_retry("test-kind", |label| RETRIED.store(label == "b", std::sync::atomic::Ordering::Relaxed));
+        on_retry("test-kind", |label| {
+            RETRIED.store(label == "b", std::sync::atomic::Ordering::Relaxed)
+        });
         retry(done + 1);
-        assert!(RETRIED.load(std::sync::atomic::Ordering::Relaxed), "Retry runs the job's own kind again");
+        assert!(
+            RETRIED.load(std::sync::atomic::Ordering::Relaxed),
+            "Retry runs the job's own kind again"
+        );
     }
 }

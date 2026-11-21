@@ -40,7 +40,10 @@ pub fn icon(name: &str) -> Icon {
     CATALOG
         .iter()
         .find(|extension| extension.name == name)
-        .map_or_else(|| Icon::new(IconName::Puzzle), |extension| icon_of(extension))
+        .map_or_else(
+            || Icon::new(IconName::Puzzle),
+            |extension| icon_of(extension),
+        )
 }
 
 static OPEN_WITH: Manifest = Manifest {
@@ -63,7 +66,6 @@ static OPEN_WITH: Manifest = Manifest {
     tier: files_sdk::Tier::Free,
 };
 
-
 static COPY: Manifest = Manifest {
     id: "copy",
     name: "Copy",
@@ -71,7 +73,10 @@ static COPY: Manifest = Manifest {
     source: "Built-in",
     summary: "Copy names, paths and file references to the clipboard.",
     icon: SdkIcon::Builtin("copy"),
-    adds: &["Context menu → Copy → Name / Path / Reference", "Preview panel → Copy path"],
+    adds: &[
+        "Context menu → Copy → Name / Path / Reference",
+        "Preview panel → Copy path",
+    ],
     permissions: &[Permission::Clipboard],
     commands: &[],
     menu: &[],
@@ -121,15 +126,20 @@ static QUICK_ACTIONS: Manifest = Manifest {
     name: "Quick Actions",
     version: "1.0.0",
     source: "Built-in",
-    summary: "Actions for the selected files, after Copy in the context menu: Convert Image, Rotate and your own scripts.",
+    summary: "Convert and compress media, rotate images, and run your own scripts on selected files.",
     icon: SdkIcon::Builtin("zap"),
     adds: &[
-        "Context menu → Quick Actions → Convert Image… (PNG, JPEG, WebP, HEIC), Rotate Image…",
+        "Context menu → Quick Actions → Convert Image…, Rotate Image…, Convert Photos to PDF",
+        "Convert Video… and Compress Video… with ffmpeg; Compress PDF… with Ghostscript",
         "Scripts in Python, Lua, JavaScript, Rust, Go or shell, for the files they fit",
         "Quick Actions → Customize…: write them, or let an agent write them",
         "Other extensions add actions through files_sdk::quick_actions",
     ],
-    permissions: &[Permission::ReadFiles, Permission::WriteFiles, Permission::LaunchApps],
+    permissions: &[
+        Permission::ReadFiles,
+        Permission::WriteFiles,
+        Permission::LaunchApps,
+    ],
     commands: &[],
     menu: &[],
     sidebar: &[],
@@ -139,7 +149,7 @@ static QUICK_ACTIONS: Manifest = Manifest {
 
 /// Every extension, in Settings order. Archives, SSH and Forks are separate
 /// crates built on `files-sdk`; the rest are small enough to live in the app.
-pub static CATALOG: [&Manifest; 12] = [
+pub static CATALOG: [&Manifest; 13] = [
     &OPEN_WITH,
     &files_ext_archive::MANIFEST,
     &files_ext_git::MANIFEST,
@@ -150,6 +160,7 @@ pub static CATALOG: [&Manifest; 12] = [
     &files_ext_agents::MANIFEST,
     &files_ext_mail::MANIFEST,
     &files_ext_music::MANIFEST,
+    &files_ext_smart_folders::MANIFEST,
     &PREVIEW,
     &QUICK_ACTIONS,
 ];
@@ -166,7 +177,8 @@ pub fn enabled(settings: &ExtensionSettings, index: usize) -> bool {
         7 => settings.agents,
         8 => settings.mail,
         9 => settings.music,
-        10 => settings.preview,
+        10 => settings.smart_folders,
+        11 => settings.preview,
         _ => settings.quick_actions,
     }
 }
@@ -183,7 +195,8 @@ pub fn toggle(settings: &mut ExtensionSettings, index: usize) {
         7 => &mut settings.agents,
         8 => &mut settings.mail,
         9 => &mut settings.music,
-        10 => &mut settings.preview,
+        10 => &mut settings.smart_folders,
+        11 => &mut settings.preview,
         _ => &mut settings.quick_actions,
     };
     *flag = !*flag;
@@ -197,7 +210,11 @@ mod tests {
     fn custom_svg_icons_are_valid_svg() {
         let svg = std::str::from_utf8(files_ext_forks::ICON).unwrap();
         assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
-        assert!(CATALOG.iter().any(|extension| matches!(extension.icon, SdkIcon::Svg(_))));
+        assert!(
+            CATALOG
+                .iter()
+                .any(|extension| matches!(extension.icon, SdkIcon::Svg(_)))
+        );
         // Every built-in icon name resolves to a real icon.
         for extension in CATALOG {
             if let SdkIcon::Builtin(name) = extension.icon {

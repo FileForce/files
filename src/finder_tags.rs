@@ -132,7 +132,9 @@ fn colors() -> &'static Mutex<HashMap<String, TagColor>> {
 }
 
 fn remember_colors(tags: &[FinderTag]) {
-    let mut colors = colors().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut colors = colors()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     for tag in tags {
         colors.insert(tag.name.clone(), tag.color);
     }
@@ -146,6 +148,87 @@ pub fn color_of(name: &str) -> TagColor {
         .get(name)
         .copied()
         .unwrap_or_default()
+}
+
+impl TagColor {
+    /// Finder's number for the color (the `\n<n>` after a stored name).
+    fn index(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Gray => 1,
+            Self::Green => 2,
+            Self::Purple => 3,
+            Self::Blue => 4,
+            Self::Yellow => 5,
+            Self::Red => 6,
+            Self::Orange => 7,
+        }
+    }
+}
+
+/// Whether tags can be set here (Finder tags: macOS).
+pub fn can_write() -> bool {
+    cfg!(target_os = "macos")
+}
+
+/// Sets the tags of `path` (none: removes them), as Finder stores them.
+pub fn write(path: &Path, tags: &[FinderTag]) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        const ATTRIBUTE: &str = "com.apple.metadata:_kMDItemUserTags";
+        if tags.is_empty() {
+            return match xattr::remove(path, ATTRIBUTE) {
+                Err(error) if error.raw_os_error() == Some(libc::ENOATTR) => Ok(()),
+                other => other,
+            };
+        }
+        let stored: Vec<String> = tags
+            .iter()
+            .map(|tag| format!("{}\n{}", tag.name, tag.color.index()))
+            .collect();
+        let mut bytes = Vec::new();
+        plist::to_writer_binary(&mut bytes, &stored).map_err(std::io::Error::other)?;
+        xattr::set(path, ATTRIBUTE, &bytes)?;
+        remember_colors(tags);
+        // The sidebar's tag list and counts include this file now.
+        let mut index = index()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        index.files.insert(path.to_path_buf(), tags.to_vec());
+        drop(index);
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (path, tags);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Tags are Finder's: macOS only",
+        ))
+    }
+}
+
+/// Adds tag `name` to `path` (its known color, if it has one).
+pub fn add(path: &Path, name: &str) -> std::io::Result<()> {
+    let name = name.trim();
+    let mut tags = read(path);
+    if name.is_empty() || tags.iter().any(|tag| tag.name == name) {
+        return Ok(());
+    }
+    tags.push(FinderTag {
+        name: name.to_string(),
+        color: color_of(name),
+    });
+    write(path, &tags)
+}
+
+pub fn remove(path: &Path, name: &str) -> std::io::Result<()> {
+    let tags: Vec<FinderTag> = read(path)
+        .into_iter()
+        .filter(|tag| tag.name != name)
+        .collect();
+    write(path, &tags)
 }
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -164,7 +247,17 @@ const WALK_BUDGET: usize = 250_000;
 /// Folders that never hold tagged user files but can hold millions of entries.
 fn skipped(name: &str) -> bool {
     name.starts_with('.')
-        || matches!(name, "Library" | "node_modules" | "target" | "Pods" | "DerivedData" | "build" | "dist" | "vendor")
+        || matches!(
+            name,
+            "Library"
+                | "node_modules"
+                | "target"
+                | "Pods"
+                | "DerivedData"
+                | "build"
+                | "dist"
+                | "vendor"
+        )
 }
 
 /// Tagged files under `root`, read from their extended attributes; looks at
@@ -174,7 +267,9 @@ fn walk(root: &Path, budget: usize) -> BTreeMap<PathBuf, Vec<FinderTag>> {
     let mut stack = vec![root.to_path_buf()];
     let mut seen = 0;
     while let Some(folder) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
         for entry in entries.flatten() {
             seen += 1;
             if seen > budget || found.len() >= MAX_FILES {
@@ -204,10 +299,14 @@ fn ensure_loaded() {
         return;
     }
     {
-        let mut index = index().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut index = index()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // A walk of the home folder is costly: repeat it less often.
         let refresh = if index.walked { WALK_REFRESH } else { REFRESH };
-        let fresh = index.loaded.is_some_and(|loaded| loaded.elapsed() < refresh);
+        let fresh = index
+            .loaded
+            .is_some_and(|loaded| loaded.elapsed() < refresh);
         if fresh || index.loading {
             return;
         }
@@ -225,7 +324,9 @@ fn ensure_loaded() {
                     files = walk(&home, WALK_BUDGET);
                 }
             }
-            let mut index = index().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut index = index()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             index.walked = walked;
             index.files = files;
             index.loaded = Some(Instant::now());
@@ -258,13 +359,19 @@ fn import() -> BTreeMap<PathBuf, Vec<FinderTag>> {
 /// False until the first Spotlight import has finished.
 pub fn is_loaded() -> bool {
     ensure_loaded();
-    index().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).loaded.is_some()
+    index()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .loaded
+        .is_some()
 }
 
 /// All Finder tags in use, most used first. Empty until the import finishes.
 pub fn all() -> Vec<TagSummary> {
     ensure_loaded();
-    let index = index().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = index()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut summary: BTreeMap<String, TagSummary> = BTreeMap::new();
     for tag in index.files.values().flatten() {
         summary
@@ -304,8 +411,20 @@ mod tests {
 
     #[test]
     fn parses_name_and_finder_color() {
-        assert_eq!(parse("Work\n4"), FinderTag { name: "Work".into(), color: TagColor::Blue });
-        assert_eq!(parse("Plain"), FinderTag { name: "Plain".into(), color: TagColor::None });
+        assert_eq!(
+            parse("Work\n4"),
+            FinderTag {
+                name: "Work".into(),
+                color: TagColor::Blue
+            }
+        );
+        assert_eq!(
+            parse("Plain"),
+            FinderTag {
+                name: "Plain".into(),
+                color: TagColor::None
+            }
+        );
         assert_eq!(parse("Odd\nx").color, TagColor::None);
     }
 
@@ -328,23 +447,67 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         // The same binary plist Finder writes for two tags.
         let mut bytes = Vec::new();
-        plist::to_writer_binary(&mut bytes, &vec!["Work\n4".to_string(), "Urgent\n6".to_string()]).unwrap();
+        plist::to_writer_binary(
+            &mut bytes,
+            &vec!["Work\n4".to_string(), "Urgent\n6".to_string()],
+        )
+        .unwrap();
         xattr::set(&file, "com.apple.metadata:_kMDItemUserTags", &bytes).unwrap();
 
         let tags = read(&file);
-        assert_eq!(tags.iter().map(|tag| tag.name.as_str()).collect::<Vec<_>>(), ["Work", "Urgent"]);
+        assert_eq!(
+            tags.iter().map(|tag| tag.name.as_str()).collect::<Vec<_>>(),
+            ["Work", "Urgent"]
+        );
+
+        // Added and removed here, read back as Finder would.
+        add(&file, "Later").unwrap();
+        assert_eq!(
+            read(&file)
+                .iter()
+                .map(|tag| tag.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Work", "Urgent", "Later"]
+        );
+        assert_eq!(read(&file)[1].color, TagColor::Red, "colors are kept");
+        remove(&file, "Work").unwrap();
+        remove(&file, "Urgent").unwrap();
+        assert_eq!(
+            read(&file)
+                .iter()
+                .map(|tag| tag.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Later"]
+        );
+        remove(&file, "Later").unwrap();
+        assert!(read(&file).is_empty());
+        remove(&file, "Later").unwrap();
+        add(&file, "Work").unwrap();
+        add(&file, "Urgent").unwrap();
 
         // Without Spotlight the tags are found by walking the folders,
         // skipping hidden and build folders.
         std::fs::create_dir_all(dir.join("deep/er")).unwrap();
         std::fs::create_dir_all(dir.join("node_modules")).unwrap();
-        for hidden in [dir.join("deep/er/photo.png"), dir.join("node_modules/skip.js")] {
+        for hidden in [
+            dir.join("deep/er/photo.png"),
+            dir.join("node_modules/skip.js"),
+        ] {
             std::fs::write(&hidden, "x").unwrap();
             xattr::set(&hidden, "com.apple.metadata:_kMDItemUserTags", &bytes).unwrap();
         }
         let walked = walk(&dir, 1000);
-        let paths: Vec<_> = walked.keys().map(|path| path.strip_prefix(&dir).unwrap().to_path_buf()).collect();
-        assert_eq!(paths, [PathBuf::from("deep/er/photo.png"), PathBuf::from("tagged.txt")]);
+        let paths: Vec<_> = walked
+            .keys()
+            .map(|path| path.strip_prefix(&dir).unwrap().to_path_buf())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                PathBuf::from("deep/er/photo.png"),
+                PathBuf::from("tagged.txt")
+            ]
+        );
         assert!(walk(&dir, 1).len() <= 1, "the budget stops the walk");
         assert_eq!(tags[1].color, TagColor::Red);
         assert_eq!(color_of("Urgent"), TagColor::Red);
@@ -356,9 +519,17 @@ mod tests {
     fn walk_real_home() {
         let started = Instant::now();
         let found = walk(&dirs::home_dir().unwrap(), WALK_BUDGET);
-        let mut names: Vec<_> = found.values().flatten().map(|tag| tag.name.clone()).collect();
+        let mut names: Vec<_> = found
+            .values()
+            .flatten()
+            .map(|tag| tag.name.clone())
+            .collect();
         names.sort();
         names.dedup();
-        println!("{} tagged files, tags {names:?}, in {:?}", found.len(), started.elapsed());
+        println!(
+            "{} tagged files, tags {names:?}, in {:?}",
+            found.len(),
+            started.elapsed()
+        );
     }
 }

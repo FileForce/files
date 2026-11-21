@@ -28,7 +28,12 @@ pub struct Track {
 
 impl Track {
     pub fn new(title: impl Into<String>, source: Source) -> Self {
-        Self { title: title.into(), artist: String::new(), album: String::new(), source }
+        Self {
+            title: title.into(),
+            artist: String::new(),
+            album: String::new(),
+            source,
+        }
     }
 }
 
@@ -38,9 +43,15 @@ pub enum Command {
     /// The notification chime of this kind, at the user's sound settings.
     Chime(Level),
     /// A one-off sound (not in the queue); `volume` 0…100, or the user's.
-    Play { source: Source, volume: Option<u8> },
+    Play {
+        source: Source,
+        volume: Option<u8>,
+    },
     /// Tracks into the music player: replacing the queue, or after it.
-    Queue { tracks: Vec<Track>, replace: bool },
+    Queue {
+        tracks: Vec<Track>,
+        replace: bool,
+    },
     Pause,
     Resume,
     Next,

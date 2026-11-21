@@ -44,7 +44,11 @@ pub static MANIFEST: Manifest = Manifest {
         "Session window: the chat, a reply box with streaming answers",
         "Usage: tokens in/out/cache, cost, rate limits and plan per agent",
     ],
-    permissions: &[Permission::ReadFiles, Permission::LaunchApps, Permission::Network],
+    permissions: &[
+        Permission::ReadFiles,
+        Permission::LaunchApps,
+        Permission::Network,
+    ],
     commands: &[],
     menu: &[],
     sidebar: &[],
@@ -75,7 +79,13 @@ pub enum Agent {
 }
 
 impl Agent {
-    pub const ALL: [Self; 5] = [Self::Claude, Self::Codex, Self::OpenCode, Self::Kimi, Self::Glm];
+    pub const ALL: [Self; 5] = [
+        Self::Claude,
+        Self::Codex,
+        Self::OpenCode,
+        Self::Kimi,
+        Self::Glm,
+    ];
     pub const RUNNABLE: [Self; 4] = [Self::Claude, Self::Codex, Self::OpenCode, Self::Kimi];
 
     pub fn name(self) -> &'static str {
@@ -235,12 +245,24 @@ pub struct Roots {
 
 impl Roots {
     pub fn detect() -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        let claude = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"));
-        let codex = std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".codex"));
-        let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
-        let kimi = std::env::var_os("KIMI_CODE_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".kimi-code"));
-        let zcode = std::env::var_os("ZCODE_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".zcode"));
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let claude = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".claude"));
+        let codex = std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"));
+        let data = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".local/share"));
+        let kimi = std::env::var_os("KIMI_CODE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".kimi-code"));
+        let zcode = std::env::var_os("ZCODE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".zcode"));
         Self {
             claude_account: home.join(".claude.json"),
             claude,
@@ -261,8 +283,14 @@ fn cache() -> &'static Mutex<HashMap<PathBuf, (SystemTime, Session)>> {
 }
 
 fn cached(path: &Path, parse: impl FnOnce(&Path) -> Option<Session>) -> Option<Session> {
-    let modified = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok()?;
-    if let Some((time, session)) = cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(path) {
+    let modified = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()?;
+    if let Some((time, session)) = cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(path)
+    {
         if *time == modified {
             return Some(session.clone());
         }
@@ -276,7 +304,9 @@ fn cached(path: &Path, parse: impl FnOnce(&Path) -> Option<Session>) -> Option<S
 }
 
 fn files_with(root: &Path, depth: usize, keep: &dyn Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -298,14 +328,22 @@ pub fn scan(roots: &Roots, ours: &[String]) -> Vec<Session> {
     let mut sessions = Vec::new();
 
     let mut files = Vec::new();
-    files_with(&roots.claude.join("projects"), 1, &|path| path.extension().is_some_and(|ext| ext == "jsonl"), &mut files);
+    files_with(
+        &roots.claude.join("projects"),
+        1,
+        &|path| path.extension().is_some_and(|ext| ext == "jsonl"),
+        &mut files,
+    );
     sessions.extend(files.iter().filter_map(|path| cached(path, claude_session)));
 
     let mut files = Vec::new();
     files_with(
         &roots.codex.join("sessions"),
         3,
-        &|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("rollout-")),
+        &|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("rollout-"))
+        },
         &mut files,
     );
     sessions.extend(files.iter().filter_map(|path| cached(path, codex_session)));
@@ -313,8 +351,17 @@ pub fn scan(roots: &Roots, ours: &[String]) -> Vec<Session> {
     sessions.extend(sqlite_sessions(&roots.opencode_db, Agent::OpenCode));
 
     let mut files = Vec::new();
-    files_with(&roots.kimi.join("sessions"), 4, &|path| path.ends_with("agents/main/wire.jsonl"), &mut files);
-    sessions.extend(files.iter().filter_map(|path| cached(path, parse::kimi_session)));
+    files_with(
+        &roots.kimi.join("sessions"),
+        4,
+        &|path| path.ends_with("agents/main/wire.jsonl"),
+        &mut files,
+    );
+    sessions.extend(
+        files
+            .iter()
+            .filter_map(|path| cached(path, parse::kimi_session)),
+    );
 
     sessions.extend(sqlite_sessions(&roots.zcode_db, Agent::Glm));
 
@@ -332,7 +379,9 @@ pub fn scan(roots: &Roots, ours: &[String]) -> Vec<Session> {
         }
     }
     for ((agent, cwd), index) in newest {
-        let alive = running.iter().any(|(running_agent, running_cwd)| *running_agent == agent && Some(running_cwd) == cwd.as_ref());
+        let alive = running.iter().any(|(running_agent, running_cwd)| {
+            *running_agent == agent && Some(running_cwd) == cwd.as_ref()
+        });
         // An idle agent left open for hours is not "running".
         if alive && now - sessions[index].updated < 6 * 3600 {
             sessions[index].running = true;
@@ -346,7 +395,9 @@ pub fn scan(roots: &Roots, ours: &[String]) -> Vec<Session> {
 }
 
 pub(crate) fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |time| time.as_secs() as i64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_secs() as i64)
 }
 
 /// Agent processes running now, with their working folder.
@@ -357,8 +408,12 @@ fn running_agents() -> Vec<(Agent, PathBuf)> {
     let mut pids: Vec<(u32, Agent)> = Vec::new();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let line = line.trim_start();
-        let Some((pid, command)) = line.split_once(' ') else { continue };
-        let Ok(pid) = pid.parse::<u32>() else { continue };
+        let Some((pid, command)) = line.split_once(' ') else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
         if let Some(agent) = agent_of_command(command) {
             pids.push((pid, agent));
         }
@@ -366,15 +421,26 @@ fn running_agents() -> Vec<(Agent, PathBuf)> {
     if pids.is_empty() {
         return Vec::new();
     }
-    let list = pids.iter().map(|(pid, _)| pid.to_string()).collect::<Vec<_>>().join(",");
-    let Ok(output) = Command::new("lsof").args(["-a", "-d", "cwd", "-Fpn", "-p", &list]).output() else {
+    let list = pids
+        .iter()
+        .map(|(pid, _)| pid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let Ok(output) = Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-Fpn", "-p", &list])
+        .output()
+    else {
         return Vec::new();
     };
     let mut result = Vec::new();
     let mut current: Option<Agent> = None;
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         if let Some(pid) = line.strip_prefix('p') {
-            current = pid.parse::<u32>().ok().and_then(|pid| pids.iter().find(|(known, _)| *known == pid).map(|(_, agent)| *agent));
+            current = pid.parse::<u32>().ok().and_then(|pid| {
+                pids.iter()
+                    .find(|(known, _)| *known == pid)
+                    .map(|(_, agent)| *agent)
+            });
         } else if let (Some(path), Some(agent)) = (line.strip_prefix('n'), current) {
             result.push((agent, PathBuf::from(path)));
         }
@@ -386,10 +452,19 @@ fn running_agents() -> Vec<(Agent, PathBuf)> {
 pub fn agent_of_command(command: &str) -> Option<Agent> {
     let mut parts = command.split_whitespace();
     let program = parts.next()?;
-    let name = |part: &str| Path::new(part).file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let name = |part: &str| {
+        Path::new(part)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
     let first = name(program);
     // Node-based CLIs run as `node …/bin/codex`.
-    let script = if first == "node" || first.starts_with("bun") { parts.next().map(name).unwrap_or_default() } else { first };
+    let script = if first == "node" || first.starts_with("bun") {
+        parts.next().map(name).unwrap_or_default()
+    } else {
+        first
+    };
     match script.as_str() {
         "claude" => Some(Agent::Claude),
         "codex" => Some(Agent::Codex),
@@ -405,7 +480,10 @@ fn desktop_app_path(bundle: &str) -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
     }
-    let output = Command::new("/usr/bin/mdfind").arg(format!("kMDItemCFBundleIdentifier == '{bundle}'")).output().ok()?;
+    let output = Command::new("/usr/bin/mdfind")
+        .arg(format!("kMDItemCFBundleIdentifier == '{bundle}'"))
+        .output()
+        .ok()?;
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(PathBuf::from)
@@ -415,11 +493,19 @@ fn desktop_app_path(bundle: &str) -> Option<PathBuf> {
 /// Opens `folder` in the agent's desktop app.
 pub fn open_in_desktop(agent: Agent, folder: &Path) -> io::Result<()> {
     files_sdk::permissions::check(MANIFEST.id, Permission::LaunchApps)?;
-    let output = files_sdk::log::run(MANIFEST.id, Command::new("/usr/bin/open").args(["-b", agent.desktop_bundle()]).arg(folder))?;
+    let output = files_sdk::log::run(
+        MANIFEST.id,
+        Command::new("/usr/bin/open")
+            .args(["-b", agent.desktop_bundle()])
+            .arg(folder),
+    )?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(io::Error::other(format!("{} desktop app is not installed", agent.name())))
+        Err(io::Error::other(format!(
+            "{} desktop app is not installed",
+            agent.name()
+        )))
     }
 }
 
@@ -428,9 +514,18 @@ pub fn terminal_command(agent: Agent, folder: &Path) -> io::Result<String> {
     files_sdk::permissions::check(MANIFEST.id, Permission::LaunchApps)?;
     let program = override_for(agent)
         .or_else(|| which(agent.program()))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{} is not installed", agent.name())))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} is not installed", agent.name()),
+            )
+        })?;
     let quote = |value: &str| format!("'{}'", value.replace('\'', r"'\''"));
-    Ok(format!("cd {} && exec {}", quote(&folder.to_string_lossy()), quote(&program.to_string_lossy())))
+    Ok(format!(
+        "cd {} && exec {}",
+        quote(&folder.to_string_lossy()),
+        quote(&program.to_string_lossy())
+    ))
 }
 
 fn overrides() -> &'static Mutex<HashMap<Agent, PathBuf>> {
@@ -439,18 +534,27 @@ fn overrides() -> &'static Mutex<HashMap<Agent, PathBuf>> {
 }
 
 fn override_for(agent: Agent) -> Option<PathBuf> {
-    overrides().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&agent).cloned()
+    overrides()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&agent)
+        .cloned()
 }
 
 /// For tests: run `program` instead of the agent's real CLI.
 #[doc(hidden)]
 pub fn use_program(agent: Agent, program: PathBuf) {
-    overrides().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(agent, program);
+    overrides()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(agent, program);
 }
 
 fn which(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
     // GUI apps get a short PATH: also look where installers put these CLIs.
     let extra = [
         PathBuf::from("/opt/homebrew/bin"),
@@ -473,7 +577,13 @@ fn sqlite_json(db: &Path, query: &str) -> Vec<Value> {
     if !db.is_file() {
         return Vec::new();
     }
-    let Ok(output) = Command::new("sqlite3").arg("-readonly").arg("-json").arg(db).arg(query).output() else {
+    let Ok(output) = Command::new("sqlite3")
+        .arg("-readonly")
+        .arg("-json")
+        .arg(db)
+        .arg(query)
+        .output()
+    else {
         return Vec::new();
     };
     serde_json::from_slice::<Vec<Value>>(&output.stdout).unwrap_or_default()
@@ -493,14 +603,27 @@ fn sqlite_sessions(db: &Path, agent: Agent) -> Vec<Session> {
             // Stored as JSON {"providerID":…,"modelID":…} or a plain string.
             serde_json::from_str::<Value>(model)
                 .ok()
-                .and_then(|value| value.get("modelID").or(value.get("id")).and_then(Value::as_str).map(str::to_string))
+                .and_then(|value| {
+                    value
+                        .get("modelID")
+                        .or(value.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .unwrap_or_else(|| model.to_string())
         });
         Some(Session {
             agent,
             id: row.get("id")?.as_str()?.to_string(),
-            title: row.get("title").and_then(Value::as_str).unwrap_or("Untitled").to_string(),
-            cwd: row.get("directory").and_then(Value::as_str).map(PathBuf::from),
+            title: row
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("Untitled")
+                .to_string(),
+            cwd: row
+                .get("directory")
+                .and_then(Value::as_str)
+                .map(PathBuf::from),
             model,
             updated: number("time_updated") as i64 / 1000,
             usage: Usage {
@@ -569,18 +692,32 @@ pub fn messages(roots: &Roots, session: &Session) -> Vec<ChatMessage> {
 pub fn fingerprint(roots: &Roots, session: &Session) -> Option<(u64, i64)> {
     match (session.agent, &session.source) {
         (Agent::OpenCode | Agent::Glm, _) => {
-            let db = if session.agent == Agent::OpenCode { &roots.opencode_db } else { &roots.zcode_db };
+            let db = if session.agent == Agent::OpenCode {
+                &roots.opencode_db
+            } else {
+                &roots.zcode_db
+            };
             let id = session.id.replace('\'', "''");
             let rows = sqlite_json(
                 db,
-                &format!("select count(*) as n, max(time_updated) as t from part where session_id = '{id}'"),
+                &format!(
+                    "select count(*) as n, max(time_updated) as t from part where session_id = '{id}'"
+                ),
             );
             let row = rows.first()?;
-            Some((row.get("n")?.as_u64()?, row.get("t").and_then(Value::as_i64).unwrap_or(0)))
+            Some((
+                row.get("n")?.as_u64()?,
+                row.get("t").and_then(Value::as_i64).unwrap_or(0),
+            ))
         }
         (_, Some(path)) => {
             let metadata = std::fs::metadata(path).ok()?;
-            let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as i64;
+            let modified = metadata
+                .modified()
+                .ok()?
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_millis() as i64;
             Some((metadata.len(), modified))
         }
         _ => None,
@@ -589,7 +726,9 @@ pub fn fingerprint(roots: &Roots, session: &Session) -> Option<(u64, i64)> {
 
 /// Finds a session by id (e.g. one Files just started, to follow its log).
 pub fn find(roots: &Roots, agent: Agent, id: &str) -> Option<Session> {
-    scan(roots, &[]).into_iter().find(|session| session.agent == agent && session.id == id)
+    scan(roots, &[])
+        .into_iter()
+        .find(|session| session.agent == agent && session.id == id)
 }
 
 // ------------------------------------------------------------ accounts
@@ -602,9 +741,15 @@ pub fn accounts(roots: &Roots, sessions: &[Session]) -> Vec<(Agent, Account)> {
         accounts.push((Agent::Claude, account));
     }
     // Codex reports its limits with every turn: the newest report wins.
-    let newest_codex = sessions.iter().filter(|session| session.agent == Agent::Codex).filter_map(|session| session.source.as_ref());
+    let newest_codex = sessions
+        .iter()
+        .filter(|session| session.agent == Agent::Codex)
+        .filter_map(|session| session.source.as_ref());
     // (sessions are newest first; one that hit an error may carry no report).
-    if let Some(account) = newest_codex.filter_map(|path| parse::codex_limits(path)).next() {
+    if let Some(account) = newest_codex
+        .filter_map(|path| parse::codex_limits(path))
+        .next()
+    {
         accounts.push((Agent::Codex, account));
     }
     accounts
@@ -630,7 +775,9 @@ fn claude_account(path: &Path) -> Option<Account> {
         details.push(("Extra usage".to_string(), "enabled".to_string()));
     }
     Some(Account {
-        plan: text("organizationType").or_else(|| text("seatTier")).map(|plan| plan.replace('_', " ")),
+        plan: text("organizationType")
+            .or_else(|| text("seatTier"))
+            .map(|plan| plan.replace('_', " ")),
         organization: text("organizationName"),
         details,
         limits: Vec::new(),
@@ -665,7 +812,11 @@ const OPENCODE_VARIANTS: [&str; 5] = ["minimal", "low", "medium", "high", "max"]
 /// The models offered for `agent`: its aliases and its own model list,
 /// plus models seen in past sessions.
 pub fn models(roots: &Roots, agent: Agent, sessions: &[Session]) -> Vec<ModelChoice> {
-    let efforts = |list: &[&str]| list.iter().map(|effort| effort.to_string()).collect::<Vec<_>>();
+    let efforts = |list: &[&str]| {
+        list.iter()
+            .map(|effort| effort.to_string())
+            .collect::<Vec<_>>()
+    };
     let mut choices: Vec<ModelChoice> = match agent {
         Agent::Claude => ["fable", "opus", "sonnet", "haiku"]
             .into_iter()
@@ -701,8 +852,17 @@ pub fn models(roots: &Roots, agent: Agent, sessions: &[Session]) -> Vec<ModelCho
     seen.dedup();
     for model in seen {
         if !choices.iter().any(|choice| choice.id == model) {
-            let efforts = choices.first().map(|choice| choice.efforts.clone()).unwrap_or_default();
-            choices.push(ModelChoice { label: model.clone(), id: model, efforts, default_effort: None, is_default: false });
+            let efforts = choices
+                .first()
+                .map(|choice| choice.efforts.clone())
+                .unwrap_or_default();
+            choices.push(ModelChoice {
+                label: model.clone(),
+                id: model,
+                efforts,
+                default_effort: None,
+                is_default: false,
+            });
         }
     }
     choices
@@ -716,7 +876,15 @@ fn kimi_models(kimi: &Path) -> Vec<ModelChoice> {
             let (key, value) = line.split_once('=')?;
             (key.trim() == "default_model").then(|| value.trim().trim_matches('"').to_string())
         })
-        .map(|id| vec![ModelChoice { label: id.clone(), id, efforts: Vec::new(), default_effort: None, is_default: true }])
+        .map(|id| {
+            vec![ModelChoice {
+                label: id.clone(),
+                id,
+                efforts: Vec::new(),
+                default_effort: None,
+                is_default: true,
+            }]
+        })
         .unwrap_or_default()
 }
 
@@ -733,7 +901,15 @@ fn codex_models(codex: &Path) -> Vec<ModelChoice> {
     let default_model = configured("model");
     let Ok(source) = std::fs::read_to_string(codex.join("models_cache.json")) else {
         return default_model
-            .map(|id| vec![ModelChoice { label: id.clone(), id, efforts: Vec::new(), default_effort: configured("model_reasoning_effort"), is_default: true }])
+            .map(|id| {
+                vec![ModelChoice {
+                    label: id.clone(),
+                    id,
+                    efforts: Vec::new(),
+                    default_effort: configured("model_reasoning_effort"),
+                    is_default: true,
+                }]
+            })
             .unwrap_or_default();
     };
     let value: Value = serde_json::from_str(&source).unwrap_or(Value::Null);
@@ -750,13 +926,31 @@ fn codex_models(codex: &Path) -> Vec<ModelChoice> {
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter_map(|level| level.get("effort").and_then(Value::as_str).map(str::to_string))
+                .filter_map(|level| {
+                    level
+                        .get("effort")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .collect();
             let is_default = default_model.as_deref() == Some(id.as_str());
             Some(ModelChoice {
-                label: model.get("display_name").and_then(Value::as_str).unwrap_or(&id).to_string(),
-                default_effort: if is_default { configured("model_reasoning_effort") } else { None }
-                    .or_else(|| model.get("default_reasoning_level").and_then(Value::as_str).map(str::to_string)),
+                label: model
+                    .get("display_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&id)
+                    .to_string(),
+                default_effort: if is_default {
+                    configured("model_reasoning_effort")
+                } else {
+                    None
+                }
+                .or_else(|| {
+                    model
+                        .get("default_reasoning_level")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                }),
                 is_default,
                 efforts,
                 id,
@@ -807,7 +1001,10 @@ pub fn option_args(agent: Agent, options: &RunOptions) -> Vec<String> {
                 args.extend(["-m".to_string(), model.clone()]);
             }
             if let Some(effort) = &options.effort {
-                args.extend(["-c".to_string(), format!("model_reasoning_effort=\"{effort}\"")]);
+                args.extend([
+                    "-c".to_string(),
+                    format!("model_reasoning_effort=\"{effort}\""),
+                ]);
             }
         }
         Agent::OpenCode => {
@@ -838,17 +1035,34 @@ pub struct Run {
 
 /// Starts `prompt` in `cwd`, continuing `resume` when given. Read the
 /// output with [`stream::read`].
-pub fn start(agent: Agent, cwd: &Path, prompt: &str, resume: Option<&str>, options: &RunOptions) -> io::Result<Run> {
+pub fn start(
+    agent: Agent,
+    cwd: &Path,
+    prompt: &str,
+    resume: Option<&str>,
+    options: &RunOptions,
+) -> io::Result<Run> {
     files_sdk::permissions::check(MANIFEST.id, Permission::LaunchApps)?;
     files_sdk::permissions::check(MANIFEST.id, Permission::Network)?;
     let program = override_for(agent)
         .or_else(|| which(agent.program()))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{} is not installed", agent.name())))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} is not installed", agent.name()),
+            )
+        })?;
     let mut command = files_sdk::log::command(program);
     command.current_dir(cwd);
     match agent {
         Agent::Claude => {
-            command.args(["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
+            command.args([
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--include-partial-messages",
+            ]);
             command.args(option_args(agent, options));
             if let Some(id) = resume {
                 command.args(["--resume", id]);
@@ -856,7 +1070,10 @@ pub fn start(agent: Agent, cwd: &Path, prompt: &str, resume: Option<&str>, optio
             command.arg(prompt);
         }
         Agent::Codex => {
-            command.arg("exec").arg("--json").arg("--skip-git-repo-check");
+            command
+                .arg("exec")
+                .arg("--json")
+                .arg("--skip-git-repo-check");
             command.args(option_args(agent, options));
             if let Some(id) = resume {
                 command.args(["resume", id]);
@@ -878,9 +1095,17 @@ pub fn start(agent: Agent, cwd: &Path, prompt: &str, resume: Option<&str>, optio
                 command.args(["--session", id]);
             }
         }
-        Agent::Glm => return Err(io::Error::new(io::ErrorKind::Unsupported, "GLM / ZCode sessions are read-only in Files")),
+        Agent::Glm => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "GLM / ZCode sessions are read-only in Files",
+            ));
+        }
     }
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     files_sdk::log::spawned(MANIFEST.id, &command);
     let child = command.spawn()?;
     Ok(Run { child, agent })
@@ -888,7 +1113,11 @@ pub fn start(agent: Agent, cwd: &Path, prompt: &str, resume: Option<&str>, optio
 
 /// Reads a run line by line, calling `event` for each parsed event.
 pub fn follow(run: &mut Run, mut event: impl FnMut(stream::Event)) -> io::Result<()> {
-    let stdout = run.child.stdout.take().ok_or_else(|| io::Error::other("no output"))?;
+    let stdout = run
+        .child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("no output"))?;
     for line in io::BufReader::new(stdout).lines() {
         for parsed in stream::parse_line(run.agent, &line?) {
             event(parsed);
@@ -900,7 +1129,13 @@ pub fn follow(run: &mut Run, mut event: impl FnMut(stream::Event)) -> io::Result
     }
     let status = run.child.wait()?;
     if !status.success() {
-        let message = stderr.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("failed").trim().to_string();
+        let message = stderr
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("failed")
+            .trim()
+            .to_string();
         event(stream::Event::Error(message));
     }
     Ok(())

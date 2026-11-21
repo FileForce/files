@@ -24,13 +24,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+pub mod audio;
 pub mod fs;
 pub mod license;
-pub mod audio;
 pub mod log;
 pub mod package;
-pub mod plugin;
 pub mod permissions;
+pub mod plugin;
 pub mod power;
 pub mod preview;
 pub mod quick_actions;
@@ -89,7 +89,9 @@ pub struct Manifest {
 pub enum Tier {
     Free,
     /// Needs a license covering `product` (see [`license`]).
-    Pro { product: &'static str },
+    Pro {
+        product: &'static str,
+    },
 }
 
 /// What a context-menu item applies to. Combine with `|`.
@@ -182,7 +184,12 @@ pub struct SidebarMenuItem {
 
 impl SidebarMenuItem {
     pub fn new(title: impl Into<String>, command: &'static str) -> Self {
-        Self { title: title.into(), icon: None, command, disabled: false }
+        Self {
+            title: title.into(),
+            icon: None,
+            command,
+            disabled: false,
+        }
     }
 
     pub fn icon(mut self, icon: Icon) -> Self {
@@ -260,7 +267,10 @@ pub trait Extension: Send + Sync {
     /// Runs one of the manifest's menu or sidebar commands.
     fn run(&self, command: &str, context: &Context) -> io::Result<Outcome> {
         let _ = context;
-        Err(io::Error::new(io::ErrorKind::Unsupported, format!("unknown command {command}")))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("unknown command {command}"),
+        ))
     }
 
     /// Rows of the sidebar section `section`.
@@ -334,12 +344,20 @@ pub trait ArchiveProvider: Send + Sync {
     fn list(&self, archive: &Path) -> io::Result<Vec<ArchiveItem>>;
     /// Members whose destination under `target` already exists.
     fn conflicts(&self, archive: &Path, target: &Path) -> io::Result<Vec<String>>;
-    fn extract(&self, archive: &Path, target: &Path, policy: ConflictPolicy) -> io::Result<ExtractReport>;
+    fn extract(
+        &self,
+        archive: &Path,
+        target: &Path,
+        policy: ConflictPolicy,
+    ) -> io::Result<ExtractReport>;
     /// What the preview shows about the archive itself: format, how it is
     /// compressed, how much it saves.
     fn info(&self, archive: &Path) -> io::Result<ArchiveInfo> {
         let _ = archive;
-        Err(io::Error::new(io::ErrorKind::Unsupported, "No details for this archive"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "No details for this archive",
+        ))
     }
 }
 
@@ -393,7 +411,11 @@ impl Endpoint {
             Some((host, port)) => (host, port.parse().ok()?),
             None => (rest, 22),
         };
-        (!host.is_empty() && port > 0).then(|| Self { host: host.to_string(), user, port })
+        (!host.is_empty() && port > 0).then(|| Self {
+            host: host.to_string(),
+            user,
+            port,
+        })
     }
 }
 
@@ -453,7 +475,10 @@ pub trait Host: Send + Sync {
     /// player say so.
     fn audio(&self, extension: &str, command: audio::Command) -> io::Result<()> {
         let _ = (extension, command);
-        Err(io::Error::new(io::ErrorKind::Unsupported, "This host plays no sound"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "This host plays no sound",
+        ))
     }
 }
 
@@ -482,7 +507,11 @@ impl Host for DefaultHost {
 
     fn delete(&self, paths: &[&Path], _: bool) -> Result<(), (usize, io::Error)> {
         for (done, path) in paths.iter().enumerate() {
-            let result = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+            let result = if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            };
             result.map_err(|error| (done, error))?;
         }
         Ok(())
@@ -495,8 +524,13 @@ mod sidebar_menu_tests {
 
     #[test]
     fn sidebar_rows_carry_their_own_menu() {
-        let item = SidebarMenuItem::new("Eject", "disks.eject").icon(Icon::Builtin("eject")).disabled(true);
-        assert_eq!((item.title.as_str(), item.command, item.disabled), ("Eject", "disks.eject", true));
+        let item = SidebarMenuItem::new("Eject", "disks.eject")
+            .icon(Icon::Builtin("eject"))
+            .disabled(true);
+        assert_eq!(
+            (item.title.as_str(), item.command, item.disabled),
+            ("Eject", "disks.eject", true)
+        );
         assert_eq!(item.icon, Some(Icon::Builtin("eject")));
     }
 }

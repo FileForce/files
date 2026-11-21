@@ -5,7 +5,10 @@
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
-use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig, SeekDirection};
+use souvlaki::{
+    MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
+    SeekDirection,
+};
 
 /// What the keys asked for, handled by the player on the UI thread.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,8 +35,12 @@ pub fn command(event: MediaControlEvent) -> Option<Command> {
         MediaControlEvent::Stop => Command::Stop,
         MediaControlEvent::Seek(SeekDirection::Forward) => Command::SeekBy(10),
         MediaControlEvent::Seek(SeekDirection::Backward) => Command::SeekBy(-10),
-        MediaControlEvent::SeekBy(SeekDirection::Forward, by) => Command::SeekBy(by.as_secs() as i64),
-        MediaControlEvent::SeekBy(SeekDirection::Backward, by) => Command::SeekBy(-(by.as_secs() as i64)),
+        MediaControlEvent::SeekBy(SeekDirection::Forward, by) => {
+            Command::SeekBy(by.as_secs() as i64)
+        }
+        MediaControlEvent::SeekBy(SeekDirection::Backward, by) => {
+            Command::SeekBy(-(by.as_secs() as i64))
+        }
         MediaControlEvent::SetPosition(MediaPosition(at)) => Command::SeekTo(at.as_millis() as u64),
         _ => return None,
     })
@@ -48,7 +55,11 @@ pub struct SystemControls {
 impl SystemControls {
     /// `hwnd`: the main window, which Windows ties the controls to.
     pub fn new(hwnd: Option<*mut std::ffi::c_void>) -> Result<Self, String> {
-        let config = PlatformConfig { display_name: "file FORCE", dbus_name: "file_force", hwnd };
+        let config = PlatformConfig {
+            display_name: "file FORCE",
+            dbus_name: "file_force",
+            hwnd,
+        };
         let mut controls = MediaControls::new(config).map_err(|error| format!("{error:?}"))?;
         let (sender, commands) = channel();
         controls
@@ -58,12 +69,24 @@ impl SystemControls {
                 }
             })
             .map_err(|error| format!("{error:?}"))?;
-        files_sdk::log::record("music", files_sdk::log::Kind::Info, "System media keys now control Music".to_string(), None);
+        files_sdk::log::record(
+            "music",
+            files_sdk::log::Kind::Info,
+            "System media keys now control Music".to_string(),
+            None,
+        );
         Ok(Self { controls, commands })
     }
 
     /// Title, artist, album, cover (a cached file) and length.
-    pub fn show(&mut self, title: &str, artist: &str, album: &str, cover: Option<&std::path::Path>, length_ms: u64) {
+    pub fn show(
+        &mut self,
+        title: &str,
+        artist: &str,
+        album: &str,
+        cover: Option<&std::path::Path>,
+        length_ms: u64,
+    ) {
         let cover_url = cover.map(|path| format!("file://{}", path.display()));
         let _ = self.controls.set_metadata(MediaMetadata {
             title: Some(title),
@@ -89,11 +112,17 @@ pub fn hwnd(cx: &mut gpui_kit::App) -> Option<*mut std::ffi::c_void> {
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
-        let window = cx.active_window().or_else(|| cx.windows().first().copied())?;
+        let window = cx
+            .active_window()
+            .or_else(|| cx.windows().first().copied())?;
         return window
-            .update(cx, |_, window, _| match window.window_handle().ok()?.as_raw() {
-                RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as *mut std::ffi::c_void),
-                _ => None,
+            .update(cx, |_, window, _| {
+                match window.window_handle().ok()?.as_raw() {
+                    RawWindowHandle::Win32(handle) => {
+                        Some(handle.hwnd.get() as *mut std::ffi::c_void)
+                    }
+                    _ => None,
+                }
             })
             .ok()
             .flatten();
@@ -113,8 +142,20 @@ mod tests {
     fn keys_become_player_commands() {
         assert_eq!(command(MediaControlEvent::Toggle), Some(Command::Toggle));
         assert_eq!(command(MediaControlEvent::Next), Some(Command::Next));
-        assert_eq!(command(MediaControlEvent::Seek(SeekDirection::Backward)), Some(Command::SeekBy(-10)));
-        assert_eq!(command(MediaControlEvent::SetPosition(MediaPosition(Duration::from_secs(65)))), Some(Command::SeekTo(65_000)));
-        assert_eq!(command(MediaControlEvent::SetVolume(0.5)), None, "volume stays in the app");
+        assert_eq!(
+            command(MediaControlEvent::Seek(SeekDirection::Backward)),
+            Some(Command::SeekBy(-10))
+        );
+        assert_eq!(
+            command(MediaControlEvent::SetPosition(MediaPosition(
+                Duration::from_secs(65)
+            ))),
+            Some(Command::SeekTo(65_000))
+        );
+        assert_eq!(
+            command(MediaControlEvent::SetVolume(0.5)),
+            None,
+            "volume stays in the app"
+        );
     }
 }

@@ -10,8 +10,9 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    AnyElement, AppContext as _, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    div, px,
 };
 
 use crate::app::FileExplorer;
@@ -50,40 +51,76 @@ fn level_icon(level: Level, palette: Palette) -> Icon {
 /// The buttons a notification about a file gets (a saved attachment…):
 /// Reveal it in a new tab, Open it in its app, Open With… another one.
 pub(crate) fn file_actions(path: &std::path::Path) -> Vec<log::Action> {
-    let encoded: String = url::form_urlencoded::byte_serialize(path.to_string_lossy().as_bytes()).collect();
-    [("Reveal", "reveal"), ("Open", "open"), ("Open With…", "open-with")]
-        .into_iter()
-        .map(|(label, verb)| log::Action { label: label.into(), url: format!("files:file/{verb}?{encoded}") })
-        .collect()
+    let encoded: String =
+        url::form_urlencoded::byte_serialize(path.to_string_lossy().as_bytes()).collect();
+    [
+        ("Reveal", "reveal"),
+        ("Open", "open"),
+        ("Open With…", "open-with"),
+    ]
+    .into_iter()
+    .map(|(label, verb)| log::Action {
+        label: label.into(),
+        url: format!("files:file/{verb}?{encoded}"),
+    })
+    .collect()
 }
 
 /// `files:file/<verb>?<path>` → the verb and the path.
 pub(crate) fn file_command(command: &str) -> Option<(&str, std::path::PathBuf)> {
     let (verb, encoded) = command.strip_prefix("file/")?.split_once('?')?;
-    let path: String = url::form_urlencoded::parse(format!("p={encoded}").as_bytes()).find(|(key, _)| key == "p")?.1.into_owned();
+    let path: String = url::form_urlencoded::parse(format!("p={encoded}").as_bytes())
+        .find(|(key, _)| key == "p")?
+        .1
+        .into_owned();
     Some((verb, std::path::PathBuf::from(path)))
 }
 
 /// A notification's buttons: open their link (release notes…), or run an
 /// app command for `files:` links. The first one is the primary.
-fn action_buttons(prefix: &'static str, notification: &log::Notification, explorer: &gpui_kit::WeakEntity<FileExplorer>) -> gpui_kit::Div {
+fn action_buttons(
+    prefix: &'static str,
+    notification: &log::Notification,
+    explorer: &gpui_kit::WeakEntity<FileExplorer>,
+) -> gpui_kit::Div {
     let id = notification.id;
-    h_flex().gap_1().flex_wrap().children(notification.actions.iter().enumerate().map(|(index, action)| {
-        let url = action.url.clone();
-        let button = Button::new((prefix, (id as usize) * 8 + index)).xsmall().label(action.label.clone());
-        let button = if index == 0 { button.primary() } else { button.ghost() };
-        let explorer = explorer.clone();
-        button.on_click(move |_, window, cx| {
-            cx.stop_propagation();
-            if let Some((verb, path)) = url.strip_prefix("files:").and_then(file_command) {
-                let _ = explorer.update(cx, |this, cx| this.run_file_action(verb, &path, window, cx));
-            } else if let Some(command) = url.strip_prefix("files:") {
-                let _ = explorer.update(cx, |this, cx| this.run_notification_command(command, id, cx));
-            } else {
-                cx.open_url(&url);
-            }
-        })
-    }))
+    h_flex()
+        .gap_1()
+        .flex_wrap()
+        .children(
+            notification
+                .actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| {
+                    let url = action.url.clone();
+                    let button = Button::new((prefix, (id as usize) * 8 + index))
+                        .xsmall()
+                        .label(action.label.clone());
+                    let button = if index == 0 {
+                        button.primary()
+                    } else {
+                        button.ghost()
+                    };
+                    let explorer = explorer.clone();
+                    button.on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        if let Some((verb, path)) =
+                            url.strip_prefix("files:").and_then(file_command)
+                        {
+                            let _ = explorer.update(cx, |this, cx| {
+                                this.run_file_action(verb, &path, window, cx)
+                            });
+                        } else if let Some(command) = url.strip_prefix("files:") {
+                            let _ = explorer.update(cx, |this, cx| {
+                                this.run_notification_command(command, id, cx)
+                            });
+                        } else {
+                            cx.open_url(&url);
+                        }
+                    })
+                }),
+        )
 }
 
 fn maintenance_due(last: std::time::Instant, now: std::time::Instant) -> bool {
@@ -97,8 +134,13 @@ static CHIMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 fn chime_for_new_notifications(settings: &crate::settings::AppSettings, in_front: bool) {
     use std::sync::atomic::Ordering;
     let seen = CHIMED.load(Ordering::Relaxed);
-    let fresh: Vec<log::Notification> = log::notifications().into_iter().filter(|notification| notification.id > seen).collect();
-    let Some(newest) = fresh.iter().map(|notification| notification.id).max() else { return };
+    let fresh: Vec<log::Notification> = log::notifications()
+        .into_iter()
+        .filter(|notification| notification.id > seen)
+        .collect();
+    let Some(newest) = fresh.iter().map(|notification| notification.id).max() else {
+        return;
+    };
     if CHIMED.fetch_max(newest, Ordering::Relaxed) >= newest {
         return;
     }
@@ -122,14 +164,24 @@ fn chime_for_new_notifications(settings: &crate::settings::AppSettings, in_front
 
 /// At launch: what is already in the journal never chimes.
 fn prime_chimes() {
-    let newest = log::notifications().iter().map(|notification| notification.id).max().unwrap_or(0);
+    let newest = log::notifications()
+        .iter()
+        .map(|notification| notification.id)
+        .max()
+        .unwrap_or(0);
     CHIMED.fetch_max(newest, std::sync::atomic::Ordering::Relaxed);
 }
 
 impl FileExplorer {
     /// A notification's file button: Reveal (a new tab, the file selected),
     /// Open (its app), Open With… (choose one).
-    pub(crate) fn run_file_action(&mut self, verb: &str, path: &std::path::Path, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+    pub(crate) fn run_file_action(
+        &mut self,
+        verb: &str,
+        path: &std::path::Path,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(entry) = crate::model::entry_at(path) else {
             self.notice = Some(format!("{} is gone", path.display()));
             cx.notify();
@@ -151,6 +203,39 @@ impl FileExplorer {
         cx.notify();
     }
 
+    /// While the FPS counter is visible, draws at the rate chosen in General.
+    /// gpui-fps measures presented frames; it does not drive them itself.
+    pub(crate) fn watch_frame_rate(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(crate::settings::frame_duration())
+                    .await;
+                let visible = this
+                    .update(cx, |this: &mut FileExplorer, cx| {
+                        let settings = this.appearance.read(cx);
+                        if settings.developer.show_fps_counter {
+                            if settings.frame_rate < 60 {
+                                cx.notify();
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if !visible {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(250))
+                        .await;
+                }
+            }
+        })
+        .detach();
+    }
+
     /// Redraws when the journal changes, and checks the free disk space.
     pub(crate) fn watch_journal(cx: &mut Context<Self>) {
         prime_chimes();
@@ -170,7 +255,8 @@ impl FileExplorer {
                 let now = std::time::Instant::now();
                 let check_disk = maintenance_due(last_disk, now);
                 let check_mail = maintenance_due(last_mail, now);
-                let check_update = !update_checked && now.duration_since(started) >= std::time::Duration::from_secs(2);
+                let check_update = !update_checked
+                    && now.duration_since(started) >= std::time::Duration::from_secs(2);
                 let sample_due = now.duration_since(last_sample) >= crate::resources::EVERY;
                 let alive = this.update(cx, |this, cx| {
                     let generation = log::generation();
@@ -226,8 +312,12 @@ impl FileExplorer {
     /// "Low disk space" once when free space drops below 5 GB, again only
     /// after it went back above.
     fn check_disk_space(&mut self) {
-        let Some(home) = crate::model::Location::Home.path() else { return };
-        let Some(disk) = crate::model::disk_usage(&home) else { return };
+        let Some(home) = crate::model::Location::Home.path() else {
+            return;
+        };
+        let Some(disk) = crate::model::disk_usage(&home) else {
+            return;
+        };
         let low = disk.available < LOW_DISK;
         if low && !self.low_disk_warned {
             let free = crate::settings::format_size(disk.available, Default::default());
@@ -248,7 +338,13 @@ impl FileExplorer {
         }
         if let Some(notice) = &self.notice {
             let lower = notice.to_lowercase();
-            let kind = if lower.contains("failed") || lower.contains("cannot") || notice.starts_with('⚠') { Kind::Error } else { Kind::Notice };
+            let kind =
+                if lower.contains("failed") || lower.contains("cannot") || notice.starts_with('⚠')
+                {
+                    Kind::Error
+                } else {
+                    Kind::Notice
+                };
             log::record("files", kind, notice.clone(), None);
         }
         self.journaled_notice = self.notice.clone();
@@ -260,26 +356,46 @@ impl FileExplorer {
         let query = query.to_lowercase();
         log::events()
             .into_iter()
-            .filter(|event| developer || matches!(event.kind, Kind::Notice | Kind::Notification | Kind::Error))
-            .filter(|event| self.console_kinds.is_empty() || self.console_kinds.contains(&event.kind))
+            .filter(|event| {
+                developer || matches!(event.kind, Kind::Notice | Kind::Notification | Kind::Error)
+            })
+            .filter(|event| {
+                self.console_kinds.is_empty() || self.console_kinds.contains(&event.kind)
+            })
             .filter(|event| {
                 query.is_empty()
                     || event.message.to_lowercase().contains(&query)
                     || event.source.to_lowercase().contains(&query)
-                    || event.detail.as_ref().is_some_and(|detail| detail.to_lowercase().contains(&query))
+                    || event
+                        .detail
+                        .as_ref()
+                        .is_some_and(|detail| detail.to_lowercase().contains(&query))
             })
             .collect()
     }
 
     /// The footer's left and right buttons: Console and the bell.
-    pub(crate) fn footer_buttons(&self, palette: Palette, cx: &mut Context<Self>) -> (AnyElement, AnyElement) {
-        let errors = log::events().iter().rev().take(200).filter(|event| !event.ok).count();
+    pub(crate) fn footer_buttons(
+        &self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> (AnyElement, AnyElement) {
+        let errors = log::events()
+            .iter()
+            .rev()
+            .take(200)
+            .filter(|event| !event.ok)
+            .count();
         let console = Button::new("footer-console")
             .debug_selector(|| "footer-console".into())
             .ghost()
             .xsmall()
             .icon(IconName::SquareTerminal)
-            .label(if errors > 0 { format!("Console · {errors}") } else { "Console".to_string() })
+            .label(if errors > 0 {
+                format!("Console · {errors}")
+            } else {
+                "Console".to_string()
+            })
             .when(self.console_open, |button| button.primary())
             .tooltip("Event journal: what Files and extensions did")
             .on_click(cx.listener(|this, _, _, cx| {
@@ -304,7 +420,15 @@ impl FileExplorer {
                 }
                 cx.notify();
             }))
-            .child(Icon::new(IconName::Bell).xsmall().text_color(if unread > 0 { palette.accent } else { palette.muted }))
+            .child(
+                Icon::new(IconName::Bell)
+                    .xsmall()
+                    .text_color(if unread > 0 {
+                        palette.accent
+                    } else {
+                        palette.muted
+                    }),
+            )
             .when(unread > 0, |bell| {
                 bell.child(
                     div()
@@ -319,7 +443,31 @@ impl FileExplorer {
         (console.into_any_element(), bell.into_any_element())
     }
 
-    pub(crate) fn render_console(&mut self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_console(
+        &mut self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.console_detached {
+            return None;
+        }
+        self.render_console_content(palette, cx, false)
+    }
+
+    fn render_console_window(
+        &mut self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        self.render_console_content(palette, cx, true)
+    }
+
+    fn render_console_content(
+        &mut self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+        detached: bool,
+    ) -> Option<AnyElement> {
         if !self.console_open || !self.appearance.read(cx).developer.show_console {
             return None;
         }
@@ -327,11 +475,19 @@ impl FileExplorer {
         let query = self.console_query.read(cx).value().to_string();
         let events = self.console_events(developer, &query);
         let total = events.len();
-        let kinds: &[Kind] = if developer { &Kind::ALL } else { &[Kind::Notice, Kind::Notification, Kind::Error] };
-        let chips = kinds.iter().map(|kind| {
-            let kind = *kind;
-            let on = self.console_kinds.contains(&kind);
-            Button::new(gpui_kit::ElementId::Name(format!("console-kind-{}", kind.label()).into()))
+        let kinds: &[Kind] = if developer {
+            &Kind::ALL
+        } else {
+            &[Kind::Notice, Kind::Notification, Kind::Error]
+        };
+        let chips = kinds
+            .iter()
+            .map(|kind| {
+                let kind = *kind;
+                let on = self.console_kinds.contains(&kind);
+                Button::new(gpui_kit::ElementId::Name(
+                    format!("console-kind-{}", kind.label()).into(),
+                ))
                 .xsmall()
                 .label(kind.label())
                 .when(on, |button| button.primary())
@@ -342,96 +498,153 @@ impl FileExplorer {
                     }
                     cx.notify();
                 }))
-        }).collect::<Vec<_>>();
-        let rows = events.into_iter().rev().take(SHOWN).map(|event| {
-            let id = event.id;
-            let expanded = self.console_expanded == Some(id);
-            let row = v_flex()
-                .id(("console-event", id as usize))
-                .px_2()
-                .py_0p5()
-                .border_b_1()
-                .border_color(palette.border)
-                .cursor_pointer()
-                .hover(|style| style.bg(palette.hover))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.console_expanded = if this.console_expanded == Some(id) { None } else { Some(id) };
-                    cx.notify();
-                }))
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .text_xs()
-                        .child(div().w(px(84.)).flex_shrink_0().text_color(palette.faint).font_family("Menlo").child(crate::dev_shell::clock(event.time)))
-                        .child(div().w(px(92.)).flex_shrink_0().truncate().text_color(palette.muted).child(event.source.clone()))
-                        .child(
-                            div()
-                                .w(px(78.))
-                                .flex_shrink_0()
-                                .text_color(kind_color(event.kind, palette))
-                                .child(event.kind.label()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_color(if event.ok { palette.text } else { palette.video })
-                                .when(event.kind == Kind::Process, |message| message.font_family("Menlo"))
-                                .child(event.message.clone()),
-                        )
-                        .children(event.duration_ms.map(|ms| div().flex_shrink_0().text_color(palette.faint).child(format!("{ms} ms"))))
-                        .child({
-                            // A program copies as the exact command to paste in a terminal.
-                            let text = event.command.clone().unwrap_or_else(|| match &event.detail {
-                                Some(detail) => format!("{}\n{detail}", event.message),
-                                None => event.message.clone(),
-                            });
-                            let copy = Button::new(("console-copy", id as usize))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Copy)
-                                .tooltip(if event.command.is_some() { "Copy command" } else { "Copy" })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.clone()));
-                                    this.notice = Some("Copied to the clipboard".to_string());
-                                    cx.notify();
-                                }));
-                            #[cfg(test)]
-                            let copy = div().debug_selector(move || format!("console-copy-{id}")).child(copy);
-                            copy
-                        })
-                        .when(event.detail.is_some(), |row| {
-                            row.child(Icon::new(if expanded { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(palette.faint))
-                        }),
-                )
-                .when(expanded, |row| {
-                    row.children(event.detail.clone().map(|detail| {
-                        div()
-                            .mt_1()
-                            .mb_1()
-                            .ml(px(84.))
-                            .p_2()
-                            .rounded_sm()
-                            .bg(palette.surface)
-                            .text_xs()
-                            .font_family("Menlo")
-                            .text_color(palette.text)
-                            .whitespace_normal()
-                            .child(crate::views::text_fx::selectable(("console-detail", id as usize), detail))
+            })
+            .collect::<Vec<_>>();
+        let rows = events
+            .into_iter()
+            .rev()
+            .take(SHOWN)
+            .map(|event| {
+                let id = event.id;
+                let expanded = self.console_expanded == Some(id);
+                let row = v_flex()
+                    .id(("console-event", id as usize))
+                    .px_2()
+                    .py_0p5()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(palette.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.console_expanded = if this.console_expanded == Some(id) {
+                            None
+                        } else {
+                            Some(id)
+                        };
+                        cx.notify();
                     }))
-                });
-            #[cfg(test)]
-            let row = row.debug_selector(move || format!("console-event-{id}"));
-            row
-        }).collect::<Vec<_>>();
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .text_xs()
+                            .child(
+                                div()
+                                    .w(px(84.))
+                                    .flex_shrink_0()
+                                    .text_color(palette.faint)
+                                    .font_family("Menlo")
+                                    .child(crate::dev_shell::clock(event.time)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(92.))
+                                    .flex_shrink_0()
+                                    .truncate()
+                                    .text_color(palette.muted)
+                                    .child(event.source.clone()),
+                            )
+                            .child(
+                                div()
+                                    .w(px(78.))
+                                    .flex_shrink_0()
+                                    .text_color(kind_color(event.kind, palette))
+                                    .child(event.kind.label()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(if event.ok {
+                                        palette.text
+                                    } else {
+                                        palette.video
+                                    })
+                                    .when(event.kind == Kind::Process, |message| {
+                                        message.font_family("Menlo")
+                                    })
+                                    .child(event.message.clone()),
+                            )
+                            .children(event.duration_ms.map(|ms| {
+                                div()
+                                    .flex_shrink_0()
+                                    .text_color(palette.faint)
+                                    .child(format!("{ms} ms"))
+                            }))
+                            .child({
+                                // A program copies as the exact command to paste in a terminal.
+                                let text =
+                                    event
+                                        .command
+                                        .clone()
+                                        .unwrap_or_else(|| match &event.detail {
+                                            Some(detail) => format!("{}\n{detail}", event.message),
+                                            None => event.message.clone(),
+                                        });
+                                let copy = Button::new(("console-copy", id as usize))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .tooltip(if event.command.is_some() {
+                                        "Copy command"
+                                    } else {
+                                        "Copy"
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                            text.clone(),
+                                        ));
+                                        this.notice = Some("Copied to the clipboard".to_string());
+                                        cx.notify();
+                                    }));
+                                #[cfg(test)]
+                                let copy = div()
+                                    .debug_selector(move || format!("console-copy-{id}"))
+                                    .child(copy);
+                                copy
+                            })
+                            .when(event.detail.is_some(), |row| {
+                                row.child(
+                                    Icon::new(if expanded {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .xsmall()
+                                    .text_color(palette.faint),
+                                )
+                            }),
+                    )
+                    .when(expanded, |row| {
+                        row.children(event.detail.clone().map(|detail| {
+                            div()
+                                .mt_1()
+                                .mb_1()
+                                .ml(px(84.))
+                                .p_2()
+                                .rounded_sm()
+                                .bg(palette.surface)
+                                .text_xs()
+                                .font_family("Menlo")
+                                .text_color(palette.text)
+                                .whitespace_normal()
+                                .child(crate::views::text_fx::selectable(
+                                    ("console-detail", id as usize),
+                                    detail,
+                                ))
+                        }))
+                    });
+                #[cfg(test)]
+                let row = row.debug_selector(move || format!("console-event-{id}"));
+                row
+            })
+            .collect::<Vec<_>>();
         Some(
             v_flex()
-                .h(px(240.))
-                .flex_shrink_0()
-                .border_t_1()
+                .when(detached, |this| this.size_full())
+                .when(!detached, |this| this.h(px(240.)).flex_shrink_0().border_t_1())
                 .border_color(palette.border)
                 .bg(palette.window)
                 .child(
@@ -444,7 +657,8 @@ impl FileExplorer {
                         .border_color(palette.border)
                         .child(div().text_xs().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Console"))
                         .when(developer, |this| {
-                            this.children(ConsoleTab::ALL.map(|tab| {
+                            let audio = self.appearance.read(cx).extensions.music_devtools_channels;
+                            this.children(ConsoleTab::ALL.into_iter().filter(|tab| *tab != ConsoleTab::Audio || audio).map(|tab| {
                                 let button = Button::new(gpui_kit::ElementId::Name(format!("console-tab-{}", tab.label().to_lowercase()).into())).xsmall().label(tab.label());
                                 let button = if self.console_tab == tab { button.primary() } else { button.ghost() };
                                 button.on_click(cx.listener(move |this, _, _, cx| {
@@ -465,8 +679,19 @@ impl FileExplorer {
                             log::clear();
                             cx.notify();
                         })))
-                        .child(Button::new("console-close").ghost().xsmall().icon(IconName::X).on_click(cx.listener(|this, _, _, cx| {
-                            this.console_open = false;
+                        .when(!detached, |this| this.child(Button::new("console-detach").ghost().xsmall().icon(IconName::SquareArrowOutUpRight).tooltip("Open DevTools in a separate window").on_click(cx.listener(|this, _, _, cx| this.detach_console(cx)))))
+                        .when(detached, |this| this.child(Button::new("console-attach").ghost().xsmall().icon(IconName::ArrowDownToLine).tooltip("Attach DevTools to the main window").on_click(cx.listener(|this, _, window, cx| {
+                            this.console_detached = false;
+                            cx.notify();
+                            window.remove_window();
+                        }))))
+                        .child(Button::new("console-close").ghost().xsmall().icon(IconName::X).on_click(cx.listener(move |this, _, window, cx| {
+                            if detached {
+                                this.console_detached = false;
+                                window.remove_window();
+                            } else {
+                                this.console_open = false;
+                            }
                             cx.notify();
                         }))),
                 )
@@ -478,6 +703,11 @@ impl FileExplorer {
                     render_indexes(palette, cx)
                 } else if developer && self.console_tab == ConsoleTab::Search {
                     render_search(palette)
+                } else if developer
+                    && self.console_tab == ConsoleTab::Audio
+                    && self.appearance.read(cx).extensions.music_devtools_channels
+                {
+                    render_audio_channels(palette)
                 } else {
                     div()
                         .id("console-rows")
@@ -495,17 +725,57 @@ impl FileExplorer {
 
     /// Notifications young enough to show as toasts, newest first.
     pub(crate) fn toasts(&self) -> Vec<log::Notification> {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.as_millis() as u64);
         log::notifications()
             .into_iter()
-            .filter(|notification| now.saturating_sub(notification.time) < TOAST_MS && !self.hidden_toasts.contains(&notification.id))
+            .filter(|notification| {
+                now.saturating_sub(notification.time) < TOAST_MS
+                    && !self.hidden_toasts.contains(&notification.id)
+            })
             .take(TOASTS)
             .collect()
     }
 
+    pub(crate) fn detach_console(&mut self, cx: &mut Context<Self>) {
+        if self.console_detached {
+            return;
+        }
+        self.console_detached = true;
+        cx.notify();
+        let explorer = cx.entity();
+        let options = gpui_kit::WindowOptions {
+            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds {
+                origin: gpui_kit::point(px(240.), px(140.)),
+                size: gpui_kit::size(px(1100.), px(640.)),
+            })),
+            window_min_size: Some(gpui_kit::size(px(720.), px(360.))),
+            inactive_frame_interval: None,
+            titlebar: Some(gpui_kit::TitlebarOptions {
+                title: Some("DevTools".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        cx.spawn(async move |_, cx| {
+            let _ = cx.update(|cx| {
+                gpui_kit::open_window(options, cx, move |window, cx| {
+                    cx.new(|cx| DetachedConsole::new(window, cx, explorer.clone()))
+                })
+                .expect("Failed to open DevTools window");
+            });
+        })
+        .detach();
+    }
+
     /// macOS-style banners in the top-right corner; they fade on their own.
     /// A click opens the notifications list, × closes just the toast.
-    pub(crate) fn render_toasts(&mut self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_toasts(
+        &mut self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let explorer = cx.entity().downgrade();
         let toasts = self.toasts();
         if toasts.is_empty() || self.notifications_open {
@@ -552,40 +822,80 @@ impl FileExplorer {
                         .child(
                             h_flex()
                                 .gap_2()
-                                .child(div().flex_1().min_w_0().truncate().text_xs().text_color(palette.muted).child(notification.source.to_uppercase()))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(palette.muted)
+                                        .child(notification.source.to_uppercase()),
+                                )
                                 .child(div().text_xs().text_color(palette.faint).child("now")),
                         )
-                        .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.text).whitespace_normal().child(notification.title.clone()))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                .text_color(palette.text)
+                                .whitespace_normal()
+                                .child(notification.title.clone()),
+                        )
                         .children(notification.body.clone().map(|body| {
-                            div().text_xs().text_color(palette.muted).whitespace_normal().line_clamp(2).child(body)
+                            div()
+                                .text_xs()
+                                .text_color(palette.muted)
+                                .whitespace_normal()
+                                .line_clamp(2)
+                                .child(body)
                         }))
-                        .when(!notification.actions.is_empty(), |this| this.child(action_buttons("toast-action", &notification, &explorer))),
+                        .when(!notification.actions.is_empty(), |this| {
+                            this.child(action_buttons("toast-action", &notification, &explorer))
+                        }),
                 )
-                .child(Button::new(("toast-close", id as usize)).ghost().xsmall().icon(IconName::X).on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.hidden_toasts.insert(id);
-                    cx.notify();
-                })));
+                .child(
+                    Button::new(("toast-close", id as usize))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::X)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.hidden_toasts.insert(id);
+                            cx.notify();
+                        })),
+                );
             #[cfg(test)]
             let card = card.debug_selector(move || format!("toast-{id}"));
             // Slides in from the right, like macOS banners.
             gpui_kit::AnimationExt::with_animation(
                 card,
                 ("toast-in", id as usize),
-                gpui_kit::Animation::new(std::time::Duration::from_millis(220)).with_easing(gpui_kit::ease_out_quint()),
+                crate::settings::animation(std::time::Duration::from_millis(220))
+                    .with_easing(gpui_kit::ease_out_quint()),
                 |card, delta| card.ml(px((1. - delta) * 40.)).opacity(delta),
             )
         });
         // Bottom right, above the status bar, newest at the bottom.
         Some(
-            gpui_kit::deferred(v_flex().absolute().bottom(px(40.)).right(px(12.)).gap_2().children(cards.into_iter().rev()))
-                .with_priority(1)
-                .into_any_element(),
+            gpui_kit::deferred(
+                v_flex()
+                    .absolute()
+                    .bottom(px(40.))
+                    .right(px(12.))
+                    .gap_2()
+                    .children(cards.into_iter().rev()),
+            )
+            .with_priority(1)
+            .into_any_element(),
         )
     }
 
     /// The notifications card above the bell.
-    pub(crate) fn render_notifications(&mut self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_notifications(
+        &mut self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let explorer = cx.entity().downgrade();
         if !self.notifications_open {
             return None;
@@ -593,85 +903,187 @@ impl FileExplorer {
         let notifications = log::notifications();
         let items = notifications.iter().map(|notification| {
             let id = notification.id;
-            let item = h_flex()
-                .id(("notification", id as usize))
-                .px_3()
-                .py_2()
-                .gap_2()
-                .items_start()
-                .border_b_1()
-                .border_color(palette.border)
-                .child(level_icon(notification.level, palette).small())
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_0p5()
-                        .child(div().text_sm().text_color(palette.text).whitespace_normal().child(notification.title.clone()))
-                        .children(notification.body.clone().map(|body| div().text_xs().text_color(palette.muted).whitespace_normal().child(body)))
-                        .when(!notification.actions.is_empty(), |this| this.child(action_buttons("notification-action", &notification, &explorer)))
-                        .child(div().text_size(px(9.)).text_color(palette.faint).child(format!(
-                            "{} · {}",
-                            notification.source,
-                            crate::views::agents::ago((notification.time / 1000) as i64)
-                        ))),
-                )
-                .child(Button::new(("notification-dismiss", id as usize)).ghost().xsmall().icon(IconName::X).on_click(cx.listener(move |_, _, _, cx| {
-                    log::dismiss(id);
-                    cx.notify();
-                })));
+            let item =
+                h_flex()
+                    .id(("notification", id as usize))
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .items_start()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(level_icon(notification.level, palette).small())
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(palette.text)
+                                    .whitespace_normal()
+                                    .child(notification.title.clone()),
+                            )
+                            .children(notification.body.clone().map(|body| {
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.muted)
+                                    .whitespace_normal()
+                                    .child(body)
+                            }))
+                            .when(!notification.actions.is_empty(), |this| {
+                                this.child(action_buttons(
+                                    "notification-action",
+                                    &notification,
+                                    &explorer,
+                                ))
+                            })
+                            .child(div().text_size(px(9.)).text_color(palette.faint).child(
+                                format!(
+                                    "{} · {}",
+                                    notification.source,
+                                    crate::views::agents::ago((notification.time / 1000) as i64)
+                                ),
+                            )),
+                    )
+                    .child(
+                        Button::new(("notification-dismiss", id as usize))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::X)
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                log::dismiss(id);
+                                cx.notify();
+                            })),
+                    );
             #[cfg(test)]
             let item = item.debug_selector(move || format!("notification-{id}"));
             item
         });
         Some(
-            div().relative().h_0().child(
-                v_flex()
-                    .id("notifications-card")
-                    // Clicks, drags and text selection stop here instead of
-                    // reaching the file list painted underneath.
-                    .occlude()
-                    .absolute()
-                    .bottom(px(4.))
-                    .right(px(8.))
-                    .w(px(360.))
-                    .max_h(px(420.))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(palette.border)
-                    .bg(palette.elevated)
-                    .shadow_lg()
-                    .overflow_hidden()
-                    .child(
-                        h_flex()
-                            .px_3()
-                            .py_2()
-                            .items_center()
-                            .border_b_1()
-                            .border_color(palette.border)
-                            .child(div().flex_1().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Notifications"))
-                            .child(Button::new("notifications-clear").ghost().xsmall().label("Clear all").disabled(notifications.is_empty()).on_click(cx.listener(|_, _, _, cx| {
-                                log::clear_notifications();
-                                cx.notify();
-                            })))
-                            .child(Button::new("notifications-close").ghost().xsmall().icon(IconName::X).on_click(cx.listener(|this, _, _, cx| {
-                                this.notifications_open = false;
-                                cx.notify();
-                            }))),
-                    )
-                    .child(
-                        div()
-                            .id("notifications-list")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scrollbar()
-                            .child(v_flex().children(items).when(notifications.is_empty(), |list| {
-                                list.child(div().p_4().text_xs().text_color(palette.faint).child("No notifications"))
-                            })),
-                    ),
-            )
-            .into_any_element(),
+            div()
+                .relative()
+                .h_0()
+                .child(
+                    v_flex()
+                        .id("notifications-card")
+                        // Clicks, drags and text selection stop here instead of
+                        // reaching the file list painted underneath.
+                        .occlude()
+                        .absolute()
+                        .bottom(px(4.))
+                        .right(px(8.))
+                        .w(px(360.))
+                        .max_h(px(420.))
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(palette.border)
+                        .bg(palette.elevated)
+                        .shadow_lg()
+                        .overflow_hidden()
+                        .child(
+                            h_flex()
+                                .px_3()
+                                .py_2()
+                                .items_center()
+                                .border_b_1()
+                                .border_color(palette.border)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_sm()
+                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                        .child("Notifications"),
+                                )
+                                .child(
+                                    Button::new("notifications-clear")
+                                        .ghost()
+                                        .xsmall()
+                                        .label("Clear all")
+                                        .disabled(notifications.is_empty())
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            log::clear_notifications();
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("notifications-close")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::X)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.notifications_open = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("notifications-list")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scrollbar()
+                                .child(v_flex().children(items).when(
+                                    notifications.is_empty(),
+                                    |list| {
+                                        list.child(
+                                            div()
+                                                .p_4()
+                                                .text_xs()
+                                                .text_color(palette.faint)
+                                                .child("No notifications"),
+                                        )
+                                    },
+                                )),
+                        ),
+                )
+                .into_any_element(),
         )
+    }
+}
+
+struct DetachedConsole {
+    explorer: Entity<FileExplorer>,
+    _closed: Subscription,
+}
+
+impl DetachedConsole {
+    fn new(window: &mut Window, cx: &mut Context<Self>, explorer: Entity<FileExplorer>) -> Self {
+        let id = window.window_handle().window_id();
+        let weak = explorer.downgrade();
+        let closed = cx.on_window_closed(move |cx, closed| {
+            if closed == id {
+                let _ = weak.update(cx, |this, cx| {
+                    this.console_detached = false;
+                    cx.notify();
+                });
+            }
+        });
+        Self {
+            explorer,
+            _closed: closed,
+        }
+    }
+}
+
+impl Render for DetachedConsole {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let explorer = self.explorer.clone();
+        let palette = explorer.read(cx).palette();
+        let settings = explorer.read(cx).appearance.read(cx);
+        let show_fps_counter = settings.developer.show_fps_counter;
+        let native_frame_rate = show_fps_counter && settings.frame_rate >= 60;
+        if native_frame_rate {
+            window.request_animation_frame();
+        }
+        let content = explorer.update(cx, |this, cx| this.render_console_window(palette, cx));
+        div()
+            .relative()
+            .size_full()
+            .bg(palette.window)
+            .children(content)
+            .children(show_fps_counter.then(|| gpui_fps::fps_monitor(window, cx)))
     }
 }
 
@@ -681,10 +1093,21 @@ mod file_action_tests {
     fn a_file_notification_carries_its_path_through_every_button() {
         let path = std::path::Path::new("/Users/me/Downloads/Report & notes (1).pdf");
         let actions = super::file_actions(path);
-        assert_eq!(actions.iter().map(|action| action.label.as_str()).collect::<Vec<_>>(), ["Reveal", "Open", "Open With…"]);
+        assert_eq!(
+            actions
+                .iter()
+                .map(|action| action.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Reveal", "Open", "Open With…"]
+        );
         for (action, verb) in actions.iter().zip(["reveal", "open", "open-with"]) {
-            let (got, back) = super::file_command(action.url.strip_prefix("files:").unwrap()).unwrap();
-            assert_eq!((got, back.as_path()), (verb, path), "spaces, & and brackets survive");
+            let (got, back) =
+                super::file_command(action.url.strip_prefix("files:").unwrap()).unwrap();
+            assert_eq!(
+                (got, back.as_path()),
+                (verb, path),
+                "spaces, & and brackets survive"
+            );
         }
     }
 }
@@ -694,14 +1117,24 @@ mod tests {
     #[test]
     fn maintenance_schedule_does_not_depend_on_ui_tick_count() {
         let start = std::time::Instant::now();
-        assert!(!super::maintenance_due(start, start + std::time::Duration::from_secs(58)));
-        assert!(super::maintenance_due(start, start + std::time::Duration::from_secs(60)));
+        assert!(!super::maintenance_due(
+            start,
+            start + std::time::Duration::from_secs(58)
+        ));
+        assert!(super::maintenance_due(
+            start,
+            start + std::time::Duration::from_secs(60)
+        ));
     }
 }
 
 /// A bar per sample, scaled to the highest one; the last bar is now.
 fn sparkline(values: &[f32], color: gpui_kit::Hsla, palette: Palette) -> gpui_kit::Div {
-    let peak = values.iter().copied().fold(0f32, f32::max).max(f32::EPSILON);
+    let peak = values
+        .iter()
+        .copied()
+        .fold(0f32, f32::max)
+        .max(f32::EPSILON);
     h_flex()
         .h(px(56.))
         .w_full()
@@ -710,7 +1143,14 @@ fn sparkline(values: &[f32], color: gpui_kit::Hsla, palette: Palette) -> gpui_ki
         .p_1()
         .rounded_sm()
         .bg(palette.surface)
-        .children(values.iter().map(|value| div().flex_1().min_w(px(1.)).h(gpui_kit::relative((value / peak).clamp(0.02, 1.))).bg(color).rounded_t_sm()))
+        .children(values.iter().map(|value| {
+            div()
+                .flex_1()
+                .min_w(px(1.))
+                .h(gpui_kit::relative((value / peak).clamp(0.02, 1.)))
+                .bg(color)
+                .rounded_t_sm()
+        }))
 }
 
 /// Console → Resources: memory and CPU over two minutes, and what the app keeps.
@@ -723,10 +1163,18 @@ pub(crate) enum ConsoleTab {
     Indexes,
     Search,
     Resources,
+    Audio,
 }
 
 impl ConsoleTab {
-    pub const ALL: [ConsoleTab; 5] = [ConsoleTab::Events, ConsoleTab::Tasks, ConsoleTab::Indexes, ConsoleTab::Search, ConsoleTab::Resources];
+    pub const ALL: [ConsoleTab; 6] = [
+        ConsoleTab::Events,
+        ConsoleTab::Tasks,
+        ConsoleTab::Indexes,
+        ConsoleTab::Search,
+        ConsoleTab::Resources,
+        ConsoleTab::Audio,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -735,13 +1183,51 @@ impl ConsoleTab {
             ConsoleTab::Indexes => "Indexes",
             ConsoleTab::Search => "Search",
             ConsoleTab::Resources => "Resources",
+            ConsoleTab::Audio => "Audio",
         }
     }
 }
 
+fn render_audio_channels(palette: Palette) -> AnyElement {
+    let levels = crate::spatial_player::channel_levels();
+    let names = ["L", "R", "C", "LFE", "SL", "SR", "SBL", "SBR"];
+    v_flex()
+        .p_4()
+        .gap_3()
+        .child(div().text_sm().child("Music output channels"))
+        .child(div().text_xs().text_color(palette.faint).child("Live RMS level after spatial processing, equalizer and volume"))
+        .children(levels.iter().enumerate().map(|(index, level)| {
+            let db = if *level > 0.00001 { 20.0 * level.log10() } else { -100.0 };
+            h_flex()
+                .gap_3()
+                .items_center()
+                .child(div().w(px(40.)).text_xs().font_family("Menlo").child(names.get(index).copied().unwrap_or("?")))
+                .child(
+                    div().flex_1().h(px(12.)).rounded_sm().bg(palette.surface).child(
+                        div()
+                            .h_full()
+                            .w(gpui_kit::relative(level.clamp(0.0, 1.0)))
+                            .rounded_sm()
+                            .bg(if *level > 0.95 { palette.video } else { palette.accent }),
+                    ),
+                )
+                .child(div().w(px(72.)).text_right().text_xs().font_family("Menlo").text_color(palette.muted).child(if db <= -100.0 { "−∞ dB".into() } else { format!("{db:.1} dB") }))
+        }))
+        .when(levels.is_empty(), |this| {
+            this.child(div().py_6().text_sm().text_color(palette.faint).child("Play a track in Music to see its channels. The channel meter uses the built-in output and applies from the next track."))
+        })
+        .into_any_element()
+}
+
 fn millis(duration: std::time::Duration) -> String {
     let ms = duration.as_secs_f64() * 1000.;
-    if ms >= 1000. { format!("{:.1} s", ms / 1000.) } else if ms >= 10. { format!("{ms:.0} ms") } else { format!("{ms:.1} ms") }
+    if ms >= 1000. {
+        format!("{:.1} s", ms / 1000.)
+    } else if ms >= 10. {
+        format!("{ms:.0} ms")
+    } else {
+        format!("{ms:.1} ms")
+    }
 }
 
 /// DevTools → Tasks: background jobs, newest first, with Retry and Cancel.
@@ -749,7 +1235,11 @@ fn render_tasks(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElement 
     use crate::tasks::State;
     let jobs = crate::tasks::jobs();
     let count = |wanted: fn(&State) -> bool| jobs.iter().filter(|job| wanted(&job.state)).count();
-    let (queued, running, failed) = (count(|state| *state == State::Queued), count(|state| *state == State::Running), count(|state| matches!(state, State::Failed(_))));
+    let (queued, running, failed) = (
+        count(|state| *state == State::Queued),
+        count(|state| *state == State::Running),
+        count(|state| matches!(state, State::Failed(_))),
+    );
     let rows = jobs.iter().rev().take(200).map(|job| {
         let id = job.id;
         let color = match job.state {
@@ -759,7 +1249,11 @@ fn render_tasks(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElement 
             State::Failed(_) => palette.video,
             State::Cancelled => palette.faint,
         };
-        let error = if let State::Failed(error) = &job.state { Some(error.clone()) } else { None };
+        let error = if let State::Failed(error) = &job.state {
+            Some(error.clone())
+        } else {
+            None
+        };
         h_flex()
             .gap_3()
             .px_2()
@@ -767,28 +1261,85 @@ fn render_tasks(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElement 
             .text_xs()
             .border_b_1()
             .border_color(palette.border)
-            .child(div().w(px(72.)).flex_shrink_0().text_color(color).child(job.state.label()))
-            .child(div().w(px(110.)).flex_shrink_0().text_color(palette.muted).child(job.kind))
-            .child(div().flex_1().min_w_0().truncate().text_color(palette.text).child(job.label.clone()))
-            .children(error.map(|error| div().max_w(px(260.)).truncate().text_color(palette.video).child(error)))
-            .child(div().w(px(70.)).flex_shrink_0().text_right().font_family("Menlo").text_color(palette.faint).child(format!("wait {}", millis(job.wait()))))
-            .child(div().w(px(64.)).flex_shrink_0().text_right().font_family("Menlo").text_color(palette.text).child(job.duration().map(millis).unwrap_or_else(|| "—".into())))
+            .child(
+                div()
+                    .w(px(72.))
+                    .flex_shrink_0()
+                    .text_color(color)
+                    .child(job.state.label()),
+            )
+            .child(
+                div()
+                    .w(px(110.))
+                    .flex_shrink_0()
+                    .text_color(palette.muted)
+                    .child(job.kind),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(palette.text)
+                    .child(job.label.clone()),
+            )
+            .children(error.map(|error| {
+                div()
+                    .max_w(px(260.))
+                    .truncate()
+                    .text_color(palette.video)
+                    .child(error)
+            }))
+            .child(
+                div()
+                    .w(px(70.))
+                    .flex_shrink_0()
+                    .text_right()
+                    .font_family("Menlo")
+                    .text_color(palette.faint)
+                    .child(format!("wait {}", millis(job.wait()))),
+            )
+            .child(
+                div()
+                    .w(px(64.))
+                    .flex_shrink_0()
+                    .text_right()
+                    .font_family("Menlo")
+                    .text_color(palette.text)
+                    .child(job.duration().map(millis).unwrap_or_else(|| "—".into())),
+            )
             .child(
                 h_flex()
                     .w(px(56.))
                     .justify_end()
                     .when(job.state == State::Queued, |this| {
-                        this.child(Button::new(("task-cancel", id as usize)).ghost().xsmall().label("Cancel").on_click(cx.listener(move |_, _, _, cx| {
-                            crate::tasks::cancel(id);
-                            cx.notify();
-                        })))
+                        this.child(
+                            Button::new(("task-cancel", id as usize))
+                                .ghost()
+                                .xsmall()
+                                .label("Cancel")
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    crate::tasks::cancel(id);
+                                    cx.notify();
+                                })),
+                        )
                     })
-                    .when(matches!(job.state, State::Failed(_) | State::Cancelled) && crate::tasks::can_retry(job.kind), |this| {
-                        this.child(Button::new(("task-retry", id as usize)).ghost().xsmall().label("Retry").on_click(cx.listener(move |_, _, _, cx| {
-                            crate::tasks::retry(id);
-                            cx.notify();
-                        })))
-                    }),
+                    .when(
+                        matches!(job.state, State::Failed(_) | State::Cancelled)
+                            && crate::tasks::can_retry(job.kind),
+                        |this| {
+                            this.child(
+                                Button::new(("task-retry", id as usize))
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Retry")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        crate::tasks::retry(id);
+                                        cx.notify();
+                                    })),
+                            )
+                        },
+                    ),
             )
     });
     v_flex()
@@ -804,15 +1355,33 @@ fn render_tasks(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElement 
                 .py_1()
                 .text_xs()
                 .text_color(palette.muted)
-                .child(format!("{queued} queued · {running} running · {failed} failed · {} kept", jobs.len()))
+                .child(format!(
+                    "{queued} queued · {running} running · {failed} failed · {} kept",
+                    jobs.len()
+                ))
                 .child(div().flex_1())
-                .child(Button::new("tasks-clear").ghost().xsmall().icon(IconName::Trash).label("Clear finished").on_click(cx.listener(|_, _, _, cx| {
-                    crate::tasks::clear_finished();
-                    cx.notify();
-                }))),
+                .child(
+                    Button::new("tasks-clear")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Trash)
+                        .label("Clear finished")
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            crate::tasks::clear_finished();
+                            cx.notify();
+                        })),
+                ),
         )
         .children(rows)
-        .when(jobs.is_empty(), |this| this.child(div().p_3().text_xs().text_color(palette.faint).child("No background work yet")))
+        .when(jobs.is_empty(), |this| {
+            this.child(
+                div()
+                    .p_3()
+                    .text_xs()
+                    .text_color(palette.faint)
+                    .child("No background work yet"),
+            )
+        })
         .into_any_element()
 }
 
@@ -820,39 +1389,109 @@ fn render_tasks(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElement 
 fn render_indexes(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElement {
     let (known, made, listings, search) = crate::model::index_stats();
     let (waiting, failed) = crate::thumbnails::stats();
-    let rows: Vec<(&'static str, String, &'static str, Option<(&'static str, fn())>)> = vec![
+    let rows: Vec<(
+        &'static str,
+        String,
+        &'static str,
+        Option<(&'static str, fn())>,
+    )> = vec![
         (
             "File entries",
-            format!("{known} known · {} alive · {made} made since launch", crate::model::LIVE_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)),
+            format!(
+                "{known} known · {} alive · {made} made since launch",
+                crate::model::LIVE_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)
+            ),
             "Every file and folder seen; a replaced one is freed once nothing shows it",
             None,
         ),
-        ("Folder listings", format!("{listings} folders"), "Read again after a short while, or now", Some(("Read again", crate::model::invalidate_listings as fn()))),
-        ("Global search", format!("{search} items"), "The ⌘K index: a few levels of the search folder", Some(("Rebuild", crate::model::clear_search_index as fn()))),
-        ("File details", format!("{} files", crate::media_info::cached()), "EXIF, streams, archive and program details", Some(("Read again", crate::media_info::clear as fn()))),
-        ("Folder sizes", format!("{} folders", crate::model::folder_sizes_count()), "Measured in the background as folders show", Some(("Measure again", crate::model::clear_folder_sizes as fn()))),
-        ("Thumbnails", format!("{waiting} waiting · {failed} failed"), "Previews, Quick Look renders, program icons", Some(("Retry failed", crate::thumbnails::forget_failures as fn()))),
-        ("Music library", format!("{} tracks", files_ext_music::local::library_len()), "Read when the Music tab opens", None),
+        (
+            "Folder listings",
+            format!("{listings} folders"),
+            "Read again after a short while, or now",
+            Some(("Read again", crate::model::invalidate_listings as fn())),
+        ),
+        (
+            "Global search",
+            format!("{search} items"),
+            "The ⌘K index: a few levels of the search folder",
+            Some(("Rebuild", crate::model::clear_search_index as fn())),
+        ),
+        (
+            "File details",
+            format!("{} files", crate::media_info::cached()),
+            "EXIF, streams, archive and program details",
+            Some(("Read again", crate::media_info::clear as fn())),
+        ),
+        (
+            "Folder sizes",
+            format!("{} folders", crate::model::folder_sizes_count()),
+            "Measured in the background as folders show",
+            Some(("Measure again", crate::model::clear_folder_sizes as fn())),
+        ),
+        (
+            "Thumbnails",
+            format!("{waiting} waiting · {failed} failed"),
+            "Previews, Quick Look renders, program icons",
+            Some(("Retry failed", crate::thumbnails::forget_failures as fn())),
+        ),
+        (
+            "Music library",
+            format!("{} tracks", files_ext_music::local::library_len()),
+            "Read when the Music tab opens",
+            None,
+        ),
     ];
-    let rows = rows.into_iter().enumerate().map(|(index, (name, count, note, action))| {
-        h_flex()
-            .gap_3()
-            .px_2()
-            .py_1()
-            .text_xs()
-            .border_b_1()
-            .border_color(palette.border)
-            .child(div().w(px(130.)).flex_shrink_0().text_color(palette.text).child(name))
-            .child(div().w(px(230.)).flex_shrink_0().text_color(palette.muted).child(count))
-            .child(div().flex_1().min_w_0().truncate().text_color(palette.faint).child(note))
-            .children(action.map(|(label, run)| {
-                Button::new(("index-action", index)).ghost().xsmall().icon(IconName::RefreshCw).label(label).on_click(cx.listener(move |_, _, _, cx| {
-                    run();
-                    files_sdk::log::record("devtools", Kind::Setting, format!("{name}: {label}"), None);
-                    cx.notify();
+    let rows = rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, count, note, action))| {
+            h_flex()
+                .gap_3()
+                .px_2()
+                .py_1()
+                .text_xs()
+                .border_b_1()
+                .border_color(palette.border)
+                .child(
+                    div()
+                        .w(px(130.))
+                        .flex_shrink_0()
+                        .text_color(palette.text)
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .w(px(230.))
+                        .flex_shrink_0()
+                        .text_color(palette.muted)
+                        .child(count),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(palette.faint)
+                        .child(note),
+                )
+                .children(action.map(|(label, run)| {
+                    Button::new(("index-action", index))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::RefreshCw)
+                        .label(label)
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            run();
+                            files_sdk::log::record(
+                                "devtools",
+                                Kind::Setting,
+                                format!("{name}: {label}"),
+                                None,
+                            );
+                            cx.notify();
+                        }))
                 }))
-            }))
-    });
+        });
     v_flex()
         .id("console-indexes")
         .debug_selector(|| "console-indexes".into())
@@ -869,9 +1508,17 @@ fn render_indexes(palette: Palette, cx: &mut Context<FileExplorer>) -> AnyElemen
 /// DevTools → Search: the last searches, split into where the time went.
 fn render_search(palette: Palette) -> AnyElement {
     let searches = crate::tasks::searches();
-    let widest = searches.iter().map(|search| search.total().as_secs_f32()).fold(0.0001f32, f32::max);
+    let widest = searches
+        .iter()
+        .map(|search| search.total().as_secs_f32())
+        .fold(0.0001f32, f32::max);
     let rows = searches.iter().rev().map(|search| {
-        let bar = |duration: std::time::Duration, color| div().h(px(8.)).w(px((duration.as_secs_f32() / widest * 220.).max(1.))).bg(color);
+        let bar = |duration: std::time::Duration, color| {
+            div()
+                .h(px(8.))
+                .w(px((duration.as_secs_f32() / widest * 220.).max(1.)))
+                .bg(color)
+        };
         h_flex()
             .gap_3()
             .px_2()
@@ -879,17 +1526,50 @@ fn render_search(palette: Palette) -> AnyElement {
             .text_xs()
             .border_b_1()
             .border_color(palette.border)
-            .child(div().w(px(52.)).flex_shrink_0().text_color(palette.muted).child(search.scope))
-            .child(div().w(px(160.)).flex_shrink_0().truncate().text_color(palette.text).child(search.query.clone()))
-            .child(div().w(px(120.)).flex_shrink_0().text_color(palette.faint).child(format!("{} of {}", search.results, search.candidates)))
-            .child(h_flex().w(px(230.)).flex_shrink_0().child(bar(search.list, palette.folder)).child(bar(search.matching, palette.accent)).child(bar(search.sort, palette.code)))
-            .child(div().flex_1().min_w_0().font_family("Menlo").text_color(palette.muted).child(format!(
-                "list {} · match {} · sort {} = {}",
-                millis(search.list),
-                millis(search.matching),
-                millis(search.sort),
-                millis(search.total())
-            )))
+            .child(
+                div()
+                    .w(px(52.))
+                    .flex_shrink_0()
+                    .text_color(palette.muted)
+                    .child(search.scope),
+            )
+            .child(
+                div()
+                    .w(px(160.))
+                    .flex_shrink_0()
+                    .truncate()
+                    .text_color(palette.text)
+                    .child(search.query.clone()),
+            )
+            .child(
+                div()
+                    .w(px(120.))
+                    .flex_shrink_0()
+                    .text_color(palette.faint)
+                    .child(format!("{} of {}", search.results, search.candidates)),
+            )
+            .child(
+                h_flex()
+                    .w(px(230.))
+                    .flex_shrink_0()
+                    .child(bar(search.list, palette.folder))
+                    .child(bar(search.matching, palette.accent))
+                    .child(bar(search.sort, palette.code)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .font_family("Menlo")
+                    .text_color(palette.muted)
+                    .child(format!(
+                        "list {} · match {} · sort {} = {}",
+                        millis(search.list),
+                        millis(search.matching),
+                        millis(search.sort),
+                        millis(search.total())
+                    )),
+            )
     });
     v_flex()
         .id("console-search")
@@ -898,24 +1578,63 @@ fn render_search(palette: Palette) -> AnyElement {
         .min_h_0()
         .overflow_y_scrollbar()
         .child(
-            h_flex().gap_3().px_2().py_1().text_xs().text_color(palette.faint)
-                .child(h_flex().gap_1().items_center().child(div().size(px(8.)).bg(palette.folder)).child("listing / index"))
-                .child(h_flex().gap_1().items_center().child(div().size(px(8.)).bg(palette.accent)).child("filters and fuzzy matching"))
-                .child(h_flex().gap_1().items_center().child(div().size(px(8.)).bg(palette.code)).child("sorting")),
+            h_flex()
+                .gap_3()
+                .px_2()
+                .py_1()
+                .text_xs()
+                .text_color(palette.faint)
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().size(px(8.)).bg(palette.folder))
+                        .child("listing / index"),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().size(px(8.)).bg(palette.accent))
+                        .child("filters and fuzzy matching"),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().size(px(8.)).bg(palette.code))
+                        .child("sorting"),
+                ),
         )
         .children(rows)
-        .when(searches.is_empty(), |this| this.child(div().p_3().text_xs().text_color(palette.faint).child("Type in a search box: each search shows up here")))
+        .when(searches.is_empty(), |this| {
+            this.child(
+                div()
+                    .p_3()
+                    .text_xs()
+                    .text_color(palette.faint)
+                    .child("Type in a search box: each search shows up here"),
+            )
+        })
         .into_any_element()
 }
 
 fn render_resources(palette: Palette) -> AnyElement {
     let history = crate::resources::history();
     let now = history.last().copied().unwrap_or_default();
-    let peak_memory = history.iter().map(|sample| sample.memory).max().unwrap_or(0);
+    let peak_memory = history
+        .iter()
+        .map(|sample| sample.memory)
+        .max()
+        .unwrap_or(0);
     let peak_cpu = history.iter().map(|sample| sample.cpu).fold(0f32, f32::max);
     let memory: Vec<f32> = history.iter().map(|sample| sample.memory as f32).collect();
     let cpu: Vec<f32> = history.iter().map(|sample| sample.cpu).collect();
-    let chart = |title: &'static str, value: String, detail: String, values: &[f32], color: gpui_kit::Hsla| {
+    let chart = |title: &'static str,
+                 value: String,
+                 detail: String,
+                 values: &[f32],
+                 color: gpui_kit::Hsla| {
         v_flex()
             .flex_1()
             .min_w_0()
@@ -925,12 +1644,21 @@ fn render_resources(palette: Palette) -> AnyElement {
                     .gap_2()
                     .items_baseline()
                     .child(div().text_xs().text_color(palette.muted).child(title))
-                    .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(value))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .child(value),
+                    )
                     .child(div().text_xs().text_color(palette.faint).child(detail)),
             )
             .child(sparkline(values, color, palette))
     };
-    let memory_label = if cfg!(target_os = "macos") { "Memory (as Activity Monitor)" } else { "Memory (resident)" };
+    let memory_label = if cfg!(target_os = "macos") {
+        "Memory (as Activity Monitor)"
+    } else {
+        "Memory (resident)"
+    };
     let parts = crate::resources::parts().into_iter().map(|part| {
         h_flex()
             .gap_3()
@@ -939,10 +1667,41 @@ fn render_resources(palette: Palette) -> AnyElement {
             .text_xs()
             .border_b_1()
             .border_color(palette.border)
-            .child(div().w(px(150.)).flex_shrink_0().text_color(palette.text).child(part.name))
-            .child(div().w(px(260.)).flex_shrink_0().text_color(palette.muted).child(part.count))
-            .child(div().w(px(70.)).flex_shrink_0().text_right().font_family("Menlo").text_color(palette.text).child(part.bytes.map(crate::resources::size).unwrap_or_else(|| "—".into())))
-            .child(div().flex_1().min_w_0().truncate().text_color(palette.faint).child(part.note))
+            .child(
+                div()
+                    .w(px(150.))
+                    .flex_shrink_0()
+                    .text_color(palette.text)
+                    .child(part.name),
+            )
+            .child(
+                div()
+                    .w(px(260.))
+                    .flex_shrink_0()
+                    .text_color(palette.muted)
+                    .child(part.count),
+            )
+            .child(
+                div()
+                    .w(px(70.))
+                    .flex_shrink_0()
+                    .text_right()
+                    .font_family("Menlo")
+                    .text_color(palette.text)
+                    .child(
+                        part.bytes
+                            .map(crate::resources::size)
+                            .unwrap_or_else(|| "—".into()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(palette.faint)
+                    .child(part.note),
+            )
     });
     v_flex()
         .id("console-resources")
@@ -955,10 +1714,29 @@ fn render_resources(palette: Palette) -> AnyElement {
         .child(
             h_flex()
                 .gap_3()
-                .child(chart(memory_label, crate::resources::size(now.memory), format!("peak {}", crate::resources::size(peak_memory)), &memory, palette.accent))
-                .child(chart("CPU", format!("{:.0}%", now.cpu), format!("peak {:.0}% · 100% = one core", peak_cpu), &cpu, palette.code)),
+                .child(chart(
+                    memory_label,
+                    crate::resources::size(now.memory),
+                    format!("peak {}", crate::resources::size(peak_memory)),
+                    &memory,
+                    palette.accent,
+                ))
+                .child(chart(
+                    "CPU",
+                    format!("{:.0}%", now.cpu),
+                    format!("peak {:.0}% · 100% = one core", peak_cpu),
+                    &cpu,
+                    palette.code,
+                )),
         )
         .child(v_flex().children(parts))
-        .when(history.is_empty(), |this| this.child(div().text_xs().text_color(palette.faint).child("Measuring…")))
+        .when(history.is_empty(), |this| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(palette.faint)
+                    .child("Measuring…"),
+            )
+        })
         .into_any_element()
 }

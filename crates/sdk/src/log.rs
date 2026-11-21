@@ -38,8 +38,16 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Self; 8] =
-        [Self::Process, Self::Fs, Self::Network, Self::Notice, Self::Notification, Self::Error, Self::Info, Self::Setting];
+    pub const ALL: [Self; 8] = [
+        Self::Process,
+        Self::Fs,
+        Self::Network,
+        Self::Notice,
+        Self::Notification,
+        Self::Error,
+        Self::Info,
+        Self::Setting,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -119,7 +127,9 @@ fn journal() -> &'static Mutex<Journal> {
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Journal> {
-    journal().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    journal()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -131,7 +141,9 @@ pub fn generation() -> u64 {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_millis() as u64)
 }
 
 fn push(mut event: Event) -> u64 {
@@ -203,7 +215,13 @@ pub fn run(source: &str, command: &mut Command) -> io::Result<Output> {
     let duration_ms = started.elapsed().as_millis() as u64;
     let (ok, detail) = match &result {
         Ok(output) => {
-            let mut detail = format!("{line}\nexit: {}", output.status.code().map_or("signal".to_string(), |code| code.to_string()));
+            let mut detail = format!(
+                "{line}\nexit: {}",
+                output
+                    .status
+                    .code()
+                    .map_or("signal".to_string(), |code| code.to_string())
+            );
             for (name, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
                 let text = String::from_utf8_lossy(bytes);
                 if !text.trim().is_empty() {
@@ -235,16 +253,31 @@ pub fn run(source: &str, command: &mut Command) -> io::Result<Output> {
 /// Like [`run`], but kills the program if it takes longer than `timeout`
 /// (the error then has kind `TimedOut`). Use it for anything that can hang:
 /// renderers, converters, network calls.
-pub fn run_with_timeout(source: &str, command: &mut Command, timeout: std::time::Duration) -> io::Result<Output> {
+pub fn run_with_timeout(
+    source: &str,
+    command: &mut Command,
+    timeout: std::time::Duration,
+) -> io::Result<Output> {
     use std::io::Read as _;
     let line = describe(command);
     let shell = shell_line(command);
     let started = Instant::now();
-    let child = hide_window(command).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn();
+    let child = hide_window(command)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
     let mut child = match child {
         Ok(child) => child,
         Err(error) => {
-            record_run(source, line, shell.clone(), format!("failed to start: {error}"), started, false);
+            record_run(
+                source,
+                line,
+                shell.clone(),
+                format!("failed to start: {error}"),
+                started,
+                false,
+            );
             return Err(error);
         }
     };
@@ -258,8 +291,18 @@ pub fn run_with_timeout(source: &str, command: &mut Command, timeout: std::time:
             bytes
         })
     };
-    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn io::Read + Send>));
-    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn io::Read + Send>));
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn io::Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn io::Read + Send>),
+    );
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -267,25 +310,57 @@ pub fn run_with_timeout(source: &str, command: &mut Command, timeout: std::time:
         if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            let message = format!("timed out after {} s and was stopped", timeout.as_secs_f32());
+            let message = format!(
+                "timed out after {} s and was stopped",
+                timeout.as_secs_f32()
+            );
             record_run(source, line, shell.clone(), message.clone(), started, false);
             return Err(io::Error::new(io::ErrorKind::TimedOut, message));
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
     };
-    let output = Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() };
-    let mut detail = format!("exit: {}", status.code().map_or("signal".to_string(), |code| code.to_string()));
+    let output = Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    };
+    let mut detail = format!(
+        "exit: {}",
+        status
+            .code()
+            .map_or("signal".to_string(), |code| code.to_string())
+    );
     for (name, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
         let text = String::from_utf8_lossy(bytes);
         if !text.trim().is_empty() {
-            detail.push_str(&format!("\n--- {name}\n{}", text.chars().take(OUTPUT_LIMIT).collect::<String>().trim_end()));
+            detail.push_str(&format!(
+                "\n--- {name}\n{}",
+                text.chars()
+                    .take(OUTPUT_LIMIT)
+                    .collect::<String>()
+                    .trim_end()
+            ));
         }
     }
-    record_run(source, line, shell.clone(), detail, started, status.success());
+    record_run(
+        source,
+        line,
+        shell.clone(),
+        detail,
+        started,
+        status.success(),
+    );
     Ok(output)
 }
 
-fn record_run(source: &str, line: String, shell: String, detail: String, started: Instant, ok: bool) {
+fn record_run(
+    source: &str,
+    line: String,
+    shell: String,
+    detail: String,
+    started: Instant,
+    ok: bool,
+) {
     push(Event {
         id: 0,
         time: now_ms(),
@@ -308,7 +383,9 @@ pub fn spawned(source: &str, command: &Command) {
         source: source.to_string(),
         kind: Kind::Process,
         message: describe(command),
-        detail: Some(format!("{shell}\nstarted in the background; its output is streamed")),
+        detail: Some(format!(
+            "{shell}\nstarted in the background; its output is streamed"
+        )),
         duration_ms: None,
         ok: true,
         command: Some(shell),
@@ -317,8 +394,15 @@ pub fn spawned(source: &str, command: &Command) {
 
 /// Quotes one argument for a POSIX shell (only when needed).
 pub fn shell_quote(arg: &str) -> String {
-    let safe = !arg.is_empty() && arg.chars().all(|char| char.is_ascii_alphanumeric() || "-_./=:,@%+".contains(char));
-    if safe { arg.to_string() } else { format!("'{}'", arg.replace('\'', "'\\''")) }
+    let safe = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || "-_./=:,@%+".contains(char));
+    if safe {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
 }
 
 /// The command as one line a terminal runs as is: its folder, the
@@ -330,7 +414,11 @@ pub fn shell_line(command: &Command) -> String {
     }
     for (key, value) in command.get_envs() {
         if let Some(value) = value {
-            line.push_str(&format!("{}={} ", key.to_string_lossy(), shell_quote(&value.to_string_lossy())));
+            line.push_str(&format!(
+                "{}={} ",
+                key.to_string_lossy(),
+                shell_quote(&value.to_string_lossy())
+            ));
         }
     }
     line.push_str(&shell_quote(&command.get_program().to_string_lossy()));
@@ -345,7 +433,10 @@ pub fn shell_line(command: &Command) -> String {
 pub fn describe(command: &Command) -> String {
     let program = std::path::Path::new(command.get_program())
         .file_name()
-        .map_or_else(|| command.get_program().to_string_lossy().into_owned(), |name| name.to_string_lossy().into_owned());
+        .map_or_else(
+            || command.get_program().to_string_lossy().into_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
     let mut line = program;
     for arg in command.get_args() {
         line.push(' ');
@@ -365,12 +456,24 @@ pub fn notify(source: &str, level: Level, title: impl Into<String>, body: Option
 }
 
 /// [`notify`] with a button.
-pub fn notify_with(source: &str, level: Level, title: impl Into<String>, body: Option<String>, action: Option<Action>) -> u64 {
+pub fn notify_with(
+    source: &str,
+    level: Level,
+    title: impl Into<String>,
+    body: Option<String>,
+    action: Option<Action>,
+) -> u64 {
     notify_actions(source, level, title, body, action.into_iter().collect())
 }
 
 /// [`notify`] with several buttons.
-pub fn notify_actions(source: &str, level: Level, title: impl Into<String>, body: Option<String>, actions: Vec<Action>) -> u64 {
+pub fn notify_actions(
+    source: &str,
+    level: Level,
+    title: impl Into<String>,
+    body: Option<String>,
+    actions: Vec<Action>,
+) -> u64 {
     let title = title.into();
     record(source, Kind::Notification, title.clone(), body.clone());
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -378,7 +481,16 @@ pub fn notify_actions(source: &str, level: Level, title: impl Into<String>, body
     if journal.notifications.len() >= NOTIFICATIONS {
         journal.notifications.pop_front();
     }
-    journal.notifications.push_back(Notification { id, time: now_ms(), source: source.to_string(), level, title, body, read: false, actions });
+    journal.notifications.push_back(Notification {
+        id,
+        time: now_ms(),
+        source: source.to_string(),
+        level,
+        title,
+        body,
+        read: false,
+        actions,
+    });
     drop(journal);
     GENERATION.fetch_add(1, Ordering::Relaxed);
     id
@@ -390,16 +502,25 @@ pub fn notifications() -> Vec<Notification> {
 }
 
 pub fn unread() -> usize {
-    lock().notifications.iter().filter(|notification| !notification.read).count()
+    lock()
+        .notifications
+        .iter()
+        .filter(|notification| !notification.read)
+        .count()
 }
 
 pub fn mark_all_read() {
-    lock().notifications.iter_mut().for_each(|notification| notification.read = true);
+    lock()
+        .notifications
+        .iter_mut()
+        .for_each(|notification| notification.read = true);
     GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn dismiss(id: u64) {
-    lock().notifications.retain(|notification| notification.id != id);
+    lock()
+        .notifications
+        .retain(|notification| notification.id != id);
     GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -420,29 +541,55 @@ mod tests {
         let output = run("test-ext", &mut command).unwrap();
         assert_eq!(output.status.code(), Some(3));
         assert!(generation() > before);
-        let event = events().into_iter().rev().find(|event| event.source == "test-ext").unwrap();
+        let event = events()
+            .into_iter()
+            .rev()
+            .find(|event| event.source == "test-ext")
+            .unwrap();
         assert_eq!(event.kind, Kind::Process);
         assert!(!event.ok);
         assert_eq!(event.message, "sh -c 'echo hello; echo oops >&2; exit 3'");
         let detail = event.detail.unwrap();
-        assert!(detail.contains("exit: 3") && detail.contains("--- stdout\nhello") && detail.contains("--- stderr\noops"), "{detail}");
+        assert!(
+            detail.contains("exit: 3")
+                && detail.contains("--- stdout\nhello")
+                && detail.contains("--- stderr\noops"),
+            "{detail}"
+        );
         assert!(event.duration_ms.is_some());
-        assert_eq!(event.command.as_deref(), Some("sh -c 'echo hello; echo oops >&2; exit 3'"));
+        assert_eq!(
+            event.command.as_deref(),
+            Some("sh -c 'echo hello; echo oops >&2; exit 3'")
+        );
     }
 
     #[test]
     fn command_lines_paste_into_a_shell() {
         let tricky = "cd -- '/it''s here' && ls";
         let mut command = Command::new("printf");
-        command.current_dir("/tmp").env("LC_ALL", "C").args(["[%s]", "-p", "22", "a b", tricky]);
+        command
+            .current_dir("/tmp")
+            .env("LC_ALL", "C")
+            .args(["[%s]", "-p", "22", "a b", tricky]);
         let line = shell_line(&command);
         assert!(line.starts_with("cd /tmp && LC_ALL=C printf "), "{line}");
         // Pasted into a shell, it gives the program exactly the same arguments.
         let pasted = Command::new("sh").args(["-c", &line]).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&pasted.stdout), format!("[-p][22][a b][{tricky}]"));
+        assert_eq!(
+            String::from_utf8_lossy(&pasted.stdout),
+            format!("[-p][22][a b][{tricky}]")
+        );
         spawned("test-spawn", &command);
-        let event = events().into_iter().rev().find(|event| event.source == "test-spawn").unwrap();
-        assert_eq!(event.command.as_deref(), Some(line.as_str()), "background programs keep their full command");
+        let event = events()
+            .into_iter()
+            .rev()
+            .find(|event| event.source == "test-spawn")
+            .unwrap();
+        assert_eq!(
+            event.command.as_deref(),
+            Some(line.as_str()),
+            "background programs keep their full command"
+        );
         assert!(event.detail.unwrap().starts_with(&line));
     }
 
@@ -451,28 +598,57 @@ mod tests {
         let started = Instant::now();
         let mut command = Command::new("sleep");
         command.arg("30");
-        let error = run_with_timeout("test-timeout", &mut command, std::time::Duration::from_millis(300)).unwrap_err();
+        let error = run_with_timeout(
+            "test-timeout",
+            &mut command,
+            std::time::Duration::from_millis(300),
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "not killed");
-        let event = events().into_iter().rev().find(|event| event.source == "test-timeout").unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "not killed"
+        );
+        let event = events()
+            .into_iter()
+            .rev()
+            .find(|event| event.source == "test-timeout")
+            .unwrap();
         assert!(!event.ok && event.detail.unwrap().contains("timed out"));
 
         let mut quick = Command::new("sh");
         quick.args(["-c", "echo fine"]);
-        let output = run_with_timeout("test-timeout", &mut quick, std::time::Duration::from_secs(5)).unwrap();
+        let output = run_with_timeout(
+            "test-timeout",
+            &mut quick,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "fine");
     }
 
     #[test]
     fn notifications_are_read_and_dismissed() {
         let id = notify("test-ext", Level::Success, "Fetched", Some("origin".into()));
-        assert!(notifications().iter().any(|notification| notification.id == id && !notification.read));
+        assert!(
+            notifications()
+                .iter()
+                .any(|notification| notification.id == id && !notification.read)
+        );
         assert!(unread() >= 1);
-        assert!(events().iter().any(|event| event.kind == Kind::Notification && event.message == "Fetched"));
+        assert!(
+            events()
+                .iter()
+                .any(|event| event.kind == Kind::Notification && event.message == "Fetched")
+        );
         mark_all_read();
         assert!(notifications().iter().all(|notification| notification.read));
         dismiss(id);
-        assert!(!notifications().iter().any(|notification| notification.id == id));
+        assert!(
+            !notifications()
+                .iter()
+                .any(|notification| notification.id == id)
+        );
         assert_eq!(Kind::from_label("process"), Some(Kind::Process));
     }
 }

@@ -1,12 +1,12 @@
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::switch::Switch;
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, Render,
@@ -77,7 +77,11 @@ pub struct SettingsWindow {
     storage_extensions: Vec<crate::storage::ExtensionUsage>,
     storage_slider: Entity<gpui_kit::component::slider::SliderState>,
     /// Appearance → Font: every system font, searchable.
-    font_select: Entity<gpui_kit::component::select::SelectState<gpui_kit::component::select::SearchableVec<String>>>,
+    font_select: Entity<
+        gpui_kit::component::select::SelectState<
+            gpui_kit::component::select::SearchableVec<String>,
+        >,
+    >,
     _font_subscription: Subscription,
     /// Linux: whether folders open in Files system-wide, and why making it
     /// so failed.
@@ -88,6 +92,8 @@ pub struct SettingsWindow {
     opacity_slider: Entity<gpui_kit::component::slider::SliderState>,
     /// Settings → General → Power saving: below which charge it starts.
     power_slider: Entity<gpui_kit::component::slider::SliderState>,
+    fps_slider: Entity<gpui_kit::component::slider::SliderState>,
+    _fps_subscription: Subscription,
     /// Settings → Sound: the notification volume, and the shared equalizer.
     sound_volume: Entity<gpui_kit::component::slider::SliderState>,
     _sound_subscription: Subscription,
@@ -134,14 +140,19 @@ impl SettingsWindow {
                 .step(5.)
                 .default_value(current.look.panel_opacity as f32)
         });
-        let opacity_subscription = cx.subscribe(&opacity_slider, |this: &mut Self, _, event, cx| {
-            if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
-                this.draft.look.panel_opacity = value.end().round() as u8;
-                cx.notify();
-            }
-        });
+        let opacity_subscription =
+            cx.subscribe(&opacity_slider, |this: &mut Self, _, event, cx| {
+                if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
+                    this.draft.look.panel_opacity = value.end().round() as u8;
+                    cx.notify();
+                }
+            });
         let power_slider = cx.new(|_| {
-            gpui_kit::component::slider::SliderState::new().min(5.).max(100.).step(5.).default_value(current.power_saving_below as f32)
+            gpui_kit::component::slider::SliderState::new()
+                .min(5.)
+                .max(100.)
+                .step(5.)
+                .default_value(current.power_saving_below as f32)
         });
         let power_subscription = cx.subscribe(&power_slider, |this: &mut Self, _, event, cx| {
             if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
@@ -149,8 +160,27 @@ impl SettingsWindow {
                 cx.notify();
             }
         });
+        let fps_slider = cx.new(|_| {
+            gpui_kit::component::slider::SliderState::new()
+                .min(0.)
+                .max((crate::settings::FRAME_RATES.len() - 1) as f32)
+                .step(1.)
+                .default_value(crate::settings::frame_rate_index(current.frame_rate) as f32)
+        });
+        let fps_subscription = cx.subscribe(&fps_slider, |this: &mut Self, _, event, cx| {
+            if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
+                let index =
+                    (value.end().round() as usize).min(crate::settings::FRAME_RATES.len() - 1);
+                this.draft.frame_rate = crate::settings::FRAME_RATES[index];
+                cx.notify();
+            }
+        });
         let sound_volume = cx.new(|_| {
-            gpui_kit::component::slider::SliderState::new().min(0.).max(100.).step(5.).default_value(current.sound.volume as f32)
+            gpui_kit::component::slider::SliderState::new()
+                .min(0.)
+                .max(100.)
+                .step(5.)
+                .default_value(current.sound.volume as f32)
         });
         let sound_subscription = cx.subscribe(&sound_volume, |this: &mut Self, _, event, cx| {
             if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
@@ -170,16 +200,21 @@ impl SettingsWindow {
                 .step(1.)
                 .default_value(current.accessibility.text_scale.index() as f32)
         });
-        let text_scale_subscription = cx.subscribe(&text_scale_slider, |this: &mut Self, _, event, cx| {
-            if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
-                this.draft.accessibility.text_scale =
-                    crate::settings::TextScale::from_index(value.end().round() as usize);
-                cx.notify();
-            }
-        });
+        let text_scale_subscription =
+            cx.subscribe(&text_scale_slider, |this: &mut Self, _, event, cx| {
+                if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
+                    this.draft.accessibility.text_scale =
+                        crate::settings::TextScale::from_index(value.end().round() as usize);
+                    cx.notify();
+                }
+            });
         // Font: the theme's, or any system font (searchable).
         let fonts = font_choices(cx);
-        let selected = current.font.as_ref().and_then(|font| fonts.iter().position(|choice| choice == font)).unwrap_or(0);
+        let selected = current
+            .font
+            .as_ref()
+            .and_then(|font| fonts.iter().position(|choice| choice == font))
+            .unwrap_or(0);
         let font_select = cx.new(|cx| {
             gpui_kit::component::select::SelectState::new(
                 gpui_kit::component::select::SearchableVec::new(fonts),
@@ -202,30 +237,45 @@ impl SettingsWindow {
                 .step(1.)
                 .default_value(storage_step(current.storage.limit_mb) as f32)
         });
-        let storage_subscription = cx.subscribe(&storage_slider, |this: &mut Self, _, event, cx| {
-            if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
-                this.draft.storage.limit_mb = STORAGE_LIMITS[(value.end().round() as usize).min(STORAGE_LIMITS.len() - 1)];
-                cx.notify();
-            }
-        });
+        let storage_subscription =
+            cx.subscribe(&storage_slider, |this: &mut Self, _, event, cx| {
+                if let gpui_kit::component::slider::SliderEvent::Change(value) = event {
+                    this.draft.storage.limit_mb = STORAGE_LIMITS
+                        [(value.end().round() as usize).min(STORAGE_LIMITS.len() - 1)];
+                    cx.notify();
+                }
+            });
         let background_hex = cx.new(|cx| {
             let hex = match &current.look.background {
                 crate::settings::Background::Color { hex } => hex.clone(),
                 _ => String::new(),
             };
-            InputState::new(window, cx).placeholder("#1e293b").default_value(hex)
+            InputState::new(window, cx)
+                .placeholder("#1e293b")
+                .default_value(hex)
         });
         let appearance_subscription = cx.observe(&appearance, |_, _, cx| cx.notify());
         let focus_handle = cx.focus_handle().tab_stop(true);
         window.focus(&focus_handle, cx);
-        let shell_input = cx.new(|cx| InputState::new(window, cx).placeholder("help · log · ext · perm ssh · notify hi · run git --version"));
-        let shell_subscription = cx.subscribe_in(&shell_input, window, |this: &mut Self, _, event, window, cx| {
-            if matches!(event, gpui_kit::component::input::InputEvent::PressEnter { .. }) {
-                this.run_shell(window, cx);
-            }
+        let shell_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("help · log · ext · perm ssh · notify hi · run git --version")
         });
+        let shell_subscription = cx.subscribe_in(
+            &shell_input,
+            window,
+            |this: &mut Self, _, event, window, cx| {
+                if matches!(
+                    event,
+                    gpui_kit::component::input::InputEvent::PressEnter { .. }
+                ) {
+                    this.run_shell(window, cx);
+                }
+            },
+        );
         Self {
-            license_input: cx.new(|cx| InputState::new(window, cx).placeholder("FILES1.…  (license key)")),
+            license_input: cx
+                .new(|cx| InputState::new(window, cx).placeholder("FILES1.…  (license key)")),
             plugins: crate::plugins::load_installed(&current),
             update_check: None,
             checking_updates: false,
@@ -241,7 +291,8 @@ impl SettingsWindow {
             draft: current,
             active_tab: 0,
             error: crate::settings::load_error(),
-            new_extension: cx.new(|cx| InputState::new(window, cx).placeholder("Extension, e.g. odt")),
+            new_extension: cx
+                .new(|cx| InputState::new(window, cx).placeholder("Extension, e.g. odt")),
             expanded_extension: None,
             return_focus: None,
             just_saved: false,
@@ -257,6 +308,8 @@ impl SettingsWindow {
             _storage_subscription: storage_subscription,
             opacity_slider,
             power_slider,
+            fps_slider,
+            _fps_subscription: fps_subscription,
             _power_subscription: power_subscription,
             sound_volume,
             _sound_subscription: sound_subscription,
@@ -271,9 +324,11 @@ impl SettingsWindow {
             extensions_expanded: false,
             extension_page: None,
             install_url: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("/path/to/extension.filesext or https://…/extension.filesext")
+                InputState::new(window, cx)
+                    .placeholder("/path/to/extension.filesext or https://…/extension.filesext")
             }),
-            hotkey_query: cx.new(|cx| InputState::new(window, cx).placeholder("Search commands or keys")),
+            hotkey_query: cx
+                .new(|cx| InputState::new(window, cx).placeholder("Search commands or keys")),
             recording: None,
             recorder_focus: cx.focus_handle(),
             show_builtin_keys: false,
@@ -288,7 +343,9 @@ impl SettingsWindow {
     fn save(&mut self, cx: &mut Context<Self>) {
         // A conflicting keymap (e.g. from a hand-edited settings.toml) blocks saving.
         if !crate::keymap::conflicts(&self.draft.keymap, cx.platform_info().is_mac()).is_empty() {
-            self.error = Some("Hotkey conflicts must be fixed before saving (Settings → Hotkeys)".to_string());
+            self.error = Some(
+                "Hotkey conflicts must be fixed before saving (Settings → Hotkeys)".to_string(),
+            );
             cx.notify();
             return;
         }
@@ -337,12 +394,16 @@ impl SettingsWindow {
     fn sync_sliders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let opacity = self.draft.look.panel_opacity as f32;
         let scale = self.draft.accessibility.text_scale.index() as f32;
-        self.opacity_slider.update(cx, |slider, cx| slider.set_value(opacity, window, cx));
+        self.opacity_slider
+            .update(cx, |slider, cx| slider.set_value(opacity, window, cx));
         let below = self.draft.power_saving_below as f32;
-        self.power_slider.update(cx, |slider, cx| slider.set_value(below, window, cx));
-        self.text_scale_slider.update(cx, |slider, cx| slider.set_value(scale, window, cx));
+        self.power_slider
+            .update(cx, |slider, cx| slider.set_value(below, window, cx));
+        self.text_scale_slider
+            .update(cx, |slider, cx| slider.set_value(scale, window, cx));
         let step = storage_step(self.draft.storage.limit_mb) as f32;
-        self.storage_slider.update(cx, |slider, cx| slider.set_value(step, window, cx));
+        self.storage_slider
+            .update(cx, |slider, cx| slider.set_value(step, window, cx));
     }
 
     /// Closes the modal and gives focus back, so shortcuts work without a click.
@@ -405,13 +466,22 @@ impl SettingsWindow {
         let usage = self.storage_usage.clone().unwrap_or_default();
         let total: u64 = usage.iter().map(|(_, usage)| usage.bytes).sum();
         let measured = self.storage_usage.is_some();
-        let slices: Vec<(Kind, f32)> = usage.iter().filter(|(_, usage)| usage.bytes > 0).map(|(kind, usage)| (*kind, usage.bytes as f32)).collect();
+        let slices: Vec<(Kind, f32)> = usage
+            .iter()
+            .filter(|(_, usage)| usage.bytes > 0)
+            .map(|(kind, usage)| (*kind, usage.bytes as f32))
+            .collect();
         let ring = div()
             .relative()
             .size(px(180.))
             .flex_shrink_0()
             .child(if slices.is_empty() {
-                div().size_full().rounded_full().border(px(28.)).border_color(palette.surface).into_any_element()
+                div()
+                    .size_full()
+                    .rounded_full()
+                    .border(px(28.))
+                    .border_color(palette.surface)
+                    .into_any_element()
             } else {
                 gpui_kit::component::chart::PieChart::new(slices)
                     .id("storage-ring")
@@ -421,7 +491,9 @@ impl SettingsWindow {
                     .value(|slice: &(Kind, f32)| slice.1)
                     .color(move |slice: &(Kind, f32)| color(slice.0))
                     .tooltip_name(move |slice: &(Kind, f32)| slice.0.label(language).into())
-                    .tooltip_value(|slice: &(Kind, f32), _, _| crate::resources::size(slice.1 as u64).into())
+                    .tooltip_value(|slice: &(Kind, f32), _, _| {
+                        crate::resources::size(slice.1 as u64).into()
+                    })
                     .into_any_element()
             })
             .child(
@@ -430,44 +502,83 @@ impl SettingsWindow {
                     .inset_0()
                     .items_center()
                     .justify_center()
-                    .child(div().text_lg().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(if measured { crate::resources::size(total) } else { "…".to_string() }))
-                    .child(div().text_xs().text_color(palette.muted).child(tr(language, "in cache", "в кэше"))),
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .child(if measured {
+                                crate::resources::size(total)
+                            } else {
+                                "…".to_string()
+                            }),
+                    )
+                    .child(div().text_xs().text_color(palette.muted).child(tr(
+                        language,
+                        "in cache",
+                        "в кэше",
+                    ))),
             );
         let rows = usage.iter().map(|(kind, usage)| {
             let kind = *kind;
-            let share = if total > 0 { usage.bytes as f32 / total as f32 } else { 0. };
+            let share = if total > 0 {
+                usage.bytes as f32 / total as f32
+            } else {
+                0.
+            };
             h_flex()
                 .w_full()
                 .gap_3()
                 .items_center()
-                .child(div().size(px(10.)).flex_shrink_0().rounded_full().bg(color(kind)))
+                .child(
+                    div()
+                        .size(px(10.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(color(kind)),
+                )
                 .child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
                         .child(div().text_sm().child(kind.label(language)))
-                        .child(div().text_xs().text_color(palette.muted).child(kind.note(language))),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.muted)
+                                .child(kind.note(language)),
+                        ),
                 )
                 .child(
                     v_flex()
                         .items_end()
                         .child(div().text_sm().child(crate::resources::size(usage.bytes)))
-                        .child(div().text_xs().text_color(palette.faint).child(format!("{} · {:.0}%", files_count(usage.files, language), share * 100.))),
+                        .child(div().text_xs().text_color(palette.faint).child(format!(
+                            "{} · {:.0}%",
+                            files_count(usage.files, language),
+                            share * 100.
+                        ))),
                 )
                 .when(!kind.clearable(), |this| this.child(div().w(px(84.))))
-                .when(kind.clearable(), |this| this.child(
-                    Button::new(gpui_kit::ElementId::Name(format!("storage-clear-{kind:?}").into()))
+                .when(kind.clearable(), |this| {
+                    this.child(
+                        Button::new(gpui_kit::ElementId::Name(
+                            format!("storage-clear-{kind:?}").into(),
+                        ))
                         .ghost()
                         .xsmall()
                         .icon(IconName::Trash)
                         .label(tr(language, "Clear", "Очистить"))
                         .disabled(usage.files == 0)
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.run_storage(move || {
-                                crate::storage::clear(kind);
-                            }, cx);
+                            this.run_storage(
+                                move || {
+                                    crate::storage::clear(kind);
+                                },
+                                cx,
+                            );
                         })),
-                ))
+                    )
+                })
         });
         let limit = self.draft.storage.limit_mb;
         // Extensions one by one, under the Extensions row, so an SDK author
@@ -479,40 +590,77 @@ impl SettingsWindow {
                 .pl(px(22.))
                 .gap_3()
                 .items_center()
-                .child(Icon::new(IconName::Puzzle).xsmall().text_color(palette.muted))
+                .child(
+                    Icon::new(IconName::Puzzle)
+                        .xsmall()
+                        .text_color(palette.muted),
+                )
                 .child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
                         .child(div().text_sm().child(extension.name.clone()))
-                        .child(div().text_xs().text_color(palette.faint).truncate().child(extension.id.clone())),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.faint)
+                                .truncate()
+                                .child(extension.id.clone()),
+                        ),
                 )
                 .child(
                     v_flex()
                         .items_end()
-                        .child(div().text_sm().child(crate::resources::size(extension.usage.bytes)))
-                        .child(div().text_xs().text_color(palette.faint).child(files_count(extension.usage.files, language))),
+                        .child(
+                            div()
+                                .text_sm()
+                                .child(crate::resources::size(extension.usage.bytes)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.faint)
+                                .child(files_count(extension.usage.files, language)),
+                        ),
                 )
                 .child(
-                    Button::new(gpui_kit::ElementId::Name(format!("storage-clear-ext-{id}").into()))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Trash)
-                        .label(tr(language, "Clear", "Очистить"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let id = id.clone();
-                            this.run_storage(move || {
+                    Button::new(gpui_kit::ElementId::Name(
+                        format!("storage-clear-ext-{id}").into(),
+                    ))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Trash)
+                    .label(tr(language, "Clear", "Очистить"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let id = id.clone();
+                        this.run_storage(
+                            move || {
                                 crate::storage::clear_extension(&id);
-                            }, cx);
-                        })),
+                            },
+                            cx,
+                        );
+                    })),
                 )
         });
         let mut rows: Vec<AnyElement> = rows.map(IntoElement::into_any_element).collect();
         if let Some(at) = usage.iter().position(|(kind, _)| *kind == Kind::Extensions) {
-            rows.splice(at + 1..at + 1, extension_rows.map(IntoElement::into_any_element));
+            rows.splice(
+                at + 1..at + 1,
+                extension_rows.map(IntoElement::into_any_element),
+            );
         }
         let current_limit = limit_label(limit, language);
-        let ticks = STORAGE_LIMITS.map(|megabytes| div().w(px(2.)).h(px(6.)).rounded_full().bg(if megabytes == limit { palette.accent } else { palette.border }));
+        let ticks = STORAGE_LIMITS.map(|megabytes| {
+            div()
+                .w(px(2.))
+                .h(px(6.))
+                .rounded_full()
+                .bg(if megabytes == limit {
+                    palette.accent
+                } else {
+                    palette.border
+                })
+        });
         v_flex()
             .p_5()
             .gap_4()
@@ -572,7 +720,11 @@ impl SettingsWindow {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_layout_for_test(&mut self, layout: crate::settings::SpeakerLayout, cx: &mut Context<Self>) {
+    pub(crate) fn set_layout_for_test(
+        &mut self,
+        layout: crate::settings::SpeakerLayout,
+        cx: &mut Context<Self>,
+    ) {
         self.draft.sound.layout = layout;
         cx.notify();
     }
@@ -666,9 +818,21 @@ impl SettingsWindow {
                 .items_center()
                 .rounded_md()
                 .text_sm()
-                .font_weight(if overview { FontWeight::MEDIUM } else { FontWeight::NORMAL })
-                .text_color(if on_tab { palette.accent } else { palette.muted })
-                .bg(if overview { palette.selection } else { gpui_kit::transparent_black() })
+                .font_weight(if overview {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                })
+                .text_color(if on_tab {
+                    palette.accent
+                } else {
+                    palette.muted
+                })
+                .bg(if overview {
+                    palette.selection
+                } else {
+                    gpui_kit::transparent_black()
+                })
                 .hover(|style| style.bg(palette.hover))
                 .on_click(cx.listener(|this, _, _, cx| {
                     // Opening shows the overview; clicking the open overview folds it.
@@ -684,9 +848,13 @@ impl SettingsWindow {
                 .child(Icon::new(icon).small())
                 .child(div().flex_1().child(label))
                 .child(
-                    Icon::new(if self.extensions_expanded { IconName::ChevronDown } else { IconName::ChevronRight })
-                        .xsmall()
-                        .text_color(palette.faint),
+                    Icon::new(if self.extensions_expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .xsmall()
+                    .text_color(palette.faint),
                 ),
         );
         if self.extensions_expanded {
@@ -703,8 +871,16 @@ impl SettingsWindow {
                         .items_center()
                         .rounded_md()
                         .text_xs()
-                        .text_color(if selected { palette.accent } else { palette.muted })
-                        .bg(if selected { palette.selection } else { gpui_kit::transparent_black() })
+                        .text_color(if selected {
+                            palette.accent
+                        } else {
+                            palette.muted
+                        })
+                        .bg(if selected {
+                            palette.selection
+                        } else {
+                            gpui_kit::transparent_black()
+                        })
                         .hover(|style| style.bg(palette.hover))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.active_tab = EXTENSIONS_TAB;
@@ -713,12 +889,11 @@ impl SettingsWindow {
                         }))
                         .child(crate::extensions::icon_of(extension).xsmall())
                         .child(div().flex_1().truncate().child(extension.name))
-                        .child(
-                            div()
-                                .size(px(6.))
-                                .rounded_full()
-                                .bg(if enabled { palette.code } else { palette.faint }),
-                        ),
+                        .child(div().size(px(6.)).rounded_full().bg(if enabled {
+                            palette.code
+                        } else {
+                            palette.faint
+                        })),
                 );
             }
         }
@@ -878,6 +1053,21 @@ impl SettingsWindow {
                 "Automatic reduces background work and turns off animations while on battery power, once the charge drops to the level above.",
                 "В автоматическом режиме снижает фоновую активность и отключает анимации при питании от батареи, когда заряд опускается до уровня выше.",
             ), palette))
+            .child(section(IconName::Gauge, tr(language, "Frame rate", "Частота кадров"), palette))
+            .child(div().debug_selector(|| "settings-frame-rate".into()).child(
+                v_flex()
+                    .gap_2()
+                    .child(h_flex().gap_3().items_center()
+                        .child(div().w(px(52.)).text_sm().child("FPS"))
+                        .child(div().flex_1().child(gpui_kit::component::slider::Slider::new(&self.fps_slider)))
+                        .child(div().w(px(52.)).text_right().text_xs().text_color(palette.muted).child(format!("{} FPS", self.draft.frame_rate))))
+                    .child(h_flex().px(px(70.)).justify_between().children(crate::settings::FRAME_RATES.map(|fps| {
+                        v_flex().items_center().gap_1()
+                            .child(div().w(px(2.)).h(px(6.)).rounded_full().bg(if fps == self.draft.frame_rate { palette.accent } else { palette.border }))
+                            .child(div().text_size(px(10.)).text_color(palette.faint).child(fps.to_string()))
+                    })))
+                    .child(note(tr(language, "Limits animation frames. 30 FPS is the default; higher values can use more power.", "Ограничивает частоту анимаций. По умолчанию 30 FPS; большие значения расходуют больше энергии."), palette)),
+            ))
             .child(section(IconName::Languages, tr(language, "Language", "Язык"), palette))
             .child(setting_row(
                 tr(language, "Interface language", "Язык интерфейса"),
@@ -1289,22 +1479,38 @@ impl SettingsWindow {
     }
 
     /// The "none" ring plus the preset swatches for one menu-color key.
-    fn color_swatches(&self, key: &'static str, name: &'static str, palette: Palette, cx: &mut Context<Self>) -> gpui_kit::Div {
+    fn color_swatches(
+        &self,
+        key: &'static str,
+        name: &'static str,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Div {
         let current = crate::menu_colors::value_for(&self.draft, key);
         let swatch = |value: &'static str, cx: &mut Context<Self>| {
             let selected = current == value;
             let fill = crate::menu_colors::parse(value);
             let swatch = div()
-                .id(gpui_kit::ElementId::Name(format!("menu-color-{key}-{value}").into()))
+                .id(gpui_kit::ElementId::Name(
+                    format!("menu-color-{key}-{value}").into(),
+                ))
                 .size(px(16.))
                 .rounded_full()
                 .cursor_pointer()
                 .border_2()
-                .border_color(if selected { palette.text } else { palette.border })
+                .border_color(if selected {
+                    palette.text
+                } else {
+                    palette.border
+                })
                 .when_some(fill, |swatch, fill| swatch.bg(fill))
                 .when(fill.is_none(), |swatch| {
                     // "None": an empty ring with a slash.
-                    swatch.flex().items_center().justify_center().child(Icon::new(IconName::Slash).xsmall().text_color(palette.faint))
+                    swatch.flex().items_center().justify_center().child(
+                        Icon::new(IconName::Slash)
+                            .xsmall()
+                            .text_color(palette.faint),
+                    )
                 })
                 .aria_label(format!("{name} menu color {value}"))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1323,7 +1529,13 @@ impl SettingsWindow {
     }
 
     /// The `key:` filters an extension adds to search, with where each works.
-    fn render_search_filters(&mut self, extension: &'static files_sdk::Manifest, enabled: bool, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_search_filters(
+        &mut self,
+        extension: &'static files_sdk::Manifest,
+        enabled: bool,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let keys: Vec<files_sdk::SearchKey> = crate::views::extension_ui::registry()
             .into_iter()
             .find(|candidate| candidate.manifest().id == extension.id)
@@ -1335,22 +1547,45 @@ impl SettingsWindow {
         let language = self.draft.language;
         let rows = keys.into_iter().map(|search| {
             let key = search.key;
-            let folder_on = !self.draft.search_filters.folder_off.iter().any(|off| off == key);
-            let global_on = !self.draft.search_filters.global_off.iter().any(|off| off == key);
-            let toggle = |global: bool, checked: bool, label: &'static str, cx: &mut Context<Self>| {
-                Switch::new(gpui_kit::ElementId::Name(format!("search-filter-{key}-{}", if global { "global" } else { "folder" }).into()))
-                    .label(label)
-                    .small()
-                    .checked(checked && enabled)
-                    .disabled(!enabled)
-                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                        let list = if global { &mut this.draft.search_filters.global_off } else { &mut this.draft.search_filters.folder_off };
-                        list.retain(|off| off != key);
-                        if !*checked {
-                            list.push(key.to_string());
-                        }
-                        cx.notify();
-                    }))
+            let folder_on = !self
+                .draft
+                .search_filters
+                .folder_off
+                .iter()
+                .any(|off| off == key);
+            let global_on = !self
+                .draft
+                .search_filters
+                .global_off
+                .iter()
+                .any(|off| off == key);
+            let toggle = |global: bool,
+                          checked: bool,
+                          label: &'static str,
+                          cx: &mut Context<Self>| {
+                Switch::new(gpui_kit::ElementId::Name(
+                    format!(
+                        "search-filter-{key}-{}",
+                        if global { "global" } else { "folder" }
+                    )
+                    .into(),
+                ))
+                .label(label)
+                .small()
+                .checked(checked && enabled)
+                .disabled(!enabled)
+                .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                    let list = if global {
+                        &mut this.draft.search_filters.global_off
+                    } else {
+                        &mut this.draft.search_filters.folder_off
+                    };
+                    list.retain(|off| off != key);
+                    if !*checked {
+                        list.push(key.to_string());
+                    }
+                    cx.notify();
+                }))
             };
             v_flex()
                 .gap_1()
@@ -1359,15 +1594,45 @@ impl SettingsWindow {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().px_1p5().rounded_sm().bg(palette.accent_soft).text_color(palette.accent).text_sm().font_family("Menlo").child(format!("{key}:")))
-                        .child(div().text_sm().text_color(palette.muted).child(search.summary))
-                        .child(div().text_xs().text_color(palette.faint).font_family("Menlo").child(format!("e.g. {}", search.example))),
+                        .child(
+                            div()
+                                .px_1p5()
+                                .rounded_sm()
+                                .bg(palette.accent_soft)
+                                .text_color(palette.accent)
+                                .text_sm()
+                                .font_family("Menlo")
+                                .child(format!("{key}:")),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(palette.muted)
+                                .child(search.summary),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.faint)
+                                .font_family("Menlo")
+                                .child(format!("e.g. {}", search.example)),
+                        ),
                 )
                 .child(
                     h_flex()
                         .gap_4()
-                        .child(toggle(false, folder_on, tr(language, "Folder search (⌘F)", "Поиск в папке (⌘F)"), cx))
-                        .child(toggle(true, global_on, tr(language, "Global search (⌘K)", "Глобальный поиск (⌘K)"), cx)),
+                        .child(toggle(
+                            false,
+                            folder_on,
+                            tr(language, "Folder search (⌘F)", "Поиск в папке (⌘F)"),
+                            cx,
+                        ))
+                        .child(toggle(
+                            true,
+                            global_on,
+                            tr(language, "Global search (⌘K)", "Глобальный поиск (⌘K)"),
+                            cx,
+                        )),
                 )
         });
         Some(
@@ -1392,14 +1657,22 @@ impl SettingsWindow {
         let language = self.draft.language;
         let sound = self.draft.sound.clone();
         let chimes = Chime::ALL.map(|chime| {
-            option_button(gpui_kit::ElementId::Name(format!("sound-chime-{}", chime.label()).into()), chime.label(), sound.chime == chime)
-                .icon(IconName::Bell)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.draft.sound.chime = chime;
-                    // Hear it when choosing it.
-                    crate::sound::notify(chime, files_sdk::log::Level::Success, this.draft.sound.volume);
-                    cx.notify();
-                }))
+            option_button(
+                gpui_kit::ElementId::Name(format!("sound-chime-{}", chime.label()).into()),
+                chime.label(),
+                sound.chime == chime,
+            )
+            .icon(IconName::Bell)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.draft.sound.chime = chime;
+                // Hear it when choosing it.
+                crate::sound::notify(
+                    chime,
+                    files_sdk::log::Level::Success,
+                    this.draft.sound.volume,
+                );
+                cx.notify();
+            }))
         });
         let test_levels = [
             (files_sdk::log::Level::Info, "Info"),
@@ -1408,43 +1681,79 @@ impl SettingsWindow {
             (files_sdk::log::Level::Error, "Error"),
         ]
         .map(|(level, label)| {
-            Button::new(gpui_kit::ElementId::Name(format!("sound-test-{label}").into())).ghost().xsmall().icon(IconName::Play).label(label).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    crate::sound::notify(this.draft.sound.chime, level, this.draft.sound.volume);
-                    cx.notify();
-                },
+            Button::new(gpui_kit::ElementId::Name(
+                format!("sound-test-{label}").into(),
             ))
+            .ghost()
+            .xsmall()
+            .icon(IconName::Play)
+            .label(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                crate::sound::notify(this.draft.sound.chime, level, this.draft.sound.volume);
+                cx.notify();
+            }))
         });
         let layouts = SpeakerLayout::ALL.map(|layout| {
-            option_button(gpui_kit::ElementId::Name(format!("sound-layout-{}", layout.label()).into()), layout.label(), sound.layout == layout)
-                .icon(if layout == SpeakerLayout::Headphones { IconName::Headphones } else { IconName::Speaker })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.draft.sound.layout = layout;
-                    cx.notify();
-                }))
-        });
-        let speakers = crate::sound::speakers(sound.layout).iter().enumerate().map(|(index, speaker)| {
-            let layout = sound.layout;
-            div().debug_selector(move || format!("sound-speaker-{index}")).child(
-                Button::new(("sound-speaker", index))
-                    .small()
-                    .icon(if speaker.short == "LFE" { IconName::AudioWaveform } else { IconName::Volume2 })
-                    .label(format!("{} · {}", speaker.short, speaker.name))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        crate::sound::test_speaker(layout, index, this.draft.sound.volume);
-                        cx.notify();
-                    })),
+            option_button(
+                gpui_kit::ElementId::Name(format!("sound-layout-{}", layout.label()).into()),
+                layout.label(),
+                sound.layout == layout,
             )
+            .icon(if layout == SpeakerLayout::Headphones {
+                IconName::Headphones
+            } else {
+                IconName::Speaker
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.draft.sound.layout = layout;
+                cx.notify();
+            }))
         });
+        let speakers =
+            crate::sound::speakers(sound.layout)
+                .iter()
+                .enumerate()
+                .map(|(index, speaker)| {
+                    let layout = sound.layout;
+                    div()
+                        .debug_selector(move || format!("sound-speaker-{index}"))
+                        .child(
+                            Button::new(("sound-speaker", index))
+                                .small()
+                                .icon(if speaker.short == "LFE" {
+                                    IconName::AudioWaveform
+                                } else {
+                                    IconName::Volume2
+                                })
+                                .label(format!("{} · {}", speaker.short, speaker.name))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    crate::sound::test_speaker(
+                                        layout,
+                                        index,
+                                        this.draft.sound.volume,
+                                    );
+                                    cx.notify();
+                                })),
+                        )
+                });
         use crate::settings::{NotifyLevel, SystemNotify};
         let system = self.draft.system_notifications.clone();
         let system_modes = SystemNotify::ALL.map(|mode| {
             let label = match mode {
                 SystemNotify::Off => tr(language, "Never", "Никогда"),
-                SystemNotify::Background => tr(language, "When Files is in the background", "Когда Files в фоне"),
+                SystemNotify::Background => tr(
+                    language,
+                    "When Files is in the background",
+                    "Когда Files в фоне",
+                ),
                 SystemNotify::Always => tr(language, "Always", "Всегда"),
             };
-            option_button(gpui_kit::ElementId::Name(format!("system-notify-{mode:?}").into()), label, system.mode == mode).on_click(cx.listener(move |this, _, _, cx| {
+            option_button(
+                gpui_kit::ElementId::Name(format!("system-notify-{mode:?}").into()),
+                label,
+                system.mode == mode,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
                 this.draft.system_notifications.mode = mode;
                 cx.notify();
             }))
@@ -1452,15 +1761,21 @@ impl SettingsWindow {
         let system_levels = NotifyLevel::ALL.map(|level| {
             let label = match level {
                 NotifyLevel::All => tr(language, "All", "Все"),
-                NotifyLevel::Warnings => tr(language, "Warnings and errors", "Предупреждения и ошибки"),
+                NotifyLevel::Warnings => {
+                    tr(language, "Warnings and errors", "Предупреждения и ошибки")
+                }
                 NotifyLevel::Errors => tr(language, "Errors only", "Только ошибки"),
             };
-            option_button(gpui_kit::ElementId::Name(format!("system-level-{level:?}").into()), label, system.min_level == level)
-                .disabled(system.mode == SystemNotify::Off)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.draft.system_notifications.min_level = level;
-                    cx.notify();
-                }))
+            option_button(
+                gpui_kit::ElementId::Name(format!("system-level-{level:?}").into()),
+                label,
+                system.min_level == level,
+            )
+            .disabled(system.mode == SystemNotify::Off)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.draft.system_notifications.min_level = level;
+                cx.notify();
+            }))
         });
         let count = crate::sound::speakers(sound.layout).len();
         v_flex()
@@ -1561,30 +1876,67 @@ impl SettingsWindow {
             h_flex()
                 .gap_2()
                 .items_center()
-                .child(Icon::new(IconName::Folder).small().text_color(palette.folder))
-                .child(div().flex_1().min_w_0().truncate().text_sm().child(folder.display().to_string()))
-                .child(Button::new(("music-folder-remove", index)).ghost().xsmall().icon(IconName::X).on_click(cx.listener(move |_, _, _, cx| {
-                    let mut config = files_ext_music::config();
-                    config.folders.retain(|known| *known != folder);
-                    let _ = files_ext_music::save_config(&config);
-                    cx.notify();
-                })))
+                .child(
+                    Icon::new(IconName::Folder)
+                        .small()
+                        .text_color(palette.folder),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .child(folder.display().to_string()),
+                )
+                .child(
+                    Button::new(("music-folder-remove", index))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::X)
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            let mut config = files_ext_music::config();
+                            config.folders.retain(|known| *known != folder);
+                            let _ = files_ext_music::save_config(&config);
+                            cx.notify();
+                        })),
+                )
         });
-        let service = |id: &'static str, name: &'static str, connected: bool, disconnect: fn() -> std::io::Result<()>, cx: &mut Context<Self>| {
+        let service = |id: &'static str,
+                       name: &'static str,
+                       connected: bool,
+                       disconnect: fn() -> std::io::Result<()>,
+                       cx: &mut Context<Self>| {
             h_flex()
                 .gap_2()
                 .items_center()
                 .child(div().w(px(130.)).text_sm().child(name))
-                .child(div().flex_1().text_xs().text_color(palette.muted).child(if connected {
-                    tr(language, "Signed in", "Вход выполнен")
-                } else {
-                    tr(language, "Not signed in · connect in the Music tab", "Не подключено · подключите во вкладке Music")
-                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_xs()
+                        .text_color(palette.muted)
+                        .child(if connected {
+                            tr(language, "Signed in", "Вход выполнен")
+                        } else {
+                            tr(
+                                language,
+                                "Not signed in · connect in the Music tab",
+                                "Не подключено · подключите во вкладке Music",
+                            )
+                        }),
+                )
                 .when(connected, |this| {
-                    this.child(Button::new(id).ghost().xsmall().label(tr(language, "Sign out", "Выйти")).on_click(cx.listener(move |_, _, _, cx| {
-                        let _ = disconnect();
-                        cx.notify();
-                    })))
+                    this.child(
+                        Button::new(id)
+                            .ghost()
+                            .xsmall()
+                            .label(tr(language, "Sign out", "Выйти"))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                let _ = disconnect();
+                                cx.notify();
+                            })),
+                    )
                 })
         };
         v_flex()
@@ -1711,6 +2063,16 @@ impl SettingsWindow {
                         })),
                 )
             })
+            .child(
+                Switch::new("music-devtools-channels")
+                    .label(tr(language, "Show audio channels in DevTools", "Показывать аудиоканалы в DevTools"))
+                    .checked(self.draft.extensions.music_devtools_channels)
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.draft.extensions.music_devtools_channels = *checked;
+                        cx.notify();
+                    })),
+            )
+            .child(note(tr(language, "Adds DevTools → Audio with live levels for every output channel. Uses the built-in audio output; applies from the next track.", "Добавляет DevTools → Audio с живыми уровнями каждого выходного канала. Используется встроенный аудиовывод; применяется со следующего трека."), palette))
             .child(div().text_xs().text_color(palette.faint).child(tr(
                 language,
                 "Stereo is spread over a virtual 5.1 room around your head. \"With headphones\" turns it on when the sound goes to headphones. Turn off Spatialize Stereo in Control Center while it is on, or the sound is spatialized twice. Applies from the next track.",
@@ -1738,26 +2100,45 @@ impl SettingsWindow {
         let language = self.draft.language;
         let rows = Special::ALL.map(|special| {
             let key = special.key();
-            let current = self.draft.mail.folder_colors.get(key).cloned().unwrap_or_else(|| "none".to_string());
+            let current = self
+                .draft
+                .mail
+                .folder_colors
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| "none".to_string());
             let shown = !self.draft.mail.hidden.iter().any(|hidden| hidden == key);
             let swatch = |value: &'static str, cx: &mut Context<Self>| {
                 let fill = crate::menu_colors::parse(value);
                 div()
-                    .id(gpui_kit::ElementId::Name(format!("mail-color-{key}-{value}").into()))
+                    .id(gpui_kit::ElementId::Name(
+                        format!("mail-color-{key}-{value}").into(),
+                    ))
                     .size(px(16.))
                     .rounded_full()
                     .cursor_pointer()
                     .border_2()
-                    .border_color(if current == value { palette.text } else { palette.border })
+                    .border_color(if current == value {
+                        palette.text
+                    } else {
+                        palette.border
+                    })
                     .when_some(fill, |swatch, fill| swatch.bg(fill))
                     .when(fill.is_none(), |swatch| {
-                        swatch.flex().items_center().justify_center().child(Icon::new(IconName::Slash).xsmall().text_color(palette.faint))
+                        swatch.flex().items_center().justify_center().child(
+                            Icon::new(IconName::Slash)
+                                .xsmall()
+                                .text_color(palette.faint),
+                        )
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if value == "none" {
                             this.draft.mail.folder_colors.remove(key);
                         } else {
-                            this.draft.mail.folder_colors.insert(key.to_string(), value.to_string());
+                            this.draft
+                                .mail
+                                .folder_colors
+                                .insert(key.to_string(), value.to_string());
                         }
                         cx.notify();
                     }))
@@ -1766,25 +2147,45 @@ impl SettingsWindow {
             for value in crate::menu_colors::PRESETS {
                 swatches = swatches.child(swatch(value, cx));
             }
-            let color = self.draft.mail.folder_colors.get(key).and_then(|name| crate::menu_colors::parse(name)).unwrap_or(palette.muted);
+            let color = self
+                .draft
+                .mail
+                .folder_colors
+                .get(key)
+                .and_then(|name| crate::menu_colors::parse(name))
+                .unwrap_or(palette.muted);
             h_flex()
                 .gap_3()
                 .min_h(px(32.))
                 .items_center()
                 .child(
-                    gpui_kit::component::switch::Switch::new(gpui_kit::ElementId::Name(format!("mail-show-{key}").into()))
-                        .checked(shown)
-                        .small()
-                        .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                    gpui_kit::component::switch::Switch::new(gpui_kit::ElementId::Name(
+                        format!("mail-show-{key}").into(),
+                    ))
+                    .checked(shown)
+                    .small()
+                    .on_click(cx.listener(
+                        move |this, checked: &bool, _, cx| {
                             this.draft.mail.hidden.retain(|hidden| hidden != key);
                             if !*checked {
                                 this.draft.mail.hidden.push(key.to_string());
                             }
                             cx.notify();
-                        })),
+                        },
+                    )),
                 )
-                .child(Icon::new(crate::views::mail::special_icon_for(special)).small().text_color(color))
-                .child(div().w(px(110.)).text_sm().text_color(if shown { palette.text } else { palette.faint }).child(special.label()))
+                .child(
+                    Icon::new(crate::views::mail::special_icon_for(special))
+                        .small()
+                        .text_color(color),
+                )
+                .child(
+                    div()
+                        .w(px(110.))
+                        .text_sm()
+                        .text_color(if shown { palette.text } else { palette.faint })
+                        .child(special.label()),
+                )
                 .child(swatches)
         });
         v_flex()
@@ -1832,8 +2233,16 @@ impl SettingsWindow {
                             .gap_2()
                             .items_center()
                             .text_sm()
-                            .child(crate::views::context_menu::tinted_icon(Icon::new(icon).small(), color))
-                            .child(div().truncate().text_color(color.unwrap_or(palette.text)).child(name)),
+                            .child(crate::views::context_menu::tinted_icon(
+                                Icon::new(icon).small(),
+                                color,
+                            ))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(color.unwrap_or(palette.text))
+                                    .child(name),
+                            ),
                     )
                     .child(self.color_swatches(key, name, palette, cx)),
             );
@@ -1854,7 +2263,12 @@ impl SettingsWindow {
 
     /// An extension page's "Context menu" card: its color, and a preview of
     /// the items it adds, as they look in the menu.
-    fn render_extension_menu(&mut self, manifest: &'static files_sdk::Manifest, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_extension_menu(
+        &mut self,
+        manifest: &'static files_sdk::Manifest,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let preview = menu_preview(manifest);
         if preview.is_empty() {
             return None;
@@ -1871,8 +2285,21 @@ impl SettingsWindow {
                 .text_sm()
                 .when(faded, |row| row.opacity(0.75))
                 .child(crate::views::context_menu::tinted_icon(icon.small(), color))
-                .child(div().flex_1().min_w_0().truncate().text_color(color.unwrap_or(palette.text)).child(label.to_string()))
-                .when(submenu, |row| row.child(Icon::new(IconName::ChevronRight).xsmall().text_color(palette.faint)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(color.unwrap_or(palette.text))
+                        .child(label.to_string()),
+                )
+                .when(submenu, |row| {
+                    row.child(
+                        Icon::new(IconName::ChevronRight)
+                            .xsmall()
+                            .text_color(palette.faint),
+                    )
+                })
         };
         let popup = || {
             v_flex()
@@ -1884,42 +2311,72 @@ impl SettingsWindow {
                 .bg(palette.elevated)
                 .shadow_md()
         };
-        let mut main = popup().child(row("Open", Icon::new(IconName::FolderOpen), false, true).text_color(palette.muted));
+        let mut main = popup().child(
+            row("Open", Icon::new(IconName::FolderOpen), false, true).text_color(palette.muted),
+        );
         let mut opened = None;
         for item in &preview {
-            main = main.child(row(item.label, item.icon(manifest), !item.children.is_empty(), false));
+            main = main.child(row(
+                item.label,
+                item.icon(manifest),
+                !item.children.is_empty(),
+                false,
+            ));
             if opened.is_none() && !item.children.is_empty() {
                 opened = Some(item);
             }
         }
         // The first submenu is shown open, as when hovering it.
         let side = opened.map(|item| {
-            popup().children(item.children.iter().map(|(label, icon)| row(label, Icon::new(icon.clone()), false, false)))
+            popup().children(
+                item.children
+                    .iter()
+                    .map(|(label, icon)| row(label, Icon::new(icon.clone()), false, false)),
+            )
         });
         Some(
             card(palette)
-                .child(section(IconName::Menu, tr(language, "Context menu", "Контекстное меню"), palette))
+                .child(section(
+                    IconName::Menu,
+                    tr(language, "Context menu", "Контекстное меню"),
+                    palette,
+                ))
                 .child(
                     h_flex()
                         .gap_3()
                         .items_center()
-                        .child(div().text_sm().w(px(90.)).child(tr(language, "Color", "Цвет")))
+                        .child(
+                            div()
+                                .text_sm()
+                                .w(px(90.))
+                                .child(tr(language, "Color", "Цвет")),
+                        )
                         .child(self.color_swatches(manifest.id, manifest.name, palette, cx)),
                 )
-                .child(div().text_xs().text_color(palette.muted).child(tr(language, "Preview", "Предпросмотр")))
+                .child(div().text_xs().text_color(palette.muted).child(tr(
+                    language,
+                    "Preview",
+                    "Предпросмотр",
+                )))
                 .child(h_flex().items_start().gap_1().child(main).children(side))
                 .into_any_element(),
         )
     }
 
     fn choose_global_search_folder(&mut self, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Search here".into()) });
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Search here".into()),
+        });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await
                 && let Some(folder) = paths.into_iter().next()
             {
                 let _ = this.update(cx, |this, cx| {
-                    this.draft.search_filters.global_folder = (dirs::home_dir().as_ref() != Some(&folder)).then_some(folder);
+                    this.draft.search_filters.global_folder =
+                        (dirs::home_dir().as_ref() != Some(&folder)).then_some(folder);
                     cx.notify();
                 });
             }
@@ -2002,11 +2459,18 @@ impl SettingsWindow {
                         .rounded_md()
                         .cursor_pointer()
                         .border_2()
-                        .border_color(if selected { palette.accent } else { palette.border })
+                        .border_color(if selected {
+                            palette.accent
+                        } else {
+                            palette.border
+                        })
                         .bg(crate::settings::parse_hex(swatch).unwrap_or(palette.surface))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.draft.look.background = Background::Color { hex: swatch.to_string() };
-                            this.background_hex.update(cx, |state, cx| state.set_value(swatch, window, cx));
+                            this.draft.look.background = Background::Color {
+                                hex: swatch.to_string(),
+                            };
+                            this.background_hex
+                                .update(cx, |state, cx| state.set_value(swatch, window, cx));
                             cx.notify();
                         }))
                 })))
@@ -2014,19 +2478,25 @@ impl SettingsWindow {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().w(px(140.)).child(Input::new(&self.background_hex).small()))
+                        .child(
+                            div()
+                                .w(px(140.))
+                                .child(Input::new(&self.background_hex).small()),
+                        )
                         .child(
                             Button::new("apply-hex")
                                 .secondary()
                                 .xsmall()
                                 .label(tr(language, "Use color", "Применить"))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    let hex = this.background_hex.read(cx).value().trim().to_string();
+                                    let hex =
+                                        this.background_hex.read(cx).value().trim().to_string();
                                     if crate::settings::parse_hex(&hex).is_some() {
                                         this.draft.look.background = Background::Color { hex };
                                         this.error = None;
                                     } else {
-                                        this.error = Some(format!("\"{hex}\" is not a #rrggbb color"));
+                                        this.error =
+                                            Some(format!("\"{hex}\" is not a #rrggbb color"));
                                     }
                                     cx.notify();
                                 })),
@@ -2036,7 +2506,15 @@ impl SettingsWindow {
             Background::Image { path } => h_flex()
                 .gap_2()
                 .items_center()
-                .child(div().flex_1().min_w_0().truncate().text_xs().text_color(palette.muted).child(path.display().to_string()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(palette.muted)
+                        .child(path.display().to_string()),
+                )
                 .child(
                     Button::new("choose-background")
                         .secondary()
@@ -2048,9 +2526,25 @@ impl SettingsWindow {
                 .into_any_element(),
         };
         let kinds = [
-            (Background::Default, tr(language, "Default", "Стандартный"), IconName::Sparkles),
-            (Background::Color { hex: "#0f172a".to_string() }, tr(language, "Color", "Цвет"), IconName::Paintbrush),
-            (Background::Image { path: std::path::PathBuf::new() }, tr(language, "Image", "Картинка"), IconName::Image),
+            (
+                Background::Default,
+                tr(language, "Default", "Стандартный"),
+                IconName::Sparkles,
+            ),
+            (
+                Background::Color {
+                    hex: "#0f172a".to_string(),
+                },
+                tr(language, "Color", "Цвет"),
+                IconName::Paintbrush,
+            ),
+            (
+                Background::Image {
+                    path: std::path::PathBuf::new(),
+                },
+                tr(language, "Image", "Картинка"),
+                IconName::Image,
+            ),
         ];
         v_flex()
             .gap_4()
@@ -2139,7 +2633,10 @@ impl SettingsWindow {
         self.update_install = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async { crate::updates::check() }).await;
+            let result = cx
+                .background_executor()
+                .spawn(async { crate::updates::check() })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.checking_updates = false;
                 this.update_check = Some(result);
@@ -2155,7 +2652,9 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { crate::updates::download(&download, &crate::licensing::trusted_updates()) })
+                .spawn(async move {
+                    crate::updates::download(&download, &crate::licensing::trusted_updates())
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.installing_update = false;
@@ -2181,20 +2680,33 @@ impl SettingsWindow {
         let mut actions = Vec::new();
         let status: Option<(IconName, gpui_kit::Hsla, String)> = match self.update_check.clone() {
             None => None,
-            Some(Ok(UpdateStatus::UpToDate { latest })) => {
-                Some((IconName::CircleCheck, palette.code, format!("Files is up to date · the newest is {latest}")))
-            }
-            Some(Ok(UpdateStatus::Available { latest, page, download, .. })) => {
+            Some(Ok(UpdateStatus::UpToDate { latest })) => Some((
+                IconName::CircleCheck,
+                palette.code,
+                format!("Files is up to date · the newest is {latest}"),
+            )),
+            Some(Ok(UpdateStatus::Available {
+                latest,
+                page,
+                download,
+                ..
+            })) => {
                 if let Some(download) = download.filter(|download| download.signature.is_some()) {
                     actions.push(
                         Button::new("settings-update-install")
                             .primary()
                             .small()
                             .icon(IconName::Download)
-                            .label(tr(language, "Install & Relaunch", "Установить и перезапустить"))
+                            .label(tr(
+                                language,
+                                "Install & Relaunch",
+                                "Установить и перезапустить",
+                            ))
                             .loading(self.installing_update)
                             .disabled(self.installing_update)
-                            .on_click(cx.listener(move |this, _, _, cx| this.install_update(download.clone(), cx)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.install_update(download.clone(), cx)
+                            }))
                             .into_any_element(),
                     );
                 }
@@ -2208,11 +2720,28 @@ impl SettingsWindow {
                             .into_any_element(),
                     );
                 }
-                Some((IconName::Download, palette.accent, format!("Files {latest} is available · you have {}", crate::updates::CURRENT_VERSION)))
+                Some((
+                    IconName::Download,
+                    palette.accent,
+                    format!(
+                        "Files {latest} is available · you have {}",
+                        crate::updates::CURRENT_VERSION
+                    ),
+                ))
             }
-            Some(Ok(UpdateStatus::NoReleases)) => Some((IconName::Info, palette.muted, "No releases yet".to_string())),
-            Some(Ok(UpdateStatus::NotConfigured)) => Some((IconName::Info, palette.muted, "Update checks are not set up for this build".to_string())),
-            Some(Err(error)) => Some((IconName::TriangleAlert, palette.video, format!("Could not check: {error}"))),
+            Some(Ok(UpdateStatus::NoReleases)) => {
+                Some((IconName::Info, palette.muted, "No releases yet".to_string()))
+            }
+            Some(Ok(UpdateStatus::NotConfigured)) => Some((
+                IconName::Info,
+                palette.muted,
+                "Update checks are not set up for this build".to_string(),
+            )),
+            Some(Err(error)) => Some((
+                IconName::TriangleAlert,
+                palette.video,
+                format!("Could not check: {error}"),
+            )),
         };
         let install = self.update_install.clone().map(|result| match result {
             Ok(path) => (palette.code, format!("Verified and opened {} · drag Files to Applications (or run the installer), then reopen it", path.display())),
@@ -2225,14 +2754,20 @@ impl SettingsWindow {
                     .gap_2()
                     .items_center()
                     .child(
-                        div().debug_selector(|| "settings-check-updates".into()).child(Button::new("settings-check-updates")
-                            .secondary()
-                            .small()
-                            .icon(IconName::RefreshCw)
-                            .label(tr(language, "Check now", "Проверить сейчас"))
-                            .loading(self.checking_updates)
-                            .disabled(self.checking_updates)
-                            .on_click(cx.listener(|this, _, _, cx| this.check_updates_now(cx)))),
+                        div()
+                            .debug_selector(|| "settings-check-updates".into())
+                            .child(
+                                Button::new("settings-check-updates")
+                                    .secondary()
+                                    .small()
+                                    .icon(IconName::RefreshCw)
+                                    .label(tr(language, "Check now", "Проверить сейчас"))
+                                    .loading(self.checking_updates)
+                                    .disabled(self.checking_updates)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.check_updates_now(cx)),
+                                    ),
+                            ),
                     )
                     .children(status.map(|(icon, color, text)| {
                         h_flex()
@@ -2243,17 +2778,30 @@ impl SettingsWindow {
                             .child(div().text_color(color).child(text))
                     })),
             )
-            .when(!actions.is_empty(), |this| this.child(h_flex().gap_2().children(actions)))
-            .children(install.map(|(color, text)| div().text_xs().text_color(color).whitespace_normal().child(text)))
+            .when(!actions.is_empty(), |this| {
+                this.child(h_flex().gap_2().children(actions))
+            })
+            .children(install.map(|(color, text)| {
+                div()
+                    .text_xs()
+                    .text_color(color)
+                    .whitespace_normal()
+                    .child(text)
+            }))
             .into_any_element()
     }
 
     /// Installs the package at the path or URL in the field (in the background).
     fn install_plugin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let source = self.install_url.read(cx).value().trim().to_string();
-        let Some(folder) = crate::plugins::folder() else { return };
+        let Some(folder) = crate::plugins::folder() else {
+            return;
+        };
         if source.is_empty() {
-            self.install_message = Some((false, "Paste the path or https:// link of a .filesext package".to_string()));
+            self.install_message = Some((
+                false,
+                "Paste the path or https:// link of a .filesext package".to_string(),
+            ));
             cx.notify();
             return;
         }
@@ -2263,14 +2811,20 @@ impl SettingsWindow {
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { crate::plugins::install(&source, &folder, &crate::licensing::trusted()) })
+                .spawn(async move {
+                    crate::plugins::install(&source, &folder, &crate::licensing::trusted())
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.installing = false;
                 this.install_message = Some(match result {
                     Ok(manifest) => {
-                        this.install_url.update(cx, |input, cx| input.set_value("", window, cx));
-                        (true, format!("Installed {} {}", manifest.name, manifest.version))
+                        this.install_url
+                            .update(cx, |input, cx| input.set_value("", window, cx));
+                        (
+                            true,
+                            format!("Installed {} {}", manifest.name, manifest.version),
+                        )
                     }
                     Err(error) => (false, error),
                 });
@@ -2289,24 +2843,39 @@ impl SettingsWindow {
             None => div()
                 .text_xs()
                 .text_color(palette.muted)
-                .child(tr(language, "Free extensions work without a key. Pro extensions need a license.", "Бесплатные расширения работают без ключа. Pro-расширениям нужна лицензия."))
+                .child(tr(
+                    language,
+                    "Free extensions work without a key. Pro extensions need a license.",
+                    "Бесплатные расширения работают без ключа. Pro-расширениям нужна лицензия.",
+                ))
                 .into_any_element(),
             Some(Ok(license)) => {
                 let until = license.expires.map_or_else(
                     || "never expires".to_string(),
                     |expires| {
-                        chrono::DateTime::from_timestamp(expires, 0).map_or("—".to_string(), |time| format!("until {}", time.format("%Y-%m-%d")))
+                        chrono::DateTime::from_timestamp(expires, 0)
+                            .map_or("—".to_string(), |time| {
+                                format!("until {}", time.format("%Y-%m-%d"))
+                            })
                     },
                 );
                 h_flex()
                     .gap_2()
                     .items_center()
                     .text_xs()
-                    .child(Icon::new(IconName::CircleCheck).small().text_color(palette.code))
+                    .child(
+                        Icon::new(IconName::CircleCheck)
+                            .small()
+                            .text_color(palette.code),
+                    )
                     .child(div().text_color(palette.text).child(format!(
                         "Licensed to {} · {} · {until}",
                         license.email,
-                        if license.products.iter().any(|product| product == "*") { "all Pro extensions".to_string() } else { license.products.join(", ") }
+                        if license.products.iter().any(|product| product == "*") {
+                            "all Pro extensions".to_string()
+                        } else {
+                            license.products.join(", ")
+                        }
                     )))
                     .into_any_element()
             }
@@ -2314,17 +2883,30 @@ impl SettingsWindow {
                 .gap_2()
                 .items_center()
                 .text_xs()
-                .child(Icon::new(IconName::CircleX).small().text_color(palette.video))
+                .child(
+                    Icon::new(IconName::CircleX)
+                        .small()
+                        .text_color(palette.video),
+                )
                 .child(div().text_color(palette.video).child(error.to_string()))
                 .into_any_element(),
         };
         card(palette)
-            .child(section(IconName::KeyRound, tr(language, "License", "Лицензия"), palette))
+            .child(section(
+                IconName::KeyRound,
+                tr(language, "License", "Лицензия"),
+                palette,
+            ))
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().flex_1().min_w_0().child(Input::new(&self.license_input).small().w_full()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.license_input).small().w_full()),
+                    )
                     .child(
                         Button::new("license-activate")
                             .primary()
@@ -2333,76 +2915,142 @@ impl SettingsWindow {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let key = this.license_input.read(cx).value().trim().to_string();
                                 this.draft.license.key = key;
-                                this.license_input.update(cx, |input, cx| input.set_value("", window, cx));
+                                this.license_input
+                                    .update(cx, |input, cx| input.set_value("", window, cx));
                                 cx.notify();
                             })),
                     )
                     .when(!self.draft.license.key.is_empty(), |row| {
-                        row.child(Button::new("license-remove").ghost().small().label(tr(language, "Remove", "Удалить")).on_click(cx.listener(|this, _, _, cx| {
-                            this.draft.license.key.clear();
-                            cx.notify();
-                        })))
+                        row.child(
+                            Button::new("license-remove")
+                                .ghost()
+                                .small()
+                                .label(tr(language, "Remove", "Удалить"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.draft.license.key.clear();
+                                    cx.notify();
+                                })),
+                        )
                     }),
             )
             .child(status)
-            .child(note(tr(language, "The key is checked on this Mac, offline. Saved with Save.", "Ключ проверяется на этом компьютере, без сети. Сохраняется кнопкой Save."), palette))
+            .child(note(
+                tr(
+                    language,
+                    "The key is checked on this Mac, offline. Saved with Save.",
+                    "Ключ проверяется на этом компьютере, без сети. Сохраняется кнопкой Save.",
+                ),
+                palette,
+            ))
             .into_any_element()
     }
 
-    fn render_extensions_overview(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_extensions_overview(
+        &mut self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let language = self.draft.language;
         let mut installed = v_flex();
         for (index, extension) in crate::extensions::CATALOG.iter().enumerate() {
             let locked = !crate::licensing::unlocked(extension, &self.draft);
             let enabled = crate::extensions::enabled(&self.draft.extensions, index) && !locked;
-            installed = installed.child(
-                h_flex()
-                    .id(("extension-row", index))
-                    .h(px(48.))
-                    .px_3()
-                    .gap_3()
-                    .items_center()
-                    .cursor_pointer()
-                    .when(index > 0, |row| row.border_t_1().border_color(palette.border))
-                    .hover(|style| style.bg(palette.hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.extensions_expanded = true;
-                        this.extension_page = Some(index);
-                        cx.notify();
-                    }))
-                    .child(crate::extensions::icon_of(extension).small().text_color(if enabled { palette.accent } else { palette.faint }))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(extension.name))
-                            .child(div().text_xs().text_color(palette.muted).truncate().child(extension.summary)),
-                    )
-                    .child(div().text_size(px(10.)).text_color(palette.faint).child(format!("v{} · {}", extension.version, extension.source)))
-                    .when(matches!(extension.tier, files_sdk::Tier::Pro { .. }), |row| {
-                        row.child(
-                            h_flex()
-                                .gap_0p5()
+            installed =
+                installed.child(
+                    h_flex()
+                        .id(("extension-row", index))
+                        .h(px(48.))
+                        .px_3()
+                        .gap_3()
+                        .items_center()
+                        .cursor_pointer()
+                        .when(index > 0, |row| {
+                            row.border_t_1().border_color(palette.border)
+                        })
+                        .hover(|style| style.bg(palette.hover))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.extensions_expanded = true;
+                            this.extension_page = Some(index);
+                            cx.notify();
+                        }))
+                        .child(crate::extensions::icon_of(extension).small().text_color(
+                            if enabled {
+                                palette.accent
+                            } else {
+                                palette.faint
+                            },
+                        ))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(extension.name),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted)
+                                        .truncate()
+                                        .child(extension.summary),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(palette.faint)
+                                .child(format!("v{} · {}", extension.version, extension.source)),
+                        )
+                        .when(
+                            matches!(extension.tier, files_sdk::Tier::Pro { .. }),
+                            |row| {
+                                row.child(
+                                    h_flex()
+                                        .gap_0p5()
+                                        .px_1p5()
+                                        .rounded_sm()
+                                        .bg(palette.archive.opacity(0.18))
+                                        .text_size(px(10.))
+                                        .text_color(palette.archive)
+                                        .when(locked, |badge| {
+                                            badge.child(Icon::new(IconName::Lock).xsmall())
+                                        })
+                                        .child("Pro"),
+                                )
+                            },
+                        )
+                        .child(
+                            div()
                                 .px_1p5()
                                 .rounded_sm()
-                                .bg(palette.archive.opacity(0.18))
                                 .text_size(px(10.))
-                                .text_color(palette.archive)
-                                .when(locked, |badge| badge.child(Icon::new(IconName::Lock).xsmall()))
-                                .child("Pro"),
+                                .bg(if enabled {
+                                    palette.accent_soft
+                                } else {
+                                    palette.surface
+                                })
+                                .text_color(if enabled {
+                                    palette.accent
+                                } else {
+                                    palette.faint
+                                })
+                                .child(if locked {
+                                    "Locked"
+                                } else if enabled {
+                                    "On"
+                                } else {
+                                    "Off"
+                                }),
                         )
-                    })
-                    .child(
-                        div()
-                            .px_1p5()
-                            .rounded_sm()
-                            .text_size(px(10.))
-                            .bg(if enabled { palette.accent_soft } else { palette.surface })
-                            .text_color(if enabled { palette.accent } else { palette.faint })
-                            .child(if locked { "Locked" } else if enabled { "On" } else { "Off" }),
-                    )
-                    .child(Icon::new(IconName::ChevronRight).xsmall().text_color(palette.faint)),
-            );
+                        .child(
+                            Icon::new(IconName::ChevronRight)
+                                .xsmall()
+                                .text_color(palette.faint),
+                        ),
+                );
         }
         v_flex()
             .p_5()
@@ -2496,7 +3144,12 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    fn render_extension_page(&mut self, index: usize, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_extension_page(
+        &mut self,
+        index: usize,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let language = self.draft.language;
         let extension = &crate::extensions::CATALOG[index];
         let enabled = crate::extensions::enabled(&self.draft.extensions, index);
@@ -2517,16 +3170,30 @@ impl SettingsWindow {
             setting_row(
                 tr(language, "Opens in", "Открывается"),
                 h_flex().gap_2().children(
-                    [(crate::settings::OpenIn::Tab, tr(language, "New tab", "Новая вкладка"), IconName::PanelTop), (crate::settings::OpenIn::Window, tr(language, "New window", "Новое окно"), IconName::AppWindow)].map(
-                        |(open_in, label, icon)| {
-                            option_button(gpui_kit::ElementId::Name(format!("open-in-{id}-{open_in:?}").into()), label, self.draft.opens_in(id) == open_in)
-                                .icon(icon)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.draft.extension_windows.insert(id.to_string(), open_in);
-                                    cx.notify();
-                                }))
-                        },
-                    ),
+                    [
+                        (
+                            crate::settings::OpenIn::Tab,
+                            tr(language, "New tab", "Новая вкладка"),
+                            IconName::PanelTop,
+                        ),
+                        (
+                            crate::settings::OpenIn::Window,
+                            tr(language, "New window", "Новое окно"),
+                            IconName::AppWindow,
+                        ),
+                    ]
+                    .map(|(open_in, label, icon)| {
+                        option_button(
+                            gpui_kit::ElementId::Name(format!("open-in-{id}-{open_in:?}").into()),
+                            label,
+                            self.draft.opens_in(id) == open_in,
+                        )
+                        .icon(icon)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.draft.extension_windows.insert(id.to_string(), open_in);
+                            cx.notify();
+                        }))
+                    }),
                 ),
                 palette,
             )
@@ -2536,7 +3203,11 @@ impl SettingsWindow {
                 .gap_2()
                 .child(
                     Switch::new("archives-create-folder")
-                        .label(tr(language, "Extract into a new folder named after the archive", "Распаковывать в новую папку с именем архива"))
+                        .label(tr(
+                            language,
+                            "Extract into a new folder named after the archive",
+                            "Распаковывать в новую папку с именем архива",
+                        ))
                         .checked(self.draft.extensions.archives_create_folder)
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
                             this.draft.extensions.archives_create_folder = *checked;
@@ -2545,7 +3216,11 @@ impl SettingsWindow {
                 )
                 .child(
                     Switch::new("archives-overwrite")
-                        .label(tr(language, "Overwrite existing files without asking", "Перезаписывать файлы без вопроса"))
+                        .label(tr(
+                            language,
+                            "Overwrite existing files without asking",
+                            "Перезаписывать файлы без вопроса",
+                        ))
                         .checked(self.draft.extensions.archives_overwrite)
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
                             this.draft.extensions.archives_overwrite = *checked;
@@ -2557,25 +3232,37 @@ impl SettingsWindow {
             "music" => self.render_music_settings(palette, cx),
             "terminal" => setting_row(
                 tr(language, "Terminal app", "Приложение терминала"),
-                h_flex().gap_1().flex_wrap().children(crate::settings::TerminalApp::available().into_iter().map(|app| {
-                    option_button(
-                        gpui_kit::ElementId::Name(format!("terminal-app-{}", app.app_name()).into()),
-                        app.app_name(),
-                        self.draft.extensions.terminal_app.effective() == app,
-                    )
-                    .icon(IconName::SquareTerminal)
-                    .xsmall()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.draft.extensions.terminal_app = app;
-                        cx.notify();
-                    }))
-                })),
+                h_flex().gap_1().flex_wrap().children(
+                    crate::settings::TerminalApp::available()
+                        .into_iter()
+                        .map(|app| {
+                            option_button(
+                                gpui_kit::ElementId::Name(
+                                    format!("terminal-app-{}", app.app_name()).into(),
+                                ),
+                                app.app_name(),
+                                self.draft.extensions.terminal_app.effective() == app,
+                            )
+                            .icon(IconName::SquareTerminal)
+                            .xsmall()
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.draft.extensions.terminal_app = app;
+                                    cx.notify();
+                                },
+                            ))
+                        }),
+                ),
                 palette,
             ),
             _ => div()
                 .text_xs()
                 .text_color(palette.faint)
-                .child(tr(language, "This extension has no settings yet.", "У этого расширения пока нет настроек."))
+                .child(tr(
+                    language,
+                    "This extension has no settings yet.",
+                    "У этого расширения пока нет настроек.",
+                ))
                 .into_any_element(),
         };
         v_flex()
@@ -2706,7 +3393,8 @@ impl SettingsWindow {
         if !pattern.is_empty() && !self.draft.deletion.protected.contains(&pattern) {
             self.draft.deletion.protected.push(pattern);
         }
-        self.new_pattern.update(cx, |state, cx| state.set_value("", window, cx));
+        self.new_pattern
+            .update(cx, |state, cx| state.set_value("", window, cx));
         cx.notify();
     }
 
@@ -2726,9 +3414,15 @@ impl SettingsWindow {
                     .gap_2()
                     .items_center()
                     .px_3()
-                    .when(index > 0, |row| row.border_t_1().border_color(palette.border))
+                    .when(index > 0, |row| {
+                        row.border_t_1().border_color(palette.border)
+                    })
                     .hover(|style| style.bg(palette.hover))
-                    .child(Icon::new(IconName::FolderLock).xsmall().text_color(palette.faint))
+                    .child(
+                        Icon::new(IconName::FolderLock)
+                            .xsmall()
+                            .text_color(palette.faint),
+                    )
                     .child(div().flex_1().min_w_0().truncate().text_xs().child(pattern))
                     .child(
                         Button::new(("remove-protected", index))
@@ -2840,7 +3534,12 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    pub(crate) fn set_default_app(&mut self, extension: &str, app: Option<std::path::PathBuf>, cx: &mut Context<Self>) {
+    pub(crate) fn set_default_app(
+        &mut self,
+        extension: &str,
+        app: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         match app {
             Some(app) => {
                 self.draft
@@ -2889,7 +3588,9 @@ impl SettingsWindow {
                 if let Ok(Ok(Some(paths))) = picked.await
                     && let Some(app) = paths.into_iter().next()
                 {
-                    let _ = this.update(cx, |this, cx| this.set_default_app(&extension, Some(app), cx));
+                    let _ = this.update(cx, |this, cx| {
+                        this.set_default_app(&extension, Some(app), cx)
+                    });
                 }
             })
             .detach();
@@ -2901,15 +3602,19 @@ impl SettingsWindow {
                 .spawn(async { crate::default_apps::choose_application() })
                 .await;
             if let Ok(Some(app)) = chosen {
-                let _ = this.update(cx, |this, cx| this.set_default_app(&extension, Some(app), cx));
+                let _ = this.update(cx, |this, cx| {
+                    this.set_default_app(&extension, Some(app), cx)
+                });
             }
         })
         .detach();
     }
 
     fn add_extension(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let extension = crate::default_apps::normalize_extension(&self.new_extension.read(cx).value());
-        self.new_extension.update(cx, |state, cx| state.set_value("", window, cx));
+        let extension =
+            crate::default_apps::normalize_extension(&self.new_extension.read(cx).value());
+        self.new_extension
+            .update(cx, |state, cx| state.set_value("", window, cx));
         if !extension.is_empty() {
             self.expanded_extension = Some(extension);
         }
@@ -2918,9 +3623,16 @@ impl SettingsWindow {
 
     fn render_default_apps(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let language = self.draft.language;
-        let mut extensions: Vec<String> =
-            crate::default_apps::COMMON.iter().map(|extension| extension.to_string()).collect();
-        for extension in self.draft.default_apps.keys().chain(self.expanded_extension.iter()) {
+        let mut extensions: Vec<String> = crate::default_apps::COMMON
+            .iter()
+            .map(|extension| extension.to_string())
+            .collect();
+        for extension in self
+            .draft
+            .default_apps
+            .keys()
+            .chain(self.expanded_extension.iter())
+        {
             if !extensions.contains(extension) {
                 extensions.push(extension.clone());
             }
@@ -2931,7 +3643,10 @@ impl SettingsWindow {
             let custom = self.draft.default_apps.get(extension).cloned();
             let expanded = self.expanded_extension.as_deref() == Some(extension.as_str());
             let (app_label, badge) = match (&custom, &system) {
-                (Some(app), _) => (crate::default_apps::AppChoice::from_path(app).name, Some("Custom")),
+                (Some(app), _) => (
+                    crate::default_apps::AppChoice::from_path(app).name,
+                    Some("Custom"),
+                ),
                 (None, Some(app)) => (app.name.clone(), None),
                 (None, None) => (tr(language, "Not set", "Не задано").to_string(), None),
             };
@@ -2943,8 +3658,16 @@ impl SettingsWindow {
                 .px_3()
                 .gap_3()
                 .items_center()
-                .when(index > 0, |row| row.border_t_1().border_color(palette.border))
-                .child(div().w(px(64.)).text_xs().font_weight(FontWeight::MEDIUM).child(format!(".{extension}")))
+                .when(index > 0, |row| {
+                    row.border_t_1().border_color(palette.border)
+                })
+                .child(
+                    div()
+                        .w(px(64.))
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(format!(".{extension}")),
+                )
                 .child(
                     h_flex()
                         .flex_1()
@@ -2955,7 +3678,11 @@ impl SettingsWindow {
                             div()
                                 .truncate()
                                 .text_sm()
-                                .text_color(if custom.is_some() { palette.text } else { palette.muted })
+                                .text_color(if custom.is_some() {
+                                    palette.text
+                                } else {
+                                    palette.muted
+                                })
                                 .child(app_label),
                         )
                         .children(badge.map(|badge| {
@@ -2968,69 +3695,108 @@ impl SettingsWindow {
                                 .child(badge)
                         }))
                         .children((custom.is_some()).then(|| {
-                            div().text_size(px(10.)).text_color(palette.faint).child(format!(
-                                "system: {}",
-                                system.as_ref().map_or("—".to_string(), |app| app.name.clone())
-                            ))
+                            div()
+                                .text_size(px(10.))
+                                .text_color(palette.faint)
+                                .child(format!(
+                                    "system: {}",
+                                    system
+                                        .as_ref()
+                                        .map_or("—".to_string(), |app| app.name.clone())
+                                ))
                         })),
                 )
                 .children(custom.is_some().then(|| {
-                    Button::new(gpui_kit::ElementId::Name(format!("reset-app-{extension}").into()))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::RotateCcw)
-                        .tooltip(tr(language, "Use the system default", "Системное по умолчанию"))
-                        .on_click(cx.listener(move |this, _, _, cx| this.set_default_app(&reset, None, cx)))
+                    Button::new(gpui_kit::ElementId::Name(
+                        format!("reset-app-{extension}").into(),
+                    ))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::RotateCcw)
+                    .tooltip(tr(
+                        language,
+                        "Use the system default",
+                        "Системное по умолчанию",
+                    ))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_default_app(&reset, None, cx)),
+                    )
                 }))
                 .child(
-                    Button::new(gpui_kit::ElementId::Name(format!("change-app-{extension}").into()))
-                        .secondary()
-                        .xsmall()
-                        .label(if expanded { tr(language, "Done", "Готово") } else { tr(language, "Change", "Изменить") })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.expanded_extension =
-                                (this.expanded_extension.as_deref() != Some(toggle.as_str())).then(|| toggle.clone());
-                            cx.notify();
-                        })),
+                    Button::new(gpui_kit::ElementId::Name(
+                        format!("change-app-{extension}").into(),
+                    ))
+                    .secondary()
+                    .xsmall()
+                    .label(if expanded {
+                        tr(language, "Done", "Готово")
+                    } else {
+                        tr(language, "Change", "Изменить")
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.expanded_extension = (this.expanded_extension.as_deref()
+                            != Some(toggle.as_str()))
+                        .then(|| toggle.clone());
+                        cx.notify();
+                    })),
                 );
             list = list.child(row);
             if expanded {
                 let mut choices = v_flex().gap_0p5().px_3().pb_3().pl(px(88.));
                 for app in crate::default_apps::candidates(extension) {
                     let selected = custom.as_deref() == Some(app.path.to_string_lossy().as_ref());
-                    let is_system = system.as_ref().is_some_and(|system| system.path == app.path);
+                    let is_system = system
+                        .as_ref()
+                        .is_some_and(|system| system.path == app.path);
                     let pick = extension.clone();
                     let path = app.path.clone();
                     choices = choices.child(
                         h_flex()
-                            .id(gpui_kit::ElementId::Name(format!("pick-{extension}-{}", app.path.display()).into()))
+                            .id(gpui_kit::ElementId::Name(
+                                format!("pick-{extension}-{}", app.path.display()).into(),
+                            ))
                             .h(px(28.))
                             .px_2()
                             .gap_2()
                             .items_center()
                             .rounded_md()
                             .text_sm()
-                            .bg(if selected { palette.selection } else { gpui_kit::transparent_black() })
+                            .bg(if selected {
+                                palette.selection
+                            } else {
+                                gpui_kit::transparent_black()
+                            })
                             .hover(|style| style.bg(palette.hover))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.set_default_app(&pick, Some(path.clone()), cx)
                             }))
-                            .child(Icon::new(IconName::AppWindow).xsmall().text_color(palette.muted))
+                            .child(
+                                Icon::new(IconName::AppWindow)
+                                    .xsmall()
+                                    .text_color(palette.muted),
+                            )
                             .child(div().flex_1().truncate().child(app.name.clone()))
                             .children(is_system.then(|| {
-                                div().text_size(px(10.)).text_color(palette.faint).child("system default")
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(palette.faint)
+                                    .child("system default")
                             })),
                     );
                 }
                 let other = extension.clone();
                 choices = choices.child(
                     h_flex().pt_1().child(
-                        Button::new(gpui_kit::ElementId::Name(format!("other-app-{extension}").into()))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::FolderOpen)
-                            .label(tr(language, "Other app…", "Другое приложение…"))
-                            .on_click(cx.listener(move |this, _, _, cx| this.choose_other_app(other.clone(), cx))),
+                        Button::new(gpui_kit::ElementId::Name(
+                            format!("other-app-{extension}").into(),
+                        ))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::FolderOpen)
+                        .label(tr(language, "Other app…", "Другое приложение…"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.choose_other_app(other.clone(), cx)
+                        })),
                     ),
                 );
                 list = list.child(choices);
@@ -3156,7 +3922,12 @@ impl SettingsWindow {
     }
 
     /// Shortcut changes apply at once, like Default apps.
-    pub(crate) fn set_shortcut(&mut self, id: &'static str, keys: Option<String>, cx: &mut Context<Self>) {
+    pub(crate) fn set_shortcut(
+        &mut self,
+        id: &'static str,
+        keys: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let previous = self.original.keymap.clone();
         let mut candidate = self.draft.keymap.clone();
         match &keys {
@@ -3169,7 +3940,9 @@ impl SettingsWindow {
         }
         // Recording and resetting both refuse a shortcut another command uses.
         let mac = cx.platform_info().is_mac();
-        let command = crate::keymap::commands().into_iter().find(|command| command.id == id);
+        let command = crate::keymap::commands()
+            .into_iter()
+            .find(|command| command.id == id);
         if let Some(command) = command {
             for wanted in crate::keymap::effective(&command, &candidate, mac) {
                 let taken = crate::keymap::clashes(id, &wanted, &candidate, mac);
@@ -3208,7 +3981,12 @@ impl SettingsWindow {
     /// The recorder: the next key press becomes the shortcut.
     /// The recorder: keys pressed in a row form a sequence (like Zed's
     /// `cmd-k cmd-s`). A short pause, or a third key, commits it.
-    fn record_key(&mut self, event: &gpui_kit::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn record_key(
+        &mut self,
+        event: &gpui_kit::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         const MAX_STEPS: usize = 3;
         if self.recording.is_none() {
             return;
@@ -3240,7 +4018,9 @@ impl SettingsWindow {
                 }
                 let generation = self.record_generation;
                 cx.spawn_in(window, async move |this, cx| {
-                    cx.background_executor().timer(std::time::Duration::from_millis(900)).await;
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(900))
+                        .await;
                     let _ = this.update_in(cx, |this, window, cx| {
                         if this.record_generation == generation && !this.recorded.is_empty() {
                             this.commit_recording(window, cx);
@@ -3294,7 +4074,9 @@ impl SettingsWindow {
             .join(", ");
         let chip = if self.recording == Some(id) {
             h_flex()
-                .id(gpui_kit::ElementId::Name(format!("ext-recorder-{id}").into()))
+                .id(gpui_kit::ElementId::Name(
+                    format!("ext-recorder-{id}").into(),
+                ))
                 .track_focus(&self.recorder_focus)
                 .on_key_down(cx.listener(Self::record_key))
                 .px_2()
@@ -3306,7 +4088,10 @@ impl SettingsWindow {
                 .child(if self.recorded.is_empty() {
                     tr(language, "Press keys…", "Нажмите…").to_string()
                 } else {
-                    format!("{} …", crate::keymap::display(&self.recorded.join(" "), mac))
+                    format!(
+                        "{} …",
+                        crate::keymap::display(&self.recorded.join(" "), mac)
+                    )
                 })
                 .into_any_element()
         } else {
@@ -3317,14 +4102,23 @@ impl SettingsWindow {
                 .border_1()
                 .border_color(palette.border)
                 .bg(palette.surface)
-                .child(if keys.is_empty() { "—".to_string() } else { keys })
+                .child(if keys.is_empty() {
+                    "—".to_string()
+                } else {
+                    keys
+                })
                 .into_any_element()
         };
         h_flex()
             .gap_2()
             .items_center()
             .text_xs()
-            .child(div().flex_1().text_color(if enabled { palette.text } else { palette.faint }).child(command.label))
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(if enabled { palette.text } else { palette.faint })
+                    .child(command.label),
+            )
             .child(chip)
             .child(
                 Button::new(gpui_kit::ElementId::Name(format!("ext-record-{id}").into()))
@@ -3353,7 +4147,12 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    fn render_hotkeys(&mut self, palette: Palette, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_hotkeys(
+        &mut self,
+        palette: Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let language = self.draft.language;
         let mac = cx.platform_info().is_mac();
         let query = self.hotkey_query.read(cx).value().to_lowercase();
@@ -3367,8 +4166,19 @@ impl SettingsWindow {
         let mut group = "";
         for command in crate::keymap::commands() {
             let keys = crate::keymap::effective(&command, &overrides, mac);
-            let shown: Vec<String> = keys.iter().map(|keys| crate::keymap::display(keys, mac)).collect();
-            let haystack = format!("{} {} {} {} {}", command.label, command.id, command.group, keys.join(" "), shown.join(" ")).to_lowercase();
+            let shown: Vec<String> = keys
+                .iter()
+                .map(|keys| crate::keymap::display(keys, mac))
+                .collect();
+            let haystack = format!(
+                "{} {} {} {} {}",
+                command.label,
+                command.id,
+                command.group,
+                keys.join(" "),
+                shown.join(" ")
+            )
+            .to_lowercase();
             if !query.is_empty() && !haystack.contains(&query) {
                 continue;
             }
@@ -3408,13 +4218,25 @@ impl SettingsWindow {
                     .text_xs()
                     .text_color(palette.accent)
                     .child(if self.recorded.is_empty() {
-                        tr(language, "Press a shortcut or a sequence · Esc cancel · ⌫ remove", "Нажмите сочетание или последовательность · Esc отмена · ⌫ убрать").to_string()
+                        tr(
+                            language,
+                            "Press a shortcut or a sequence · Esc cancel · ⌫ remove",
+                            "Нажмите сочетание или последовательность · Esc отмена · ⌫ убрать",
+                        )
+                        .to_string()
                     } else {
-                        format!("{} …", crate::keymap::display(&self.recorded.join(" "), mac))
+                        format!(
+                            "{} …",
+                            crate::keymap::display(&self.recorded.join(" "), mac)
+                        )
                     })
                     .into_any_element()
             } else if shown.is_empty() {
-                div().text_xs().text_color(palette.faint).child(tr(language, "Not bound", "Не назначено")).into_any_element()
+                div()
+                    .text_xs()
+                    .text_color(palette.faint)
+                    .child(tr(language, "Not bound", "Не назначено"))
+                    .into_any_element()
             } else {
                 h_flex()
                     .gap_1()
@@ -3445,16 +4267,29 @@ impl SettingsWindow {
                             .flex_shrink_0()
                             .child(div().text_sm().child(command.label))
                             .children((!clash.is_empty()).then(|| {
-                                div().text_size(px(10.)).text_color(palette.video).child(format!("Conflicts with {}", clash.join(", ")))
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(palette.video)
+                                    .child(format!("Conflicts with {}", clash.join(", ")))
                             })),
                     )
                     .child(div().flex_1().min_w_0().child(chips))
-                    .child(div().w(px(90.)).text_size(px(10.)).text_color(palette.faint).child(command.context))
+                    .child(
+                        div()
+                            .w(px(90.))
+                            .text_size(px(10.))
+                            .text_color(palette.faint)
+                            .child(command.context),
+                    )
                     .child(
                         div()
                             .w(px(52.))
                             .text_size(px(10.))
-                            .text_color(if custom { palette.accent } else { palette.faint })
+                            .text_color(if custom {
+                                palette.accent
+                            } else {
+                                palette.faint
+                            })
                             .child(if custom { "User" } else { "Default" }),
                     )
                     .child(
@@ -3476,7 +4311,9 @@ impl SettingsWindow {
                             .xsmall()
                             .icon(IconName::RotateCcw)
                             .tooltip(tr(language, "Reset to default", "Сбросить"))
-                            .on_click(cx.listener(move |this, _, _, cx| this.set_shortcut(id, None, cx)))
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.set_shortcut(id, None, cx)),
+                            )
                             .into_any_element()
                     } else {
                         div().w(px(24.)).into_any_element()
@@ -3485,13 +4322,17 @@ impl SettingsWindow {
         }
 
         // Shortcuts that come with GPUI Kit components (inputs, lists, dialogs).
-        let ours: std::collections::HashSet<&str> =
-            crate::keymap::commands().iter().map(|command| (command.action)().name()).collect();
+        let ours: std::collections::HashSet<&str> = crate::keymap::commands()
+            .iter()
+            .map(|command| (command.action)().name())
+            .collect();
         let mut builtin: Vec<(String, String, String)> = cx
             .key_bindings()
             .borrow()
             .bindings()
-            .filter(|binding| !gpui_kit::is_no_action(binding.action()) && !ours.contains(binding.action().name()))
+            .filter(|binding| {
+                !gpui_kit::is_no_action(binding.action()) && !ours.contains(binding.action().name())
+            })
             .map(|binding| {
                 let keys = binding
                     .keystrokes()
@@ -3499,11 +4340,21 @@ impl SettingsWindow {
                     .map(|stroke| crate::keymap::keystroke_text(stroke.inner()))
                     .collect::<Vec<_>>()
                     .join(" ");
-                let context = binding.predicate().map(|predicate| predicate.to_string()).unwrap_or_default();
-                (binding.action().name().to_string(), crate::keymap::display(&keys, mac), context)
+                let context = binding
+                    .predicate()
+                    .map(|predicate| predicate.to_string())
+                    .unwrap_or_default();
+                (
+                    binding.action().name().to_string(),
+                    crate::keymap::display(&keys, mac),
+                    context,
+                )
             })
             .filter(|(action, keys, context)| {
-                query.is_empty() || format!("{action} {keys} {context}").to_lowercase().contains(&query)
+                query.is_empty()
+                    || format!("{action} {keys} {context}")
+                        .to_lowercase()
+                        .contains(&query)
             })
             .collect();
         builtin.sort();
@@ -3602,7 +4453,8 @@ impl SettingsWindow {
         if line.is_empty() {
             return;
         }
-        self.shell_input.update(cx, |input, cx| input.set_value("", window, cx));
+        self.shell_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
         if line == "cls" {
             self.shell_output.clear();
         } else {
@@ -3621,8 +4473,19 @@ impl SettingsWindow {
         let output = self.shell_output.iter().map(|(command, output)| {
             v_flex()
                 .gap_0p5()
-                .child(div().text_color(palette.accent).child(format!("› {command}")))
-                .when(!output.is_empty(), |entry| entry.child(div().text_color(palette.text).whitespace_normal().child(output.clone())))
+                .child(
+                    div()
+                        .text_color(palette.accent)
+                        .child(format!("› {command}")),
+                )
+                .when(!output.is_empty(), |entry| {
+                    entry.child(
+                        div()
+                            .text_color(palette.text)
+                            .whitespace_normal()
+                            .child(output.clone()),
+                    )
+                })
         });
         v_flex()
             .p_5()
@@ -3645,6 +4508,15 @@ impl SettingsWindow {
                             .checked(self.draft.developer.show_console)
                             .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                 this.draft.developer.show_console = *checked;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Switch::new("developer-fps-counter")
+                            .label(tr(language, "Show FPS counter", "Показывать счётчик FPS"))
+                            .checked(self.draft.developer.show_fps_counter)
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.draft.developer.show_fps_counter = *checked;
                                 cx.notify();
                             })),
                     )
@@ -3693,7 +4565,11 @@ impl SettingsWindow {
                 "reduce-motion",
                 IconName::Wind,
                 tr(language, "Reduce motion", "Уменьшить движение"),
-                tr(language, "Dialogs, menus and sliders appear without animation.", "Диалоги, меню и ползунки появляются без анимации."),
+                tr(
+                    language,
+                    "Dialogs, menus and sliders appear without animation.",
+                    "Диалоги, меню и ползунки появляются без анимации.",
+                ),
                 a11y.reduce_motion,
                 system.reduce_motion,
                 |settings, value| settings.reduce_motion = value,
@@ -3702,7 +4578,11 @@ impl SettingsWindow {
                 "high-contrast",
                 IconName::Contrast,
                 tr(language, "High contrast", "Высокий контраст"),
-                tr(language, "Brighter secondary text, visible borders, solid panels.", "Яркий вторичный текст, заметные рамки, плотные панели."),
+                tr(
+                    language,
+                    "Brighter secondary text, visible borders, solid panels.",
+                    "Яркий вторичный текст, заметные рамки, плотные панели.",
+                ),
                 a11y.high_contrast,
                 system.increase_contrast,
                 |settings, value| settings.high_contrast = value,
@@ -3711,7 +4591,11 @@ impl SettingsWindow {
                 "reduce-transparency",
                 IconName::Layers,
                 tr(language, "Reduce transparency", "Уменьшить прозрачность"),
-                tr(language, "The window stays opaque even if Appearance makes panels see-through.", "Окно непрозрачное, даже если в Appearance включена прозрачность."),
+                tr(
+                    language,
+                    "The window stays opaque even if Appearance makes panels see-through.",
+                    "Окно непрозрачное, даже если в Appearance включена прозрачность.",
+                ),
                 a11y.reduce_transparency,
                 system.reduce_transparency,
                 |settings, value| settings.reduce_transparency = value,
@@ -3720,7 +4604,11 @@ impl SettingsWindow {
                 "text-contrast",
                 IconName::Type,
                 tr(language, "Text contrast", "Контраст текста"),
-                tr(language, "Names get an outline of the opposite color: dark text a white edge, light text a dark one.", "Имена получают обводку противоположного цвета: тёмный текст — белую, светлый — тёмную."),
+                tr(
+                    language,
+                    "Names get an outline of the opposite color: dark text a white edge, light text a dark one.",
+                    "Имена получают обводку противоположного цвета: тёмный текст — белую, светлый — тёмную.",
+                ),
                 a11y.text_contrast,
                 system.increase_contrast,
                 |settings, value| settings.text_contrast = value,
@@ -3729,7 +4617,11 @@ impl SettingsWindow {
                 "shimmer",
                 IconName::Sparkles,
                 tr(language, "Shimmer", "Мерцание"),
-                tr(language, "Loading text gently pulses. Always off while Reduce motion is on.", "Текст загрузки мягко пульсирует. Всегда выключено при «Уменьшить движение»."),
+                tr(
+                    language,
+                    "Loading text gently pulses. Always off while Reduce motion is on.",
+                    "Текст загрузки мягко пульсирует. Всегда выключено при «Уменьшить движение».",
+                ),
                 a11y.shimmer,
                 !system.reduce_motion,
                 |settings, value| settings.shimmer = value,
@@ -3738,49 +4630,66 @@ impl SettingsWindow {
         let mut card_rows = v_flex().gap_4();
         for (id, icon, label, hint, value, from_os, set) in rows {
             let choices = [
-                (Toggle::System, tr(language, "System", "Как в системе"), IconName::Monitor),
+                (
+                    Toggle::System,
+                    tr(language, "System", "Как в системе"),
+                    IconName::Monitor,
+                ),
                 (Toggle::On, tr(language, "On", "Вкл."), IconName::Check),
                 (Toggle::Off, tr(language, "Off", "Выкл."), IconName::X),
             ];
-            card_rows = card_rows.child(
-                v_flex()
-                    .gap_1p5()
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .items_center()
-                            .child(Icon::new(icon).small().text_color(palette.accent))
-                            .child(div().flex_1().text_sm().child(label))
-                            .child(h_flex().gap_1().children(choices.map(|(choice, text, choice_icon)| {
-                                option_button(
-                                    gpui_kit::ElementId::Name(format!("{id}-{text}").into()),
-                                    text,
-                                    value == choice,
-                                )
-                                .icon(choice_icon)
-                                .xsmall()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    set(&mut this.draft.accessibility, choice);
-                                    cx.notify();
-                                }))
-                            }))),
-                    )
-                    .child(div().pl(px(28.)).text_xs().text_color(palette.muted).child(format!(
-                        "{hint} {}",
-                        if from_os {
-                            tr(language, "(System: on)", "(Система: вкл.)")
-                        } else {
-                            tr(language, "(System: off)", "(Система: выкл.)")
-                        }
-                    ))),
-            );
+            card_rows =
+                card_rows.child(
+                    v_flex()
+                        .gap_1p5()
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .child(Icon::new(icon).small().text_color(palette.accent))
+                                .child(div().flex_1().text_sm().child(label))
+                                .child(h_flex().gap_1().children(choices.map(
+                                    |(choice, text, choice_icon)| {
+                                        option_button(
+                                            gpui_kit::ElementId::Name(
+                                                format!("{id}-{text}").into(),
+                                            ),
+                                            text,
+                                            value == choice,
+                                        )
+                                        .icon(choice_icon)
+                                        .xsmall()
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                set(&mut this.draft.accessibility, choice);
+                                                cx.notify();
+                                            }),
+                                        )
+                                    },
+                                ))),
+                        )
+                        .child(div().pl(px(28.)).text_xs().text_color(palette.muted).child(
+                            format!(
+                                "{hint} {}",
+                                if from_os {
+                                    tr(language, "(System: on)", "(Система: вкл.)")
+                                } else {
+                                    tr(language, "(System: off)", "(Система: выкл.)")
+                                }
+                            ),
+                        )),
+                );
         }
         v_flex()
             .p_5()
             .gap_4()
             .child(
                 card(palette)
-                    .child(section(IconName::PersonStanding, tr(language, "Accessibility", "Доступность"), palette))
+                    .child(section(
+                        IconName::PersonStanding,
+                        tr(language, "Accessibility", "Доступность"),
+                        palette,
+                    ))
                     .child(note(
                         tr(
                             language,
@@ -3793,13 +4702,23 @@ impl SettingsWindow {
             )
             .child(
                 card(palette)
-                    .child(section(IconName::ALargeSmall, tr(language, "Text size", "Размер текста"), palette))
+                    .child(section(
+                        IconName::ALargeSmall,
+                        tr(language, "Text size", "Размер текста"),
+                        palette,
+                    ))
                     .child(
                         h_flex()
                             .gap_3()
                             .items_center()
                             .child(div().text_xs().text_color(palette.muted).child("A"))
-                            .child(div().flex_1().child(gpui_kit::component::slider::Slider::new(&self.text_scale_slider)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(gpui_kit::component::slider::Slider::new(
+                                        &self.text_scale_slider,
+                                    )),
+                            )
                             .child(div().text_xl().text_color(palette.muted).child("A")),
                     )
                     .child(
@@ -3808,11 +4727,13 @@ impl SettingsWindow {
                             .px(px(18.))
                             .justify_between()
                             .children(TextScale::ALL.map(|scale| {
-                                div()
-                                    .w(px(2.))
-                                    .h(px(6.))
-                                    .rounded_full()
-                                    .bg(if scale == a11y.text_scale { palette.accent } else { palette.border })
+                                div().w(px(2.)).h(px(6.)).rounded_full().bg(
+                                    if scale == a11y.text_scale {
+                                        palette.accent
+                                    } else {
+                                        palette.border
+                                    },
+                                )
                             })),
                     )
                     .child(
@@ -3821,7 +4742,11 @@ impl SettingsWindow {
                             .gap_2()
                             .text_sm()
                             .child(a11y.text_scale.label())
-                            .child(div().text_color(palette.muted).child(format!("{:.0}%", a11y.text_scale.factor() * 100.))),
+                            .child(
+                                div()
+                                    .text_color(palette.muted)
+                                    .child(format!("{:.0}%", a11y.text_scale.factor() * 100.)),
+                            ),
                     )
                     .child(
                         div()
@@ -3829,14 +4754,29 @@ impl SettingsWindow {
                             .rounded_md()
                             .bg(palette.surface)
                             .text_size(px(14. * a11y.text_scale.factor()))
-                            .child(tr(language, "Preview: Documents · 12 items · Today, 10:42", "Пример: Документы · 12 элементов · Сегодня, 10:42")),
+                            .child(tr(
+                                language,
+                                "Preview: Documents · 12 items · Today, 10:42",
+                                "Пример: Документы · 12 элементов · Сегодня, 10:42",
+                            )),
                     )
                     .child(note(
-                        tr(language, "Scales text and controls across the window.", "Масштабирует текст и элементы окна."),
+                        tr(
+                            language,
+                            "Scales text and controls across the window.",
+                            "Масштабирует текст и элементы окна.",
+                        ),
                         palette,
                     )),
             )
-            .child(note(tr(language, "Changes here are applied with Save.", "Изменения применяются кнопкой Save."), palette))
+            .child(note(
+                tr(
+                    language,
+                    "Changes here are applied with Save.",
+                    "Изменения применяются кнопкой Save.",
+                ),
+                palette,
+            ))
             .into_any_element()
     }
 
@@ -3847,7 +4787,11 @@ impl SettingsWindow {
         v_flex()
             .p_5()
             .gap_4()
-            .child(section(IconName::HardDrive, tr(language, "Human sizes", "Размеры файлов"), palette))
+            .child(section(
+                IconName::HardDrive,
+                tr(language, "Human sizes", "Размеры файлов"),
+                palette,
+            ))
             .child(setting_row(
                 tr(language, "Decimal places", "Знаков после запятой"),
                 h_flex().gap_2().children((0..=2).map(|decimals| {
@@ -3896,7 +4840,11 @@ impl SettingsWindow {
                 div().text_sm().child(size_example),
                 palette,
             ))
-            .child(section(IconName::CalendarClock, tr(language, "Date and time", "Дата и время"), palette))
+            .child(section(
+                IconName::CalendarClock,
+                tr(language, "Date and time", "Дата и время"),
+                palette,
+            ))
             .child(setting_row(
                 tr(language, "Date format", "Формат даты"),
                 h_flex()
@@ -3971,7 +4919,6 @@ impl SettingsWindow {
             ))
             .into_any_element()
     }
-
 }
 
 impl Render for SettingsWindow {
@@ -3980,17 +4927,33 @@ impl Render for SettingsWindow {
         let palette = Palette::from_settings(&shared);
         let language = self.draft.language;
         let dirty = self.draft != self.original;
-        let has_conflicts = !crate::keymap::conflicts(&self.draft.keymap, cx.platform_info().is_mac()).is_empty();
+        let has_conflicts =
+            !crate::keymap::conflicts(&self.draft.keymap, cx.platform_info().is_mac()).is_empty();
         let tabs = [
-            (IconName::SlidersHorizontal, tr(language, "General", "Основные")),
+            (
+                IconName::SlidersHorizontal,
+                tr(language, "General", "Основные"),
+            ),
             (IconName::Palette, tr(language, "Appearance", "Оформление")),
             (IconName::Puzzle, tr(language, "Extensions", "Расширения")),
             (IconName::Ruler, tr(language, "Formats", "Форматы")),
             (IconName::Trash, tr(language, "Deletion", "Удаление")),
-            (IconName::AppWindow, tr(language, "Default apps", "Приложения")),
-            (IconName::Keyboard, tr(language, "Hotkeys", "Горячие клавиши")),
-            (IconName::PersonStanding, tr(language, "Accessibility", "Доступность")),
-            (IconName::SquareTerminal, tr(language, "Developer", "Разработчик")),
+            (
+                IconName::AppWindow,
+                tr(language, "Default apps", "Приложения"),
+            ),
+            (
+                IconName::Keyboard,
+                tr(language, "Hotkeys", "Горячие клавиши"),
+            ),
+            (
+                IconName::PersonStanding,
+                tr(language, "Accessibility", "Доступность"),
+            ),
+            (
+                IconName::SquareTerminal,
+                tr(language, "Developer", "Разработчик"),
+            ),
             (IconName::Volume2, tr(language, "Sound", "Звук")),
             (IconName::HardDrive, tr(language, "Storage", "Хранилище")),
         ];
@@ -4067,13 +5030,19 @@ impl Render for SettingsWindow {
                                 .small()
                                 .icon(IconName::PanelTop)
                                 .label(tr(language, "Open in tab", "Открыть во вкладке"))
-                                .tooltip(tr(language, "Keep Settings open beside your files", "Держать настройки открытыми рядом с файлами"))
+                                .tooltip(tr(
+                                    language,
+                                    "Keep Settings open beside your files",
+                                    "Держать настройки открытыми рядом с файлами",
+                                ))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     // Unsaved edits are not lost: the tab starts from this draft.
                                     let draft = this.draft.clone();
                                     this.dismiss(window, cx);
-                                    PENDING_DRAFT.with(|pending| *pending.borrow_mut() = Some(draft));
-                                    window.dispatch_action(Box::new(crate::app::OpenSettingsTab), cx);
+                                    PENDING_DRAFT
+                                        .with(|pending| *pending.borrow_mut() = Some(draft));
+                                    window
+                                        .dispatch_action(Box::new(crate::app::OpenSettingsTab), cx);
                                 })),
                         )
                         .child(
@@ -4081,7 +5050,9 @@ impl Render for SettingsWindow {
                                 .ghost()
                                 .small()
                                 .label(tr(language, "Close", "Закрыть"))
-                                .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx))),
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.dismiss(window, cx)),
+                                ),
                         )
                     }),
             )
@@ -4093,13 +5064,19 @@ impl Render for SettingsWindow {
                     .child({
                         // Scrolls when the unfolded extensions push the
                         // last sections past the bottom of the modal.
-                        let items = v_flex().p_3().gap_1().children(tabs.into_iter().enumerate().map(|(index, (icon, label))| {
-                            if index == EXTENSIONS_TAB {
-                                self.extensions_menu(icon, label, palette, cx)
-                            } else {
-                                self.section_menu_item(index, icon, label, palette, cx)
-                            }
-                        }));
+                        let items =
+                            v_flex()
+                                .p_3()
+                                .gap_1()
+                                .children(tabs.into_iter().enumerate().map(
+                                    |(index, (icon, label))| {
+                                        if index == EXTENSIONS_TAB {
+                                            self.extensions_menu(icon, label, palette, cx)
+                                        } else {
+                                            self.section_menu_item(index, icon, label, palette, cx)
+                                        }
+                                    },
+                                ));
                         #[cfg(test)]
                         let items = items.debug_selector(|| "settings-menu-items".into());
                         div()
@@ -4199,7 +5176,11 @@ impl Render for SettingsWindow {
                             .label(tr(language, "Save", "Сохранить"))
                             .disabled(!dirty || has_conflicts)
                             .tooltip(if has_conflicts {
-                                tr(language, "Fix the hotkey conflicts first", "Сначала исправьте конфликты сочетаний")
+                                tr(
+                                    language,
+                                    "Fix the hotkey conflicts first",
+                                    "Сначала исправьте конфликты сочетаний",
+                                )
                             } else if !dirty {
                                 tr(language, "No changes to save", "Нет изменений")
                             } else {
@@ -4281,7 +5262,6 @@ pub fn open_settings_dialog(
     });
 }
 
-
 /// Wraps a footer button so tests can find and click it.
 fn footer_button(_selector: &'static str, button: Button) -> AnyElement {
     let wrapper = div().child(button);
@@ -4300,20 +5280,33 @@ struct PreviewItem {
 
 impl PreviewItem {
     fn icon(&self, manifest: &files_sdk::Manifest) -> Icon {
-        self.icon.clone().map_or_else(|| crate::extensions::icon_of(manifest), Icon::new)
+        self.icon
+            .clone()
+            .map_or_else(|| crate::extensions::icon_of(manifest), Icon::new)
     }
 }
 
 /// What each extension adds to context menus (its SDK items included).
 fn menu_preview(manifest: &'static files_sdk::Manifest) -> Vec<PreviewItem> {
-    let item = |label, icon: Option<IconName>, children: Vec<(&'static str, IconName)>| PreviewItem { label, icon, children };
+    let item =
+        |label, icon: Option<IconName>, children: Vec<(&'static str, IconName)>| PreviewItem {
+            label,
+            icon,
+            children,
+        };
     let mut items = match manifest.id {
         "open-with" => vec![item(
             "Open With",
             None,
-            vec![("Default Application", IconName::SquareArrowOutUpRight), ("Choose Application…", IconName::LayoutGrid)],
+            vec![
+                ("Default Application", IconName::SquareArrowOutUpRight),
+                ("Choose Application…", IconName::LayoutGrid),
+            ],
         )],
-        "archives" => vec![item("Compress…", Some(IconName::FileArchive), vec![]), item("Extract…", Some(IconName::FolderOpen), vec![])],
+        "archives" => vec![
+            item("Compress…", Some(IconName::FileArchive), vec![]),
+            item("Extract…", Some(IconName::FolderOpen), vec![]),
+        ],
         "git" => vec![item(
             "Git",
             None,
@@ -4331,9 +5324,16 @@ fn menu_preview(manifest: &'static files_sdk::Manifest) -> Vec<PreviewItem> {
         "copy" => vec![item(
             "Copy",
             None,
-            vec![("Copy Name", IconName::Copy), ("Copy Path", IconName::Copy), ("Copy File Reference", IconName::Link)],
+            vec![
+                ("Copy Name", IconName::Copy),
+                ("Copy Path", IconName::Copy),
+                ("Copy File Reference", IconName::Link),
+            ],
         )],
-        "ssh" => vec![item("Download to Downloads", Some(IconName::Download), vec![]), item("Refresh", Some(IconName::RefreshCw), vec![])],
+        "ssh" => vec![
+            item("Download to Downloads", Some(IconName::Download), vec![]),
+            item("Refresh", Some(IconName::RefreshCw), vec![]),
+        ],
         "forks" => vec![item("Fork folder", None, vec![])],
         "agents" => vec![item(
             "Open in Agents",
@@ -4348,13 +5348,28 @@ fn menu_preview(manifest: &'static files_sdk::Manifest) -> Vec<PreviewItem> {
         )],
         _ => Vec::new(),
     };
-    items.extend(manifest.menu.iter().map(|menu| item(menu.title, None, vec![])));
+    items.extend(
+        manifest
+            .menu
+            .iter()
+            .map(|menu| item(menu.title, None, vec![])),
+    );
     items
 }
 
 #[cfg(test)]
-pub(crate) fn menu_preview_titles(manifest: &'static files_sdk::Manifest) -> Vec<(&'static str, Vec<&'static str>)> {
-    menu_preview(manifest).into_iter().map(|item| (item.label, item.children.iter().map(|(label, _)| *label).collect())).collect()
+pub(crate) fn menu_preview_titles(
+    manifest: &'static files_sdk::Manifest,
+) -> Vec<(&'static str, Vec<&'static str>)> {
+    menu_preview(manifest)
+        .into_iter()
+        .map(|item| {
+            (
+                item.label,
+                item.children.iter().map(|(label, _)| *label).collect(),
+            )
+        })
+        .collect()
 }
 
 /// The first font choice: whatever the theme uses.
@@ -4362,10 +5377,17 @@ const THEME_FONT: &str = "Theme default";
 
 /// "Theme default", then every system font family, sorted.
 fn font_choices(cx: &App) -> Vec<String> {
-    let mut fonts: Vec<String> = cx.text_system().all_font_names().into_iter().filter(|name| !name.starts_with('.') && !name.trim().is_empty()).collect();
+    let mut fonts: Vec<String> = cx
+        .text_system()
+        .all_font_names()
+        .into_iter()
+        .filter(|name| !name.starts_with('.') && !name.trim().is_empty())
+        .collect();
     fonts.sort_by_key(|name| name.to_lowercase());
     fonts.dedup();
-    std::iter::once(THEME_FONT.to_string()).chain(fonts).collect()
+    std::iter::once(THEME_FONT.to_string())
+        .chain(fonts)
+        .collect()
 }
 
 /// Settings → Storage is the last section.
@@ -4375,10 +5397,16 @@ const STORAGE_TAB: usize = 10;
 const STORAGE_LIMITS: [u32; 8] = [256, 512, 1024, 2048, 5120, 10240, 20480, 0];
 
 fn storage_step(megabytes: u32) -> usize {
-    STORAGE_LIMITS.iter().position(|step| *step == megabytes).unwrap_or_else(|| {
-        // A hand-edited value: the nearest step below it.
-        STORAGE_LIMITS.iter().rposition(|step| *step != 0 && *step <= megabytes).unwrap_or(0)
-    })
+    STORAGE_LIMITS
+        .iter()
+        .position(|step| *step == megabytes)
+        .unwrap_or_else(|| {
+            // A hand-edited value: the nearest step below it.
+            STORAGE_LIMITS
+                .iter()
+                .rposition(|step| *step != 0 && *step <= megabytes)
+                .unwrap_or(0)
+        })
 }
 
 fn limit_label(megabytes: u32, language: crate::settings::Language) -> String {
@@ -4458,7 +5486,10 @@ fn card(palette: Palette) -> gpui_kit::Div {
 
 /// Text in Settings can be selected and copied (⌘C), like a document.
 fn selectable(text: &'static str) -> gpui_kit::base::SelectableText {
-    gpui_kit::base::SelectableText::new(gpui_kit::ElementId::Name(format!("settings-text-{text}").into()), text)
+    gpui_kit::base::SelectableText::new(
+        gpui_kit::ElementId::Name(format!("settings-text-{text}").into()),
+        text,
+    )
 }
 
 fn note(label: &'static str, palette: Palette) -> AnyElement {
@@ -4479,11 +5510,30 @@ mod storage_tests {
         for (index, megabytes) in STORAGE_LIMITS.iter().enumerate() {
             assert_eq!(storage_step(*megabytes), index);
         }
-        assert_eq!(storage_step(3000), 3, "a hand-edited value snaps to the step below");
-        assert_eq!(limit_label(1024, crate::settings::Language::English), "1 GB");
-        assert_eq!(limit_label(512, crate::settings::Language::English), "512 MB");
-        assert_eq!(limit_label(0, crate::settings::Language::Russian), "Без лимита");
-        assert_eq!(files_count(22, crate::settings::Language::Russian), "22 файла");
-        assert_eq!(files_count(11, crate::settings::Language::Russian), "11 файлов");
+        assert_eq!(
+            storage_step(3000),
+            3,
+            "a hand-edited value snaps to the step below"
+        );
+        assert_eq!(
+            limit_label(1024, crate::settings::Language::English),
+            "1 GB"
+        );
+        assert_eq!(
+            limit_label(512, crate::settings::Language::English),
+            "512 MB"
+        );
+        assert_eq!(
+            limit_label(0, crate::settings::Language::Russian),
+            "Без лимита"
+        );
+        assert_eq!(
+            files_count(22, crate::settings::Language::Russian),
+            "22 файла"
+        );
+        assert_eq!(
+            files_count(11, crate::settings::Language::Russian),
+            "11 файлов"
+        );
     }
 }

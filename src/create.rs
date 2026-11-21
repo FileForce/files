@@ -20,10 +20,12 @@ pub fn invalid_name(name: &str) -> Option<String> {
     if trimmed == "." || trimmed == ".." {
         return Some(format!("\"{trimmed}\" is reserved"));
     }
-    if let Some(character) = name
-        .chars()
-        .find(|character| matches!(character, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || character.is_control())
-    {
+    if let Some(character) = name.chars().find(|character| {
+        matches!(
+            character,
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+        ) || character.is_control()
+    }) {
         return Some(if character.is_control() {
             "Names cannot contain control characters".to_string()
         } else {
@@ -33,7 +35,11 @@ pub fn invalid_name(name: &str) -> Option<String> {
     if name.ends_with('.') || name.ends_with(' ') {
         return Some("Names cannot end with a dot or a space".to_string());
     }
-    let stem = trimmed.split('.').next().unwrap_or(trimmed).to_ascii_uppercase();
+    let stem = trimmed
+        .split('.')
+        .next()
+        .unwrap_or(trimmed)
+        .to_ascii_uppercase();
     if WINDOWS_RESERVED.contains(&stem.as_str()) {
         return Some(format!("\"{trimmed}\" is reserved on Windows"));
     }
@@ -53,7 +59,10 @@ pub fn create(dir: &Path, name: &str, folder: bool) -> io::Result<PathBuf> {
         fs::create_dir(&path)?;
     } else {
         // `create_new` fails atomically if something appeared meanwhile.
-        OpenOptions::new().write(true).create_new(true).open(&path)?;
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
     }
     Ok(path)
 }
@@ -75,7 +84,11 @@ pub fn name_selection(name: &str, folder: bool) -> std::ops::Range<usize> {
 
 /// A default name that is still free, e.g. `untitled folder 2`.
 pub fn free_name(dir: &Path, folder: bool) -> String {
-    let (stem, extension) = if folder { ("untitled folder", "") } else { ("untitled", ".txt") };
+    let (stem, extension) = if folder {
+        ("untitled folder", "")
+    } else {
+        ("untitled", ".txt")
+    };
     (1..)
         .map(|index| {
             if index == 1 {
@@ -94,10 +107,18 @@ mod tests {
 
     #[test]
     fn rejects_names_invalid_on_any_platform() {
-        for name in ["", "  ", ".", "..", "a/b", "a\\b", "a:b", "what?", "con", "LPT1.txt", "dot.", "space "] {
+        for name in [
+            "", "  ", ".", "..", "a/b", "a\\b", "a:b", "what?", "con", "LPT1.txt", "dot.", "space ",
+        ] {
             assert!(invalid_name(name).is_some(), "{name:?} should be rejected");
         }
-        for name in ["notes.md", "Report 2026", ".gitignore", "console.log", "файл.txt"] {
+        for name in [
+            "notes.md",
+            "Report 2026",
+            ".gitignore",
+            "console.log",
+            "файл.txt",
+        ] {
             assert_eq!(invalid_name(name), None, "{name:?} should be accepted");
         }
     }
@@ -110,7 +131,11 @@ mod tests {
         assert_eq!(name_selection("archive.tar.gz", false), 0..11);
         assert_eq!(name_selection(".gitignore", false), 0..10);
         assert_eq!(name_selection("README", false), 0..6);
-        assert_eq!(name_selection("файл.txt", false), 0.."файл".len(), "byte offsets");
+        assert_eq!(
+            name_selection("файл.txt", false),
+            0.."файл".len(),
+            "byte offsets"
+        );
     }
 
     #[test]
@@ -129,6 +154,9 @@ mod tests {
         let error = create(&dir, "notes.txt", false).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
-        assert_eq!(create(&dir, "a/b", false).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            create(&dir, "a/b", false).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }

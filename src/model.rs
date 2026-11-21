@@ -17,6 +17,16 @@ impl ViewMode {
             Self::Dual => "Dual",
         }
     }
+
+    pub fn icon(self) -> gpui_kit::assets::IconName {
+        match self {
+            Self::Expressive => gpui_kit::assets::IconName::LayoutGrid,
+            Self::Pro => gpui_kit::assets::IconName::Rows3,
+            Self::Dual => gpui_kit::assets::IconName::Columns2,
+        }
+    }
+
+    pub const ALL: [Self; 3] = [Self::Expressive, Self::Pro, Self::Dual];
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -38,7 +48,11 @@ pub fn set_system_dark(dark: bool) {
 impl ColorScheme {
     /// ⌘⇧T: flips the theme that is showing (System becomes the opposite).
     pub fn toggled(self) -> Self {
-        if self.is_dark() { Self::Light } else { Self::Dark }
+        if self.is_dark() {
+            Self::Light
+        } else {
+            Self::Dark
+        }
     }
 
     pub fn is_dark(self) -> bool {
@@ -85,6 +99,8 @@ pub enum Location {
     Trash,
     /// Every file carrying one macOS Finder tag (interned name).
     Tag(u32),
+    /// Every video, photo, script, application or duplicate (see `smart_folders`).
+    Smart(files_ext_smart_folders::SmartFolder),
     Dir(u32),
 }
 
@@ -104,7 +120,7 @@ impl Location {
     pub fn path(self) -> Option<PathBuf> {
         match self {
             Self::Dir(id) => Some(fs_index::dir_path(id)),
-            Self::Recents | Self::Remote(_) | Self::Trash | Self::Tag(_) => None,
+            Self::Recents | Self::Remote(_) | Self::Trash | Self::Tag(_) | Self::Smart(_) => None,
         }
     }
 
@@ -156,11 +172,14 @@ impl Location {
                 }
             }
             Self::Tag(id) => tag_names::name(id),
+            Self::Smart(folder) => folder.label(),
             // A fork's top folder is labelled with the fork's name.
-            Self::Dir(id) => match crate::forks::root_of(&fs_index::dir_path(id)).and_then(crate::forks::name) {
-                Some(name) => Box::leak(name.into_boxed_str()),
-                None => fs_index::dir_label(id),
-            },
+            Self::Dir(id) => {
+                match crate::forks::root_of(&fs_index::dir_path(id)).and_then(crate::forks::name) {
+                    Some(name) => Box::leak(name.into_boxed_str()),
+                    None => fs_index::dir_label(id),
+                }
+            }
         }
     }
 
@@ -198,7 +217,6 @@ impl Location {
         }
         path.parent().map(Self::from_path)
     }
-
 }
 
 pub use files_sdk::Endpoint as SshConnection;
@@ -236,10 +254,8 @@ impl FileKind {
 
     pub(crate) fn from_extension(extension: &str) -> Self {
         match extension.to_ascii_lowercase().as_str() {
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "heic" | "heif" | "hif" | "avif"
-            | "svg" | "ico" => {
-                Self::Image
-            }
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "heic" | "heif" | "hif"
+            | "avif" | "svg" | "ico" => Self::Image,
             "mov" | "mp4" | "mkv" | "avi" | "webm" | "m4v" => Self::Video,
             "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "numbers" | "pages"
             | "odt" | "ods" | "rtf" | "epub" => Self::Document,
@@ -250,7 +266,8 @@ impl FileKind {
             "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "crate" | "dmg"
             | "iso" | "jar" => Self::Archive,
             "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "aiff" => Self::Audio,
-            "exe" | "msi" | "appimage" | "app" | "bat" | "cmd" | "com" | "scr" | "pkg" | "mpkg" | "prefpane" | "appex" | "bundle" | "plugin" | "kext" | "saver" => Self::Application,
+            "exe" | "msi" | "appimage" | "app" | "bat" | "cmd" | "com" | "scr" | "pkg" | "mpkg"
+            | "prefpane" | "appex" | "bundle" | "plugin" | "kext" | "saver" => Self::Application,
             "xcodeproj" | "xcworkspace" | "playground" | "swiftpm" => Self::Code,
             "photoslibrary" => Self::Image,
             "rtfd" | "scptd" => Self::Document,
@@ -284,9 +301,12 @@ pub struct FileEntry {
     pub target: Option<Location>,
     pub modified: gpui_kit::SharedString,
     pub modified_at: Option<std::time::SystemTime>,
+    /// When the file was made (where the file system keeps it).
+    pub created: gpui_kit::SharedString,
+    pub created_at: Option<std::time::SystemTime>,
     pub bytes: u64,
     pub metadata: gpui_kit::SharedString,
-    pub tags: &'static [&'static str],
+    pub tags: Vec<String>,
     pub preview: Option<&'static str>,
     pub path: Option<std::sync::Arc<Path>>,
     pub cloud: CloudState,
@@ -315,22 +335,26 @@ impl FileEntry {
     }
 }
 
-static RECENTS_FOLDER: std::sync::LazyLock<Entry> = std::sync::LazyLock::new(|| FileEntry {
-    id: "folder-recents".into(),
-    name: "Recents".into(),
-    kind: FileKind::Folder,
-    parent: Location::Recents,
-    target: Some(Location::Recents),
-    modified: "—".into(),
-    modified_at: None,
-    bytes: 0,
-    metadata: "Recently modified files".into(),
-    tags: &[],
-    preview: None,
-    path: None,
-    cloud: CloudState::Local,
-}
-.shared());
+static RECENTS_FOLDER: std::sync::LazyLock<Entry> = std::sync::LazyLock::new(|| {
+    FileEntry {
+        id: "folder-recents".into(),
+        name: "Recents".into(),
+        kind: FileKind::Folder,
+        parent: Location::Recents,
+        target: Some(Location::Recents),
+        modified: "—".into(),
+        modified_at: None,
+        created: "—".into(),
+        created_at: None,
+        bytes: 0,
+        metadata: "Recently modified files".into(),
+        tags: Vec::new(),
+        preview: None,
+        path: None,
+        cloud: CloudState::Local,
+    }
+    .shared()
+});
 
 /// Mounted volumes other than the startup disk: USB drives, network shares,
 /// disk images. On macOS these live in `/Volumes`; on Linux in `/media/$USER`
@@ -339,7 +363,9 @@ pub fn mounted_volumes() -> Vec<PathBuf> {
     // Windows: every drive letter but the system one (USB sticks, DVDs,
     // mounted images, network drives).
     if cfg!(windows) {
-        let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_ascii_uppercase();
+        let system = std::env::var("SystemDrive")
+            .unwrap_or_else(|_| "C:".into())
+            .to_ascii_uppercase();
         return ('A'..='Z')
             .map(|letter| format!("{letter}:"))
             .filter(|drive| *drive != system && drive != "A:" && drive != "B:")
@@ -351,7 +377,10 @@ pub fn mounted_volumes() -> Vec<PathBuf> {
     let roots = if cfg!(target_os = "macos") {
         vec![PathBuf::from("/Volumes")]
     } else {
-        vec![PathBuf::from("/media").join(&user), PathBuf::from("/run/media").join(&user)]
+        vec![
+            PathBuf::from("/media").join(&user),
+            PathBuf::from("/run/media").join(&user),
+        ]
     };
     let mut volumes: Vec<PathBuf> = roots
         .iter()
@@ -371,20 +400,46 @@ pub fn mounted_volumes() -> Vec<PathBuf> {
 /// Xcode projects, the Photos library, Keynote/Pages/Numbers documents…
 /// Double-click opens them; Quick Actions → Show Package Contents goes in.
 pub const PACKAGES: [&str; 21] = [
-    "app", "pkg", "mpkg", "bundle", "plugin", "kext", "prefpane", "appex", "saver", "xcodeproj", "xcworkspace", "playground", "swiftpm",
-    "photoslibrary", "musiclibrary", "rtfd", "scptd", "key", "pages", "numbers", "wdgt",
+    "app",
+    "pkg",
+    "mpkg",
+    "bundle",
+    "plugin",
+    "kext",
+    "prefpane",
+    "appex",
+    "saver",
+    "xcodeproj",
+    "xcworkspace",
+    "playground",
+    "swiftpm",
+    "photoslibrary",
+    "musiclibrary",
+    "rtfd",
+    "scptd",
+    "key",
+    "pages",
+    "numbers",
+    "wdgt",
 ];
 
 pub fn is_package(path: &Path) -> bool {
     cfg!(target_os = "macos")
-        && path.extension().is_some_and(|extension| PACKAGES.iter().any(|package| package.eq_ignore_ascii_case(&extension.to_string_lossy())))
+        && path.extension().is_some_and(|extension| {
+            PACKAGES
+                .iter()
+                .any(|package| package.eq_ignore_ascii_case(&extension.to_string_lossy()))
+        })
         && path.is_dir()
 }
 
 /// Disk images the system can mount: ISO and IMG everywhere, DMG on macOS,
 /// VHD/VHDX on Windows.
 pub fn mountable(path: &Path) -> bool {
-    let extension = path.extension().map(|extension| extension.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
     match extension.as_str() {
         "iso" | "img" => true,
         "dmg" | "sparseimage" | "sparsebundle" => cfg!(target_os = "macos"),
@@ -401,7 +456,8 @@ fn mount_point(output: &str) -> Option<PathBuf> {
         if let Some(at) = line.find("/Volumes/") {
             return Some(PathBuf::from(line[at..].trim()));
         }
-        line.split_once(" at ").map(|(_, path)| PathBuf::from(path.trim().trim_end_matches('.')))
+        line.split_once(" at ")
+            .map(|(_, path)| PathBuf::from(path.trim().trim_end_matches('.')))
     })
 }
 
@@ -416,27 +472,52 @@ pub fn mount_image(path: &Path) -> std::io::Result<PathBuf> {
             Ok(text)
         } else {
             let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            Err(std::io::Error::other(if reason.is_empty() { text.trim().to_string() } else { reason }))
+            Err(std::io::Error::other(if reason.is_empty() {
+                text.trim().to_string()
+            } else {
+                reason
+            }))
         }
     };
     if cfg!(target_os = "macos") {
-        let output = run(files_sdk::log::command("/usr/bin/hdiutil").args(["attach", "-readonly"]).arg(path))?;
-        return mount_point(&output).ok_or_else(|| std::io::Error::other("The image has no volume to open"));
+        let output = run(files_sdk::log::command("/usr/bin/hdiutil")
+            .args(["attach", "-readonly"])
+            .arg(path))?;
+        return mount_point(&output)
+            .ok_or_else(|| std::io::Error::other("The image has no volume to open"));
     }
     if cfg!(windows) {
         let quoted = path.display().to_string().replace('\'', "''");
-        let script = format!("$v = Mount-DiskImage -ImagePath '{quoted}' -Access ReadOnly -PassThru | Get-Volume; ($v | Where-Object DriveLetter | Select-Object -First 1).DriveLetter");
-        let letter = run(files_sdk::log::command("powershell").args(["-NoProfile", "-Command", &script]))?;
-        let letter = letter.trim().chars().next().filter(char::is_ascii_alphabetic).ok_or_else(|| std::io::Error::other("Windows mounted the image without a drive letter"))?;
+        let script = format!(
+            "$v = Mount-DiskImage -ImagePath '{quoted}' -Access ReadOnly -PassThru | Get-Volume; ($v | Where-Object DriveLetter | Select-Object -First 1).DriveLetter"
+        );
+        let letter =
+            run(files_sdk::log::command("powershell").args(["-NoProfile", "-Command", &script]))?;
+        let letter = letter
+            .trim()
+            .chars()
+            .next()
+            .filter(char::is_ascii_alphabetic)
+            .ok_or_else(|| {
+                std::io::Error::other("Windows mounted the image without a drive letter")
+            })?;
         return Ok(PathBuf::from(format!("{letter}:\\")));
     }
-    let setup = run(files_sdk::log::command("udisksctl").args(["loop-setup", "-r", "-f"]).arg(path))?;
+    let setup = run(files_sdk::log::command("udisksctl")
+        .args(["loop-setup", "-r", "-f"])
+        .arg(path))?;
     // "Mapped file X as /dev/loop0."
-    let device = setup.split_whitespace().last().map(|device| device.trim_end_matches('.').to_string()).filter(|device| device.starts_with("/dev/")).ok_or_else(|| std::io::Error::other("udisksctl gave no loop device"))?;
+    let device = setup
+        .split_whitespace()
+        .last()
+        .map(|device| device.trim_end_matches('.').to_string())
+        .filter(|device| device.starts_with("/dev/"))
+        .ok_or_else(|| std::io::Error::other("udisksctl gave no loop device"))?;
     // The desktop may mount it by itself; otherwise mount it, or its first partition.
     for _ in 0..10 {
         for candidate in [device.clone(), format!("{device}p1")] {
-            if let Ok(target) = run(files_sdk::log::command("findmnt").args(["-no", "TARGET", &candidate]))
+            if let Ok(target) =
+                run(files_sdk::log::command("findmnt").args(["-no", "TARGET", &candidate]))
                 && !target.trim().is_empty()
             {
                 return Ok(PathBuf::from(target.trim()));
@@ -444,8 +525,12 @@ pub fn mount_image(path: &Path) -> std::io::Result<PathBuf> {
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    let mounted = run(files_sdk::log::command("udisksctl").args(["mount", "-b", &device])).or_else(|_| run(files_sdk::log::command("udisksctl").args(["mount", "-b", &format!("{device}p1")])))?;
-    mount_point(&mounted).ok_or_else(|| std::io::Error::other("udisksctl did not say where it mounted the image"))
+    let mounted = run(files_sdk::log::command("udisksctl").args(["mount", "-b", &device]))
+        .or_else(|_| {
+            run(files_sdk::log::command("udisksctl").args(["mount", "-b", &format!("{device}p1")]))
+        })?;
+    mount_point(&mounted)
+        .ok_or_else(|| std::io::Error::other("udisksctl did not say where it mounted the image"))
 }
 
 /// Ejects a disk, a USB drive or a mounted disk image (unmounts a share).
@@ -456,32 +541,56 @@ pub fn eject(path: &Path) -> std::io::Result<()> {
             Ok(())
         } else {
             let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            Err(std::io::Error::other(if reason.is_empty() { format!("{program} could not eject it") } else { reason }))
+            Err(std::io::Error::other(if reason.is_empty() {
+                format!("{program} could not eject it")
+            } else {
+                reason
+            }))
         }
     };
     let target = path.as_os_str();
     if cfg!(target_os = "macos") {
         // diskutil handles drives and images; hdiutil is the fallback for images.
-        run("/usr/sbin/diskutil", &["eject".as_ref(), target]).or_else(|_| run("/usr/bin/hdiutil", &["detach".as_ref(), target]))
+        run("/usr/sbin/diskutil", &["eject".as_ref(), target])
+            .or_else(|_| run("/usr/bin/hdiutil", &["detach".as_ref(), target]))
     } else if cfg!(windows) {
         // Explorer's own "Eject" verb on the drive.
-        let drive = path.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
-        let script = format!("(New-Object -ComObject Shell.Application).Namespace(17).ParseName('{drive}').InvokeVerb('Eject')");
-        run("powershell", &["-NoProfile".as_ref(), "-Command".as_ref(), script.as_ref()])
+        let drive = path
+            .to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_string();
+        let script = format!(
+            "(New-Object -ComObject Shell.Application).Namespace(17).ParseName('{drive}').InvokeVerb('Eject')"
+        );
+        run(
+            "powershell",
+            &["-NoProfile".as_ref(), "-Command".as_ref(), script.as_ref()],
+        )
     } else {
         // A mounted image: unmount, then free its loop device.
-        let source = files_sdk::log::run("files", files_sdk::log::command("findmnt").args(["-no", "SOURCE"]).arg(path))
-            .ok()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-            .filter(|source| source.starts_with("/dev/loop"));
+        let source = files_sdk::log::run(
+            "files",
+            files_sdk::log::command("findmnt")
+                .args(["-no", "SOURCE"])
+                .arg(path),
+        )
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|source| source.starts_with("/dev/loop"));
         if let Some(source) = source {
-            run("udisksctl", &["unmount".as_ref(), "-b".as_ref(), source.as_ref()])?;
+            run(
+                "udisksctl",
+                &["unmount".as_ref(), "-b".as_ref(), source.as_ref()],
+            )?;
             // /dev/loop0p1 → /dev/loop0.
             let device = match source.rfind('p') {
                 Some(at) if at > "/dev/loo".len() => &source[..at],
                 _ => source.as_str(),
             };
-            let _ = run("udisksctl", &["loop-delete".as_ref(), "-b".as_ref(), device.as_ref()]);
+            let _ = run(
+                "udisksctl",
+                &["loop-delete".as_ref(), "-b".as_ref(), device.as_ref()],
+            );
             return Ok(());
         }
         run("gio", &["mount".as_ref(), "-u".as_ref(), target]).or_else(|_| run("umount", &[target]))
@@ -492,29 +601,43 @@ pub fn eject(path: &Path) -> std::io::Result<()> {
 pub fn user_name() -> &'static str {
     static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     NAME.get_or_init(|| {
-        let from_env = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).ok().filter(|name| !name.trim().is_empty());
+        let from_env = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .ok()
+            .filter(|name| !name.trim().is_empty());
         #[cfg(unix)]
         let from_system = || {
             // SAFETY: getpwuid returns static storage or null; copied out at once.
             unsafe {
                 let entry = libc::getpwuid(libc::getuid());
-                (!entry.is_null()).then(|| std::ffi::CStr::from_ptr((*entry).pw_name).to_string_lossy().into_owned())
+                (!entry.is_null()).then(|| {
+                    std::ffi::CStr::from_ptr((*entry).pw_name)
+                        .to_string_lossy()
+                        .into_owned()
+                })
             }
         };
         #[cfg(not(unix))]
         let from_system = || None::<String>;
-        from_env.or_else(from_system).unwrap_or_else(|| "Local".to_string())
+        from_env
+            .or_else(from_system)
+            .unwrap_or_else(|| "Local".to_string())
     })
 }
 
 /// The first letter of [`user_name`], for the avatar.
 pub fn user_initial() -> String {
-    user_name().chars().next().map_or_else(|| "?".to_string(), |letter| letter.to_uppercase().collect())
+    user_name()
+        .chars()
+        .next()
+        .map_or_else(|| "?".to_string(), |letter| letter.to_uppercase().collect())
 }
 
 pub fn folder_entry(location: Location) -> Option<Entry> {
     match location {
-        Location::Recents | Location::Trash | Location::Tag(_) => Some(RECENTS_FOLDER.clone()),
+        Location::Recents | Location::Trash | Location::Tag(_) | Location::Smart(_) => {
+            Some(RECENTS_FOLDER.clone())
+        }
         Location::Remote(id) => remote::folder(id),
         Location::Dir(_) => fs_index::entry_for_path(&location.path()?),
     }
@@ -526,6 +649,7 @@ pub fn entries(location: Location, query: &str) -> Vec<Entry> {
         Location::Recents => fs_index::recents(),
         Location::Trash => fs_index::trash(),
         Location::Tag(_) => fs_index::tagged(location),
+        Location::Smart(folder) => fs_index::smart(folder),
         Location::Dir(_) => fs_index::list_dir(location),
     };
     rank_entries(candidates, query)
@@ -596,7 +720,9 @@ fn in_cloud_drive(path: &Path) -> bool {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *folders.entry(folder.to_path_buf()).or_insert_with(|| {
         let real = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
-        roots.iter().any(|root| real.starts_with(root) || folder.starts_with(root))
+        roots
+            .iter()
+            .any(|root| real.starts_with(root) || folder.starts_with(root))
     })
 }
 
@@ -630,9 +756,19 @@ pub fn disk_usage(path: &Path) -> Option<DiskUsage> {
 /// Linux pseudo mounts: not disks a user thinks of.
 fn is_system_mount(mount: &Path) -> bool {
     let text = mount.to_string_lossy();
-    ["/System/Volumes/", "/private/var/vm", "/boot", "/snap/", "/run/", "/dev", "/proc", "/sys", "/var/lib/"]
-        .iter()
-        .any(|prefix| text.starts_with(prefix))
+    [
+        "/System/Volumes/",
+        "/private/var/vm",
+        "/boot",
+        "/snap/",
+        "/run/",
+        "/dev",
+        "/proc",
+        "/sys",
+        "/var/lib/",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix))
 }
 
 /// The disks shown in the sidebar: the startup disk, other internal disks,
@@ -640,10 +776,17 @@ fn is_system_mount(mount: &Path) -> bool {
 /// the startup disk; duplicates of one volume are shown once.
 pub fn user_disks() -> Vec<(PathBuf, DiskUsage)> {
     #[cfg(test)]
-    if let Some(disks) = TEST_DISKS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone() {
+    if let Some(disks) = TEST_DISKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    {
         return disks;
     }
-    let mut disks: Vec<(PathBuf, DiskUsage)> = mounted_disks().into_iter().filter(|(mount, usage)| usage.total > 0 && !is_system_mount(mount)).collect();
+    let mut disks: Vec<(PathBuf, DiskUsage)> = mounted_disks()
+        .into_iter()
+        .filter(|(mount, usage)| usage.total > 0 && !is_system_mount(mount))
+        .collect();
     let mut seen = std::collections::HashSet::new();
     disks.retain(|(_, usage)| seen.insert((usage.name.clone(), usage.total)));
     // The startup disk ("/" or C:\) first, then the rest by path.
@@ -653,7 +796,8 @@ pub fn user_disks() -> Vec<(PathBuf, DiskUsage)> {
 
 /// Tests show these disks instead of this computer's.
 #[cfg(test)]
-pub(crate) static TEST_DISKS: std::sync::Mutex<Option<Vec<(PathBuf, DiskUsage)>>> = std::sync::Mutex::new(None);
+pub(crate) static TEST_DISKS: std::sync::Mutex<Option<Vec<(PathBuf, DiskUsage)>>> =
+    std::sync::Mutex::new(None);
 
 fn mounted_disks() -> Vec<(PathBuf, DiskUsage)> {
     use std::sync::{Mutex, OnceLock};
@@ -676,7 +820,11 @@ fn mounted_disks() -> Vec<(PathBuf, DiskUsage)> {
                 let mount = disk.mount_point().to_path_buf();
                 let name = disk.name().to_string_lossy().into_owned();
                 let usage = DiskUsage {
-                    name: if name.is_empty() { mount.display().to_string() } else { name },
+                    name: if name.is_empty() {
+                        mount.display().to_string()
+                    } else {
+                        name
+                    },
                     total: disk.total_space(),
                     available: disk.available_space(),
                 };
@@ -685,7 +833,10 @@ fn mounted_disks() -> Vec<(PathBuf, DiskUsage)> {
             .collect();
         *cache = Some((Instant::now(), disks));
     }
-    cache.as_ref().map(|(_, disks)| disks.clone()).unwrap_or_default()
+    cache
+        .as_ref()
+        .map(|(_, disks)| disks.clone())
+        .unwrap_or_default()
 }
 
 /// Recursive folder size in bytes, computed on background threads.
@@ -759,7 +910,10 @@ pub mod remote {
 
     fn lock() -> std::sync::MutexGuard<'static, State> {
         static STATE: OnceLock<Mutex<State>> = OnceLock::new();
-        STATE.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        STATE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn intern(server: &str, path: &str) -> u32 {
@@ -768,8 +922,13 @@ pub mod remote {
             return *id;
         }
         // Kept until quit: one pair per remote folder visited.
-        let known = state.paths.iter().find(|(known, _)| *known == server).map(|(known, _)| *known);
-        let server: &'static str = known.unwrap_or_else(|| Box::leak(server.to_string().into_boxed_str()));
+        let known = state
+            .paths
+            .iter()
+            .find(|(known, _)| *known == server)
+            .map(|(known, _)| *known);
+        let server: &'static str =
+            known.unwrap_or_else(|| Box::leak(server.to_string().into_boxed_str()));
         let path: &'static str = Box::leak(path.to_string().into_boxed_str());
         let id = state.paths.len() as u32;
         state.paths.push((server, path));
@@ -796,7 +955,13 @@ pub mod remote {
     /// `server` (dis)connected: forget its listings, keep the others'.
     pub fn forget(server: &str) {
         let mut state = lock();
-        let ids: Vec<u32> = state.paths.iter().enumerate().filter(|(_, (known, _))| *known == server).map(|(id, _)| id as u32).collect();
+        let ids: Vec<u32> = state
+            .paths
+            .iter()
+            .enumerate()
+            .filter(|(_, (known, _))| *known == server)
+            .map(|(id, _)| id as u32)
+            .collect();
         for id in ids {
             state.listings.remove(&id);
         }
@@ -813,7 +978,6 @@ pub mod remote {
         matches!(location, Location::Remote(id) if lock().listings.contains_key(&id))
     }
 
-
     pub fn entry(id: &str) -> Option<crate::model::Entry> {
         lock().entries.get(id).cloned()
     }
@@ -829,13 +993,17 @@ pub mod remote {
         if let Some(entry) = entry(&key) {
             return Some(entry);
         }
-        let entry = leak_entry(Location::Remote(id), &RemoteItem {
-            name: label(id).to_string(),
-            is_dir: true,
-            bytes: 0,
-            mode: 0,
-            modified: "—".to_string(),
-        }, path.to_string());
+        let entry = leak_entry(
+            Location::Remote(id),
+            &RemoteItem {
+                name: label(id).to_string(),
+                is_dir: true,
+                bytes: 0,
+                mode: 0,
+                modified: "—".to_string(),
+            },
+            path.to_string(),
+        );
         Some(entry)
     }
 
@@ -855,7 +1023,11 @@ pub mod remote {
 
     /// The remote path behind an entry.
     pub fn entry_path(entry: &FileEntry) -> Option<&str> {
-        entry.id.strip_prefix("ssh:")?.split_once('|').map(|(_, path)| path)
+        entry
+            .id
+            .strip_prefix("ssh:")?
+            .split_once('|')
+            .map(|(_, path)| path)
     }
 
     fn leak_entry(parent: Location, item: &RemoteItem, path: String) -> crate::model::Entry {
@@ -866,10 +1038,18 @@ pub mod remote {
         } else {
             std::path::Path::new(&item.name)
                 .extension()
-                .map_or(FileKind::Text, |extension| FileKind::from_extension(&extension.to_string_lossy()))
+                .map_or(FileKind::Text, |extension| {
+                    FileKind::from_extension(&extension.to_string_lossy())
+                })
         };
         let mode: String = (0..9)
-            .map(|index| if item.mode & (0o400 >> index) == 0 { '-' } else { ['r', 'w', 'x'][index % 3] })
+            .map(|index| {
+                if item.mode & (0o400 >> index) == 0 {
+                    '-'
+                } else {
+                    ['r', 'w', 'x'][index % 3]
+                }
+            })
             .collect();
         let entry = FileEntry {
             id: key.clone().into(),
@@ -879,9 +1059,11 @@ pub mod remote {
             target: item.is_dir.then(|| Location::remote(server, &path)),
             modified: item.modified.clone().into(),
             modified_at: None,
+            created: "—".into(),
+            created_at: None,
             bytes: item.bytes,
             metadata: format!("{} · {mode} · on server", kind.label()).into(),
-            tags: &[],
+            tags: Vec::new(),
             preview: None,
             path: None,
             cloud: CloudState::Local,
@@ -901,7 +1083,9 @@ mod tag_names {
     }
 
     pub fn intern(name: &str) -> u32 {
-        let mut names = names().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut names = names()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(index) = names.iter().position(|known| *known == name) {
             return index as u32;
         }
@@ -910,8 +1094,15 @@ mod tag_names {
     }
 
     pub fn name(id: u32) -> &'static str {
-        names().lock().unwrap_or_else(|poisoned| poisoned.into_inner())[id as usize]
+        names()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())[id as usize]
     }
+}
+
+/// Forgets what is known of `path` (its tags changed: its date did not).
+pub fn forget_entry(path: &Path) {
+    fs_index::forget_entry(path);
 }
 
 /// Drops listings of folders changed outside the app since they were read.
@@ -919,7 +1110,6 @@ pub fn forget_changed_listings() -> bool {
     fs_index::forget_changed()
 }
 
-/// Drops cached listings after the filesystem was changed by the app.
 pub fn invalidate_listings() {
     fs_index::invalidate();
 }
@@ -963,6 +1153,7 @@ pub enum SortKey {
     Name,
     Kind,
     Modified,
+    Created,
     Size,
 }
 
@@ -991,9 +1182,15 @@ impl SortOrder {
     pub fn toggled(self, key: SortKey) -> Self {
         let initial = Self::initial_ascending(key);
         if self.key != key {
-            Self { key, ascending: initial }
+            Self {
+                key,
+                ascending: initial,
+            }
         } else if self.ascending == initial {
-            Self { key, ascending: !initial }
+            Self {
+                key,
+                ascending: !initial,
+            }
         } else {
             Self::default()
         }
@@ -1013,9 +1210,14 @@ fn entry_bytes(entry: &FileEntry) -> u64 {
 /// big folder compares names tens of thousands of times.
 pub fn cmp_ignore_case(a: &str, b: &str) -> std::cmp::Ordering {
     if a.is_ascii() && b.is_ascii() {
-        return a.bytes().map(|byte| byte.to_ascii_lowercase()).cmp(b.bytes().map(|byte| byte.to_ascii_lowercase()));
+        return a
+            .bytes()
+            .map(|byte| byte.to_ascii_lowercase())
+            .cmp(b.bytes().map(|byte| byte.to_ascii_lowercase()));
     }
-    a.chars().flat_map(char::to_lowercase).cmp(b.chars().flat_map(char::to_lowercase))
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase))
 }
 
 pub fn sort_entries(entries: &mut [Entry], order: SortOrder) {
@@ -1025,9 +1227,14 @@ pub fn sort_entries(entries: &mut [Entry], order: SortOrder) {
             SortKey::Name => by_name(),
             SortKey::Kind => a.kind.label().cmp(b.kind.label()),
             SortKey::Modified => a.modified_at.cmp(&b.modified_at),
+            SortKey::Created => a.created_at.cmp(&b.created_at),
             SortKey::Size => entry_bytes(a).cmp(&entry_bytes(b)),
         };
-        let by_key = if order.ascending { by_key } else { by_key.reverse() };
+        let by_key = if order.ascending {
+            by_key
+        } else {
+            by_key.reverse()
+        };
         b.is_folder()
             .cmp(&a.is_folder())
             .then(by_key)
@@ -1116,23 +1323,33 @@ struct SearchOff {
     global_keys: Vec<String>,
 }
 
-static SEARCH_OFF: std::sync::RwLock<SearchOff> =
-    std::sync::RwLock::new(SearchOff { extensions: Vec::new(), folder_keys: Vec::new(), global_keys: Vec::new() });
+static SEARCH_OFF: std::sync::RwLock<SearchOff> = std::sync::RwLock::new(SearchOff {
+    extensions: Vec::new(),
+    folder_keys: Vec::new(),
+    global_keys: Vec::new(),
+});
 
 pub fn set_search_disabled(ids: Vec<&'static str>) {
-    SEARCH_OFF.write().unwrap_or_else(|poisoned| poisoned.into_inner()).extensions = ids;
+    SEARCH_OFF
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .extensions = ids;
 }
 
 /// Filter keys (`git`…) switched off in the folder search / in Cmd-K.
 pub fn set_search_keys_off(folder: Vec<String>, global: Vec<String>) {
-    let mut off = SEARCH_OFF.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut off = SEARCH_OFF
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     off.folder_keys = folder;
     off.global_keys = global;
 }
 
 /// The enabled extension that answers `key:` in `scope`.
 fn contributor(key: &str, scope: SearchScope) -> Option<Contributor> {
-    let off = SEARCH_OFF.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let off = SEARCH_OFF
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let keys = match scope {
         SearchScope::Folder => &off.folder_keys,
         SearchScope::Global => &off.global_keys,
@@ -1143,7 +1360,12 @@ fn contributor(key: &str, scope: SearchScope) -> Option<Contributor> {
     crate::views::extension_ui::registry()
         .into_iter()
         .filter(|extension| !off.extensions.contains(&extension.manifest().id))
-        .find(|extension| extension.search_keys().iter().any(|search| search.key.eq_ignore_ascii_case(key)))
+        .find(|extension| {
+            extension
+                .search_keys()
+                .iter()
+                .any(|search| search.key.eq_ignore_ascii_case(key))
+        })
         .map(Contributor)
 }
 
@@ -1177,7 +1399,10 @@ impl SearchQuery {
         let mut text = Vec::new();
         let mut filters = Vec::new();
         for token in query.split_whitespace() {
-            match token.split_once(':').and_then(|(key, value)| parse_filter(key, value, scope)) {
+            match token
+                .split_once(':')
+                .and_then(|(key, value)| parse_filter(key, value, scope))
+            {
                 Some(filter) => filters.push(filter),
                 None => text.push(token),
             }
@@ -1196,7 +1421,11 @@ impl SearchQuery {
                     .extension()
                     .map(|extension| extension.to_string_lossy().to_lowercase());
                 // Partial, like names: ext:web finds .webp and .webm, ext:j .jpg.
-                extension.is_some_and(|extension| extensions.iter().any(|wanted| extension.starts_with(wanted.as_str())))
+                extension.is_some_and(|extension| {
+                    extensions
+                        .iter()
+                        .any(|wanted| extension.starts_with(wanted.as_str()))
+                })
             }
             Filter::Size(compare, bytes) => {
                 let size = if entry.is_folder() {
@@ -1214,11 +1443,15 @@ impl SearchQuery {
                 .modified_at
                 .is_some_and(|time| compare.test(time, *date)),
             // Case-insensitive for any script (Зеленый = зеленый) and partial: tag:зел finds it.
-            Filter::Tag(tag) => entry.tags.iter().any(|candidate| candidate.to_lowercase().contains(tag.as_str())),
+            Filter::Tag(tag) => entry
+                .tags
+                .iter()
+                .any(|candidate| candidate.to_lowercase().contains(tag.as_str())),
             Filter::Mode(mode) => entry_mode(entry) == Some(*mode),
-            Filter::Contributed(extension, key, value) => {
-                entry.path.as_deref().is_some_and(|path| extension.0.search_matches(key, value, path))
-            }
+            Filter::Contributed(extension, key, value) => entry
+                .path
+                .as_deref()
+                .is_some_and(|path| extension.0.search_matches(key, value, path)),
         })
     }
 }
@@ -1245,7 +1478,10 @@ fn parse_filter(key: &str, value: &str, scope: SearchScope) -> Option<Filter> {
         "ext" | "extension" => Some(Filter::Extension(list(value))),
         "size" => {
             let (compare, rest) = Compare::split(value);
-            Some(Filter::Size(compare.unwrap_or(Compare::GreaterEq), parse_bytes(rest)?))
+            Some(Filter::Size(
+                compare.unwrap_or(Compare::GreaterEq),
+                parse_bytes(rest)?,
+            ))
         }
         "modified" | "date" => {
             if value.eq_ignore_ascii_case("today") {
@@ -1265,11 +1501,16 @@ fn parse_filter(key: &str, value: &str, scope: SearchScope) -> Option<Filter> {
                 .and_hms_opt(0, 0, 0)?
                 .and_local_timezone(chrono::Local)
                 .earliest()?;
-            Some(Filter::Date(compare.unwrap_or(Compare::GreaterEq), date.into()))
+            Some(Filter::Date(
+                compare.unwrap_or(Compare::GreaterEq),
+                date.into(),
+            ))
         }
         "tag" => Some(Filter::Tag(value.to_lowercase())),
         "mode" | "perm" | "permissions" => parse_mode(value).map(Filter::Mode),
-        other => contributor(other, scope).map(|extension| Filter::Contributed(extension, other.to_string(), value.to_lowercase())),
+        other => contributor(other, scope).map(|extension| {
+            Filter::Contributed(extension, other.to_string(), value.to_lowercase())
+        }),
     }
 }
 
@@ -1278,7 +1519,13 @@ fn entry_mode(entry: &FileEntry) -> Option<u32> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        Some(std::fs::symlink_metadata(entry.path.as_deref()?).ok()?.permissions().mode() & 0o777)
+        Some(
+            std::fs::symlink_metadata(entry.path.as_deref()?)
+                .ok()?
+                .permissions()
+                .mode()
+                & 0o777,
+        )
     }
     #[cfg(not(unix))]
     {
@@ -1293,7 +1540,10 @@ fn entry_mode(entry: &FileEntry) -> Option<u32> {
 fn parse_mode(value: &str) -> Option<u32> {
     let value = value.to_lowercase();
     let octal = value.strip_prefix("0o").unwrap_or(&value);
-    if !octal.is_empty() && octal.len() <= 4 && octal.bytes().all(|byte| (b'0'..=b'7').contains(&byte)) {
+    if !octal.is_empty()
+        && octal.len() <= 4
+        && octal.bytes().all(|byte| (b'0'..=b'7').contains(&byte))
+    {
         return u32::from_str_radix(octal, 8).ok().map(|mode| mode & 0o777);
     }
     let ls = match value.len() {
@@ -1360,7 +1610,14 @@ fn parse_kind(kind: &str) -> Option<FileKind> {
     if let Some(exact) = parse_kind_exact(kind) {
         return Some(exact);
     }
-    (kind.len() >= 2).then(|| NAMES.iter().find(|(name, _)| name.starts_with(kind)).map(|(_, kind)| *kind)).flatten()
+    (kind.len() >= 2)
+        .then(|| {
+            NAMES
+                .iter()
+                .find(|(name, _)| name.starts_with(kind))
+                .map(|(_, kind)| *kind)
+        })
+        .flatten()
 }
 
 fn parse_kind_exact(kind: &str) -> Option<FileKind> {
@@ -1413,10 +1670,7 @@ fn parse_age(value: &str) -> Option<std::time::Duration> {
     Some(std::time::Duration::from_secs_f64(number * seconds))
 }
 
-pub fn rank_entries(
-    candidates: impl IntoIterator<Item = Entry>,
-    query: &str,
-) -> Vec<Entry> {
+pub fn rank_entries(candidates: impl IntoIterator<Item = Entry>, query: &str) -> Vec<Entry> {
     rank_entries_in(candidates, query, SearchScope::Folder)
 }
 
@@ -1465,6 +1719,8 @@ mod fs_index {
     use super::{FileEntry, FileKind, Location};
 
     const LISTING_TTL: Duration = Duration::from_secs(2);
+    /// Folder listings kept (each with its entries); past it, the oldest half goes.
+    const MAX_LISTINGS: usize = 128;
     const SEARCH_TTL: Duration = Duration::from_secs(30);
     const RECENTS_LIMIT: usize = 60;
     const SEARCH_LIMIT: usize = 20_000;
@@ -1490,7 +1746,10 @@ mod fs_index {
             registry.entries.len(),
             MADE.load(std::sync::atomic::Ordering::Relaxed),
             registry.listings.len(),
-            registry.search.as_ref().map_or(0, |(_, _, entries)| entries.len()),
+            registry
+                .search
+                .as_ref()
+                .map_or(0, |(_, _, entries)| entries.len()),
         )
     }
 
@@ -1522,7 +1781,9 @@ mod fs_index {
     }
 
     fn lock() -> std::sync::MutexGuard<'static, Registry> {
-        registry().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn leak(value: String) -> &'static str {
@@ -1592,7 +1853,11 @@ mod fs_index {
             FileKind::from_extension(&extension)
         };
         // A package's size is its folder's, measured in the background.
-        let bytes = if is_dir || metadata.is_dir() { 0 } else { metadata.len() };
+        let bytes = if is_dir || metadata.is_dir() {
+            0
+        } else {
+            metadata.len()
+        };
         let metadata_label = if is_dir {
             match fs::read_dir(path) {
                 Ok(children) => format!(
@@ -1624,6 +1889,12 @@ mod fs_index {
                 .unwrap_or_else(|_| "—".to_string())
                 .into(),
             modified_at: metadata.modified().ok(),
+            created: metadata
+                .created()
+                .map(format_time)
+                .unwrap_or_else(|_| "—".to_string())
+                .into(),
+            created_at: metadata.created().ok(),
             bytes,
             metadata: metadata_label.into(),
             tags: finder_tags_of(path),
@@ -1633,14 +1904,11 @@ mod fs_index {
         }
     }
 
-    /// Finder tags as `'static` names (macOS only; empty elsewhere).
-    fn finder_tags_of(path: &Path) -> &'static [&'static str] {
-        let tags = crate::finder_tags::read(path);
-        if tags.is_empty() {
-            return &[];
-        }
-        let names: Vec<&'static str> = tags.into_iter().map(|tag| leak(tag.name)).collect();
-        Box::leak(names.into_boxed_slice())
+    fn finder_tags_of(path: &Path) -> Vec<String> {
+        crate::finder_tags::read(path)
+            .into_iter()
+            .map(|tag| tag.name)
+            .collect()
     }
 
     /// Matches the `Mon DD, YYYY, HH:MM` form `settings::format_demo_date` parses.
@@ -1688,9 +1956,30 @@ mod fs_index {
         // Taken before reading, so a change made during the read is seen next time.
         let stamp = location.path().and_then(|path| folder_stamp(&path));
         let entries = load();
-        lock()
+        let mut registry = lock();
+        registry
             .listings
             .insert(location, (Instant::now(), stamp, entries.clone()));
+        // Days of browsing must not keep every folder ever opened: the
+        // longest unread ones go, and with them the entries nothing shows.
+        if registry.listings.len() > MAX_LISTINGS {
+            let mut by_age: Vec<(Instant, Location)> = registry
+                .listings
+                .iter()
+                .map(|(location, (loaded, _, _))| (*loaded, *location))
+                .collect();
+            by_age.sort_by_key(|(loaded, _)| *loaded);
+            for (_, old) in by_age
+                .into_iter()
+                .take(registry.listings.len() - MAX_LISTINGS / 2)
+            {
+                registry.listings.remove(&old);
+            }
+            registry
+                .entries
+                .retain(|_, (_, _, entry)| std::sync::Arc::strong_count(entry) > 1);
+        }
+        drop(registry);
         super::listings_changed();
         entries
     }
@@ -1734,6 +2023,21 @@ mod fs_index {
         })
     }
 
+    #[cfg(test)]
+    pub fn with_entries_for_test<T>(
+        read: impl FnOnce(&HashMap<PathBuf, (Option<SystemTime>, u64, crate::model::Entry)>) -> T,
+    ) -> T {
+        read(&lock().entries)
+    }
+
+    pub fn forget_entry(path: &Path) {
+        let mut registry = lock();
+        registry.entries.remove(path);
+        registry.listings.clear();
+        drop(registry);
+        super::listings_changed();
+    }
+
     fn folder_stamp(path: &Path) -> Option<SystemTime> {
         fs::metadata(path).ok()?.modified().ok()
     }
@@ -1749,7 +2053,11 @@ mod fs_index {
             .collect();
         let changed: Vec<Location> = folders
             .into_iter()
-            .filter(|(location, stamp)| location.path().is_none_or(|path| folder_stamp(&path) != Some(*stamp)))
+            .filter(|(location, stamp)| {
+                location
+                    .path()
+                    .is_none_or(|path| folder_stamp(&path) != Some(*stamp))
+            })
             .map(|(location, _)| location)
             .collect();
         if changed.is_empty() {
@@ -1768,6 +2076,20 @@ mod fs_index {
         registry.listings.clear();
         registry.search = None;
         super::listings_changed();
+    }
+
+    /// Duplicates keep the order they were found in (twins side by side).
+    pub fn smart(folder: files_ext_smart_folders::SmartFolder) -> Vec<crate::model::Entry> {
+        cached_listing(Location::Smart(folder), || {
+            let mut entries: Vec<_> = files_ext_smart_folders::files(folder)
+                .iter()
+                .filter_map(|path| entry_for_path(path))
+                .collect();
+            if folder != files_ext_smart_folders::SmartFolder::Duplicates {
+                entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            }
+            entries
+        })
     }
 
     pub fn tagged(location: Location) -> Vec<crate::model::Entry> {
@@ -1797,16 +2119,22 @@ mod fs_index {
                         FileEntry {
                             id: format!("trash:{}", item.id.to_string_lossy()).into(),
                             kind: FileKind::from_extension(
-                                Path::new(&name).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default().as_str(),
+                                Path::new(&name)
+                                    .extension()
+                                    .map(|e| e.to_string_lossy().into_owned())
+                                    .unwrap_or_default()
+                                    .as_str(),
                             ),
                             name: name.into(),
                             parent: Location::Trash,
                             target: None,
                             modified: "—".into(),
                             modified_at: None,
+                            created: "—".into(),
+                            created_at: None,
                             bytes: 0,
                             metadata: format!("From {}", item.original_parent.display()).into(),
-                            tags: &[],
+                            tags: Vec::new(),
                             preview: None,
                             path: None,
                             cloud: super::CloudState::Local,
@@ -1817,7 +2145,9 @@ mod fs_index {
             }
             #[cfg(not(windows))]
             {
-                super::trash_dir().map(|dir| read_children(&dir)).unwrap_or_default()
+                super::trash_dir()
+                    .map(|dir| read_children(&dir))
+                    .unwrap_or_default()
             }
         })
     }
@@ -1910,7 +2240,12 @@ mod folder_sizes {
                 .recv();
             let Ok((path, job)) = next else { return };
             if !crate::tasks::start(job) {
-                if let Some(slot) = state().slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get_mut(&path) {
+                if let Some(slot) = state()
+                    .slots
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get_mut(&path)
+                {
                     slot.queued = false;
                 }
                 continue;
@@ -1969,14 +2304,19 @@ mod folder_sizes {
             computed: None,
             queued: false,
         });
-        let stale = slot.computed.is_none_or(|computed| computed.elapsed() >= TTL);
+        let stale = slot
+            .computed
+            .is_none_or(|computed| computed.elapsed() >= TTL);
         if stale && !slot.queued {
             slot.queued = true;
             let _ = state
                 .queue
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .send((path.to_path_buf(), crate::tasks::queue("folder size", path.display().to_string())));
+                .send((
+                    path.to_path_buf(),
+                    crate::tasks::queue("folder size", path.display().to_string()),
+                ));
         }
         // Keep showing the previous value while a refresh runs.
         slot.bytes
@@ -1984,12 +2324,22 @@ mod folder_sizes {
 
     /// DevTools → Indexes: sizes measured again as folders show.
     pub fn clear() {
-        state().slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+        state()
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         state().generation.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn count() -> usize {
-        state().slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).values().filter(|slot| slot.bytes.is_some()).count()
+        state()
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter(|slot| slot.bytes.is_some())
+            .count()
     }
 
     pub fn generation() -> u64 {
@@ -1999,18 +2349,60 @@ mod folder_sizes {
 
 #[cfg(test)]
 mod tests {
+    /// Days of browsing keep a bounded number of folders and the entries
+    /// of the ones dropped are freed.
+    #[test]
+    fn many_folders_visited_do_not_stay_in_memory() {
+        let root =
+            std::env::temp_dir().join(format!("file-force-many-folders-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for folder in 0..300 {
+            let dir = root.join(format!("f{folder:03}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            for file in 0..20 {
+                std::fs::write(dir.join(format!("{file}.txt")), "x").unwrap();
+            }
+        }
+        for folder in 0..300 {
+            let listed =
+                fs_index::list_dir(Location::from_path(&root.join(format!("f{folder:03}"))));
+            assert_eq!(listed.len(), 20);
+        }
+        let (_, _, listings, _) = fs_index::stats();
+        assert!(listings <= 128, "{listings} listings kept");
+        let ours = |entries: &std::collections::HashMap<
+            std::path::PathBuf,
+            (Option<SystemTime>, u64, Entry),
+        >| {
+            entries
+                .keys()
+                .filter(|path| path.starts_with(&root))
+                .count()
+        };
+        let kept = fs_index::with_entries_for_test(ours);
+        assert!(
+            kept <= 128 * 20,
+            "{kept} entries of these folders kept (6000 made)"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A file made by another program shows up without waiting for the app
     /// to touch the filesystem itself.
     #[test]
     fn a_file_made_elsewhere_is_listed() {
-        let dir = std::env::temp_dir().join(format!("file-force-made-elsewhere-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-made-elsewhere-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let location = Location::from_path(&dir);
         assert!(fs_index::list_dir(location).is_empty());
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(dir.join("made-by-agent.md"), b"x").unwrap();
         assert!(fs_index::forget_changed(), "the folder changed");
-        let names: Vec<_> = fs_index::list_dir(location).iter().map(|entry| entry.name.to_string()).collect();
+        let names: Vec<_> = fs_index::list_dir(location)
+            .iter()
+            .map(|entry| entry.name.to_string())
+            .collect();
         assert_eq!(names, ["made-by-agent.md"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2023,17 +2415,44 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("growing-build-output-with-a-long-name.rlib");
         std::fs::write(&file, b"x").unwrap();
+        #[cfg(target_os = "macos")]
+        crate::finder_tags::write(
+            &file,
+            &[crate::finder_tags::FinderTag {
+                name: "Work".into(),
+                color: crate::finder_tags::TagColor::None,
+            }],
+        )
+        .unwrap();
         let _ = fs_index::entry_for_path(&file);
         let before = crate::alloc_stats::counts();
         let live = LIVE_ENTRIES.load(std::sync::atomic::Ordering::Relaxed);
         for size in 2..10_002u64 {
-            std::fs::File::options().write(true).open(&file).unwrap().set_len(size).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_len(size)
+                .unwrap();
             let _ = fs_index::entry_for_path(&file);
         }
         let after = crate::alloc_stats::counts() - before;
-        println!("10,000 changes: {} allocations never freed, {} bytes allocated in all ({} per change)", after.allocs.saturating_sub(after.frees), after.bytes, after.bytes / 10_000);
+        println!(
+            "10,000 changes: {} allocations never freed, {} bytes allocated in all ({} per change)",
+            after.allocs.saturating_sub(after.frees),
+            after.bytes,
+            after.bytes / 10_000
+        );
+        assert_eq!(
+            after.allocs, after.frees,
+            "changed entries and their tags are freed"
+        );
         // Each replaced entry is freed: the one file is still one entry.
-        assert_eq!(LIVE_ENTRIES.load(std::sync::atomic::Ordering::Relaxed), live, "entries alive after 10,000 changes");
+        assert_eq!(
+            LIVE_ENTRIES.load(std::sync::atomic::Ordering::Relaxed),
+            live,
+            "entries alive after 10,000 changes"
+        );
     }
 
     use super::*;
@@ -2048,9 +2467,11 @@ mod tests {
             target: None,
             modified: "—".into(),
             modified_at: Some(SystemTime::now() - Duration::from_secs(age_days * 86_400)),
+            created: "—".into(),
+            created_at: None,
             bytes,
             metadata: "".into(),
-            tags: &["Work"],
+            tags: vec!["Work".into()],
             preview: None,
             path: None,
             cloud: CloudState::Local,
@@ -2077,9 +2498,17 @@ mod tests {
         assert_eq!(run("kind:image"), ["photo.png"]);
         assert_eq!(run("kind:video,document"), ["big.mov", "report.pdf"]);
         assert_eq!(run("ext:md"), ["notes.md"]);
-        assert_eq!(run("ext:pn"), ["photo.png"], "ext: is partial, from the start (ext:web finds .webp)");
+        assert_eq!(
+            run("ext:pn"),
+            ["photo.png"],
+            "ext: is partial, from the start (ext:web finds .webp)"
+        );
         assert_eq!(run("ext:ng"), Vec::<&str>::new(), "…not from the middle");
-        assert_eq!(run("kind:vid"), ["big.mov"], "kind: takes the start of a name");
+        assert_eq!(
+            run("kind:vid"),
+            ["big.mov"],
+            "kind: takes the start of a name"
+        );
         assert_eq!(run("kind:img"), ["photo.png"]);
         assert_eq!(run("size:>10mb"), ["big.mov", "report.pdf"]);
         assert_eq!(run("size:<=2kb"), ["notes.md"]);
@@ -2087,7 +2516,11 @@ mod tests {
         assert_eq!(run("modified:>30d"), ["big.mov"]);
         assert_eq!(run("size:>1mb modified:<7d"), ["photo.png"]);
         assert_eq!(run("tag:work kind:text"), ["notes.md"]);
-        assert_eq!(run("tag:WOR kind:text"), ["notes.md"], "tag: is partial and case-insensitive");
+        assert_eq!(
+            run("tag:WOR kind:text"),
+            ["notes.md"],
+            "tag: is partial and case-insensitive"
+        );
         assert_eq!(run("size:>1mb rep"), ["report.pdf"]);
     }
 
@@ -2097,14 +2530,23 @@ mod tests {
         assert_eq!(mountable(Path::new("Files.dmg")), cfg!(target_os = "macos"));
         assert!(!mountable(Path::new("notes.txt")));
         let hdiutil = "/dev/disk4          \tGUID_partition_scheme\t\n/dev/disk4s1        \tApple_HFS                      \t/Volumes/Files 0.1.14\n";
-        assert_eq!(mount_point(hdiutil), Some(PathBuf::from("/Volumes/Files 0.1.14")));
-        assert_eq!(mount_point("Mounted /dev/loop0 at /media/me/Ubuntu 24.04."), Some(PathBuf::from("/media/me/Ubuntu 24.04")));
+        assert_eq!(
+            mount_point(hdiutil),
+            Some(PathBuf::from("/Volumes/Files 0.1.14"))
+        );
+        assert_eq!(
+            mount_point("Mounted /dev/loop0 at /media/me/Ubuntu 24.04."),
+            Some(PathBuf::from("/media/me/Ubuntu 24.04"))
+        );
     }
 
     #[test]
     fn ejecting_something_that_is_not_mounted_says_why() {
         let error = eject(Path::new("/Volumes/file-force-not-a-disk-xyz")).unwrap_err();
-        assert!(!error.to_string().is_empty(), "the reason is shown to the user");
+        assert!(
+            !error.to_string().is_empty(),
+            "the reason is shown to the user"
+        );
     }
 
     #[test]
@@ -2119,18 +2561,37 @@ mod tests {
         let order = SortOrder::default().toggled(SortKey::Size);
         assert!(!order.ascending, "size starts largest first");
         sort_entries(&mut entries, order);
-        assert_eq!(names(&entries), ["big.mov", "report.pdf", "photo.png", "notes.md"]);
+        assert_eq!(
+            names(&entries),
+            ["big.mov", "report.pdf", "photo.png", "notes.md"]
+        );
 
         let reversed = order.toggled(SortKey::Size);
         sort_entries(&mut entries, reversed);
-        assert_eq!(names(&entries), ["notes.md", "photo.png", "report.pdf", "big.mov"]);
-        assert_eq!(reversed.toggled(SortKey::Size), SortOrder::default(), "third click resets");
+        assert_eq!(
+            names(&entries),
+            ["notes.md", "photo.png", "report.pdf", "big.mov"]
+        );
+        assert_eq!(
+            reversed.toggled(SortKey::Size),
+            SortOrder::default(),
+            "third click resets"
+        );
 
-        sort_entries(&mut entries, SortOrder::default().toggled(SortKey::Modified));
-        assert_eq!(names(&entries), ["photo.png", "notes.md", "report.pdf", "big.mov"]);
+        sort_entries(
+            &mut entries,
+            SortOrder::default().toggled(SortKey::Modified),
+        );
+        assert_eq!(
+            names(&entries),
+            ["photo.png", "notes.md", "report.pdf", "big.mov"]
+        );
 
         sort_entries(&mut entries, SortOrder::default().toggled(SortKey::Kind));
-        assert_eq!(names(&entries), ["report.pdf", "photo.png", "notes.md", "big.mov"]);
+        assert_eq!(
+            names(&entries),
+            ["report.pdf", "photo.png", "notes.md", "big.mov"]
+        );
     }
 
     #[test]
@@ -2147,7 +2608,10 @@ mod tests {
             if let Some(size) = folder_size(&entry) {
                 break size;
             }
-            assert!(std::time::Instant::now() < deadline, "folder size never finished");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "folder size never finished"
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         assert_eq!(size, 3500);
@@ -2167,25 +2631,44 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn finder_tags_reach_entries_and_tag_search() {
-        let dir = std::env::temp_dir().join(format!("file-force-entry-tags-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("file-force-entry-tags-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let tagged = dir.join("tagged.md");
         std::fs::write(&tagged, "x").unwrap();
         std::fs::write(dir.join("plain.md"), "x").unwrap();
         let mut bytes = Vec::new();
-        plist::to_writer_binary(&mut bytes, &vec!["Client\n3".to_string(), "Зеленый\n2".to_string()]).unwrap();
+        plist::to_writer_binary(
+            &mut bytes,
+            &vec!["Client\n3".to_string(), "Зеленый\n2".to_string()],
+        )
+        .unwrap();
         xattr::set(&tagged, "com.apple.metadata:_kMDItemUserTags", &bytes).unwrap();
 
         let listed = entries(Location::from_path(&dir), "");
-        let entry = listed.iter().find(|entry| entry.name == "tagged.md").unwrap();
+        let entry = listed
+            .iter()
+            .find(|entry| entry.name == "tagged.md")
+            .unwrap();
         assert_eq!(entry.tags, ["Client", "Зеленый"]);
         for query in ["tag:client", "tag:зеленый", "tag:ЗЕЛ", "tag:лен"] {
             let found = entries(Location::from_path(&dir), query);
-            assert_eq!(found.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), ["tagged.md"], "{query}");
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect::<Vec<_>>(),
+                ["tagged.md"],
+                "{query}"
+            );
         }
         assert_eq!(Location::tag("Client").label(), "Client");
-        assert_eq!(Location::tag("Client"), Location::tag("Client"), "tags intern to one id");
+        assert_eq!(
+            Location::tag("Client"),
+            Location::tag("Client"),
+            "tags intern to one id"
+        );
     }
 
     #[test]
@@ -2198,14 +2681,29 @@ mod tests {
 
         // Real cloud files on this machine, when there are any to compare.
         let home = Location::Home.path().unwrap();
-        for root in [home.join("Library/Mobile Documents"), home.join("Library/CloudStorage")] {
-            let Ok(drives) = std::fs::read_dir(&root) else { continue };
+        for root in [
+            home.join("Library/Mobile Documents"),
+            home.join("Library/CloudStorage"),
+        ] {
+            let Ok(drives) = std::fs::read_dir(&root) else {
+                continue;
+            };
             for drive in drives.filter_map(Result::ok).take(3) {
-                let Ok(files) = std::fs::read_dir(drive.path()) else { continue };
+                let Ok(files) = std::fs::read_dir(drive.path()) else {
+                    continue;
+                };
                 for file in files.filter_map(Result::ok).take(20) {
                     let state = cloud_state(&file.path());
-                    assert_ne!(state, CloudState::Local, "{} is in a cloud drive", file.path().display());
-                    assert_eq!(state == CloudState::OnlineOnly, is_online_only(&file.path()));
+                    assert_ne!(
+                        state,
+                        CloudState::Local,
+                        "{} is in a cloud drive",
+                        file.path().display()
+                    );
+                    assert_eq!(
+                        state == CloudState::OnlineOnly,
+                        is_online_only(&file.path())
+                    );
                 }
             }
         }
@@ -2216,12 +2714,22 @@ mod tests {
         assert_eq!(trim_middle("short.txt", 20), "short.txt");
         let trimmed = trim_middle("quarterly-financial-report-2026-final.pdf", 24);
         assert_eq!(trimmed.chars().count(), 24, "{trimmed}");
-        assert!(trimmed.ends_with(".pdf") && trimmed.contains('…'), "{trimmed}");
+        assert!(
+            trimmed.ends_with(".pdf") && trimmed.contains('…'),
+            "{trimmed}"
+        );
         assert_eq!(trim_middle("AndroidStudioProjects", 16).chars().count(), 16);
         // Multi-byte names are cut on character boundaries.
         let cyrillic = trim_middle("Лукина - Бизнес и_или любовь.zip.zip", 20);
-        assert!(cyrillic.ends_with(".zip") && cyrillic.chars().count() == 20, "{cyrillic}");
-        assert_eq!(trim_middle("x".repeat(30).as_str(), 4).len(), 30, "tiny budgets leave names alone");
+        assert!(
+            cyrillic.ends_with(".zip") && cyrillic.chars().count() == 20,
+            "{cyrillic}"
+        );
+        assert_eq!(
+            trim_middle("x".repeat(30).as_str(), 4).len(),
+            30,
+            "tiny budgets leave names alone"
+        );
     }
 
     #[test]
@@ -2232,13 +2740,24 @@ mod tests {
         assert!(!is_system_mount(Path::new("/Volumes/USB")));
         let disks = user_disks();
         assert!(!disks.is_empty(), "the startup disk is always there");
-        assert_eq!(disks[0].0.components().count(), 1, "startup disk first: {:?}", disks[0].0);
-        assert!(disks.iter().all(|(mount, usage)| !is_system_mount(mount) && usage.total > 0));
+        assert_eq!(
+            disks[0].0.components().count(),
+            1,
+            "startup disk first: {:?}",
+            disks[0].0
+        );
+        assert!(
+            disks
+                .iter()
+                .all(|(mount, usage)| !is_system_mount(mount) && usage.total > 0)
+        );
     }
 
     #[test]
     fn the_workspace_shows_the_account_name() {
-        let whoami = files_sdk::log::command("whoami").output().map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+        let whoami = files_sdk::log::command("whoami")
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
         if let Some(whoami) = whoami.ok().filter(|name| !name.is_empty()) {
             assert_eq!(user_name(), whoami);
         }
@@ -2273,13 +2792,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("file-force-mode-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for (name, mode) in [("shared.txt", 0o666), ("script.sh", 0o555), ("private.txt", 0o600)] {
+        for (name, mode) in [
+            ("shared.txt", 0o666),
+            ("script.sh", 0o555),
+            ("private.txt", 0o600),
+        ] {
             let path = dir.join(name);
             std::fs::write(&path, "x").unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
         }
         let names = |query: &str| {
-            entries(Location::from_path(&dir), query).iter().map(|entry| entry.name.clone()).collect::<Vec<_>>()
+            entries(Location::from_path(&dir), query)
+                .iter()
+                .map(|entry| entry.name.clone())
+                .collect::<Vec<_>>()
         };
         assert_eq!(names("mode:0o666"), ["shared.txt"]);
         assert_eq!(names("mode:rx-rx-rx"), ["script.sh"]);

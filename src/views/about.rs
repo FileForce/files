@@ -11,8 +11,8 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Window,
-    div, img, px,
+    AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Styled as _, Window, div, img, px,
 };
 
 use crate::app::{AppearanceSettings, FileExplorer};
@@ -23,7 +23,12 @@ use crate::updates::{CURRENT_VERSION, Download, UpdateStatus};
 pub(crate) fn app_icon(size: f32) -> impl IntoElement {
     static ICON: std::sync::OnceLock<Arc<gpui_kit::Image>> = std::sync::OnceLock::new();
     let image = ICON
-        .get_or_init(|| Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, include_bytes!("../../packaging/icon/icon.svg").to_vec())))
+        .get_or_init(|| {
+            Arc::new(gpui_kit::Image::from_bytes(
+                gpui_kit::ImageFormat::Svg,
+                include_bytes!("../../packaging/icon/icon.svg").to_vec(),
+            ))
+        })
         .clone();
     img(image).size(px(size))
 }
@@ -32,7 +37,13 @@ fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
     #[cfg(not(target_os = "macos"))]
-    let _ = files_sdk::log::command(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(url).spawn();
+    let _ = files_sdk::log::command(if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    })
+    .arg(url)
+    .spawn();
 }
 
 /// Where the update stands after "Download & Install".
@@ -58,7 +69,10 @@ impl UpdateDialog {
         self.install = Install::Idle;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async { crate::updates::check() }).await;
+            let result = cx
+                .background_executor()
+                .spawn(async { crate::updates::check() })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.result = Some(result);
                 cx.notify();
@@ -74,7 +88,9 @@ impl UpdateDialog {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { crate::updates::download(&download, &crate::licensing::trusted_updates()) })
+                .spawn(async move {
+                    crate::updates::download(&download, &crate::licensing::trusted_updates())
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.install = match result {
@@ -88,7 +104,10 @@ impl UpdateDialog {
                             "files",
                             files_sdk::log::Level::Success,
                             "Update downloaded and verified",
-                            Some(format!("{} · drag Files to Applications, then reopen it", path.display())),
+                            Some(format!(
+                                "{} · drag Files to Applications, then reopen it",
+                                path.display()
+                            )),
                         );
                         Install::Opened(path)
                     }
@@ -105,7 +124,11 @@ impl Render for UpdateDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self.appearance.read(cx).clone();
         let palette = Palette::from_settings(&settings);
-        let source = if crate::updates::UPDATE_URL.is_empty() { "GitHub" } else { "the Files website" };
+        let source = if crate::updates::UPDATE_URL.is_empty() {
+            "GitHub"
+        } else {
+            "the Files website"
+        };
         let mut notes = None;
         let mut actions = Vec::new();
         let (icon, color, title, detail): (IconName, _, String, String) = match self.result.clone() {
@@ -154,7 +177,13 @@ impl Render for UpdateDialog {
         };
         let install = match &self.install {
             Install::Idle | Install::Downloading => None,
-            Install::Opened(path) => Some((palette.code, format!("Verified and opened {} · drag Files to Applications, then reopen it.", path.display()))),
+            Install::Opened(path) => Some((
+                palette.code,
+                format!(
+                    "Verified and opened {} · drag Files to Applications, then reopen it.",
+                    path.display()
+                ),
+            )),
             Install::Failed(error) => Some((palette.video, error.clone())),
         };
         v_flex()
@@ -170,7 +199,13 @@ impl Render for UpdateDialog {
                             .flex_1()
                             .gap_1()
                             .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
-                            .child(div().text_xs().text_color(palette.muted).whitespace_normal().child(detail)),
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.muted)
+                                    .whitespace_normal()
+                                    .child(detail),
+                            ),
                     ),
             )
             .children(notes.map(|notes| {
@@ -182,16 +217,37 @@ impl Render for UpdateDialog {
                     .bg(palette.surface)
                     .text_xs()
                     .overflow_y_scrollbar()
-                    .child(gpui_kit::component::text::TextView::markdown("update-notes-text", notes).selectable(true))
+                    .child(
+                        gpui_kit::component::text::TextView::markdown("update-notes-text", notes)
+                            .selectable(true),
+                    )
             }))
-            .children(install.map(|(color, text)| div().text_xs().text_color(color).whitespace_normal().child(text)))
+            .children(install.map(|(color, text)| {
+                div()
+                    .text_xs()
+                    .text_color(color)
+                    .whitespace_normal()
+                    .child(text)
+            }))
             .child(
                 h_flex()
                     .gap_2()
                     .justify_end()
-                    .child(Button::new("update-again").ghost().small().label("Check again").on_click(cx.listener(|this, _, _, cx| this.check(cx))))
+                    .child(
+                        Button::new("update-again")
+                            .ghost()
+                            .small()
+                            .label("Check again")
+                            .on_click(cx.listener(|this, _, _, cx| this.check(cx))),
+                    )
                     .children(actions)
-                    .child(Button::new("update-close").secondary().small().label("Close").on_click(|_, window, cx| window.close_dialog(cx))),
+                    .child(
+                        Button::new("update-close")
+                            .secondary()
+                            .small()
+                            .label("Close")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    ),
             )
     }
 }
@@ -203,7 +259,11 @@ impl FileExplorer {
         }
         let appearance = self.appearance.clone();
         let dialog = cx.new(|cx| {
-            let mut dialog = UpdateDialog { appearance, result: None, install: Install::Idle };
+            let mut dialog = UpdateDialog {
+                appearance,
+                result: None,
+                install: Install::Idle,
+            };
             dialog.check(cx);
             dialog
         });
@@ -232,8 +292,17 @@ impl FileExplorer {
             let _ = crate::settings::save(settings);
         });
         cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async { crate::updates::check() }).await;
-            if let Ok(UpdateStatus::Available { latest, page, download, .. }) = result {
+            let result = cx
+                .background_executor()
+                .spawn(async { crate::updates::check() })
+                .await;
+            if let Ok(UpdateStatus::Available {
+                latest,
+                page,
+                download,
+                ..
+            }) = result
+            {
                 let _ = this.update(cx, |this, cx| this.offer_update(latest, page, download, cx));
             }
         })
@@ -242,15 +311,27 @@ impl FileExplorer {
 
     /// "Files X is available" with Install · Later · Skip this release.
     /// A skipped version is not offered again; Later waits for the next check.
-    pub(crate) fn offer_update(&mut self, latest: String, page: Option<String>, download: Option<crate::updates::Download>, cx: &mut Context<Self>) {
+    pub(crate) fn offer_update(
+        &mut self,
+        latest: String,
+        page: Option<String>,
+        download: Option<crate::updates::Download>,
+        cx: &mut Context<Self>,
+    ) {
         if self.appearance.read(cx).updates.skipped == latest {
             return;
         }
         use files_sdk::log::Action;
         let signed = download.filter(|download| download.signature.is_some());
         let install = match &signed {
-            Some(_) => Action { label: "Install".into(), url: "files:update/install".into() },
-            None => Action { label: "Open release page".into(), url: page.unwrap_or_else(|| crate::updates::release_notes_url(&latest)) },
+            Some(_) => Action {
+                label: "Install".into(),
+                url: "files:update/install".into(),
+            },
+            None => Action {
+                label: "Open release page".into(),
+                url: page.unwrap_or_else(|| crate::updates::release_notes_url(&latest)),
+            },
         };
         *crate::updates::offered() = signed.map(|download| (latest.clone(), download));
         files_sdk::log::notify_actions(
@@ -260,14 +341,25 @@ impl FileExplorer {
             Some(format!("You have {CURRENT_VERSION}.")),
             vec![
                 install,
-                Action { label: "Later".into(), url: "files:update/later".into() },
-                Action { label: "Skip this release".into(), url: format!("files:update/skip/{latest}") },
+                Action {
+                    label: "Later".into(),
+                    url: "files:update/later".into(),
+                },
+                Action {
+                    label: "Skip this release".into(),
+                    url: format!("files:update/skip/{latest}"),
+                },
             ],
         );
     }
 
     /// A `files:` button on a notification.
-    pub(crate) fn run_notification_command(&mut self, command: &str, notification: u64, cx: &mut Context<Self>) {
+    pub(crate) fn run_notification_command(
+        &mut self,
+        command: &str,
+        notification: u64,
+        cx: &mut Context<Self>,
+    ) {
         files_sdk::log::dismiss(notification);
         if let Some(version) = command.strip_prefix("update/skip/") {
             let version = version.to_string();
@@ -276,8 +368,15 @@ impl FileExplorer {
                 let _ = crate::settings::save(settings);
             });
         } else if command == "update/install" {
-            let Some((version, download)) = crate::updates::offered().take() else { return };
-            files_sdk::log::notify("files", files_sdk::log::Level::Info, format!("Downloading Files {version}…"), None);
+            let Some((version, download)) = crate::updates::offered().take() else {
+                return;
+            };
+            files_sdk::log::notify(
+                "files",
+                files_sdk::log::Level::Info,
+                format!("Downloading Files {version}…"),
+                None,
+            );
             cx.spawn(async move |_, cx| {
                 let result = cx
                     .background_executor()
@@ -315,14 +414,23 @@ impl FileExplorer {
         if last == CURRENT_VERSION {
             return;
         }
-        if let Some(version) = crate::updates::just_updated(&last, crate::settings::existed_at_start()) {
-            let from = if last.is_empty() { "From an earlier version".to_string() } else { format!("From {last}") };
+        if let Some(version) =
+            crate::updates::just_updated(&last, crate::settings::existed_at_start())
+        {
+            let from = if last.is_empty() {
+                "From an earlier version".to_string()
+            } else {
+                format!("From {last}")
+            };
             files_sdk::log::notify_with(
                 "files",
                 files_sdk::log::Level::Success,
                 format!("Updated to Files {version}"),
                 Some(format!("{from}. See what is new.")),
-                Some(files_sdk::log::Action { label: "Open release notes".into(), url: crate::updates::release_notes_url(&version) }),
+                Some(files_sdk::log::Action {
+                    label: "Open release notes".into(),
+                    url: crate::updates::release_notes_url(&version),
+                }),
             );
         }
         self.appearance.update(cx, |settings, _| {
@@ -357,16 +465,37 @@ impl FileExplorer {
                         .py_2()
                         .text_color(palette.text)
                         .child(app_icon(96.))
-                        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(env!("FILES_APP_NAME")))
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(env!("FILES_APP_NAME")),
+                        )
                         .child(div().text_xs().text_color(palette.muted).child(format!(
                             "Version {CURRENT_VERSION} · {} {}",
                             std::env::consts::OS,
                             std::env::consts::ARCH
                         )))
-                        .child(div().text_xs().text_color(palette.faint).child("A file explorer with extensions, built with GPUI"))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.faint)
+                                .child("A file explorer with extensions, built with GPUI"),
+                        )
                         // Who the license belongs to: a key shared online shows its owner.
-                        .children(licensed_to.clone().map(|text| div().text_xs().text_color(palette.muted).child(text)))
-                        .when(plugins > 0, |this| this.child(div().text_xs().text_color(palette.faint).child(format!("{plugins} Pro extension(s) loaded"))))
+                        .children(
+                            licensed_to
+                                .clone()
+                                .map(|text| div().text_xs().text_color(palette.muted).child(text)),
+                        )
+                        .when(plugins > 0, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.faint)
+                                    .child(format!("{plugins} Pro extension(s) loaded")),
+                            )
+                        })
                         .child(
                             h_flex()
                                 .gap_1()
@@ -379,7 +508,9 @@ impl FileExplorer {
                                         .label("Check for Updates…")
                                         .on_click(move |_, window, cx| {
                                             window.close_dialog(cx);
-                                            explorer.update(cx, |explorer, cx| explorer.open_update_dialog(window, cx));
+                                            explorer.update(cx, |explorer, cx| {
+                                                explorer.open_update_dialog(window, cx)
+                                            });
                                         }),
                                 )
                                 .when(!crate::updates::WEBSITE.is_empty(), |row| {
@@ -393,16 +524,36 @@ impl FileExplorer {
                                 })
                                 .children(repository.map(|repository| {
                                     let url = format!("https://github.com/{repository}");
-                                    Button::new("about-repository").ghost().small().label("GitHub").on_click(move |_, _, _| open_url(&url))
+                                    Button::new("about-repository")
+                                        .ghost()
+                                        .small()
+                                        .label("GitHub")
+                                        .on_click(move |_, _, _| open_url(&url))
                                 }))
-                                .child(Button::new("about-report-bug").ghost().small().icon(IconName::Bug).label("Report a bug").on_click(|_, window, cx| {
-                                    // About is a dialog itself: the form takes its place.
-                                    window.close_dialog(cx);
-                                    window.dispatch_action(Box::new(crate::menus::ReportBug), cx);
-                                })),
+                                .child(
+                                    Button::new("about-report-bug")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Bug)
+                                        .label("Report a bug")
+                                        .on_click(|_, window, cx| {
+                                            // About is a dialog itself: the form takes its place.
+                                            window.close_dialog(cx);
+                                            window.dispatch_action(
+                                                Box::new(crate::menus::ReportBug),
+                                                cx,
+                                            );
+                                        }),
+                                ),
                         )
                         .when(!crate::updates::COPYRIGHT.is_empty(), |this| {
-                            this.child(div().pt_1().text_size(px(10.)).text_color(palette.faint).child(crate::updates::COPYRIGHT))
+                            this.child(
+                                div()
+                                    .pt_1()
+                                    .text_size(px(10.))
+                                    .text_color(palette.faint)
+                                    .child(crate::updates::COPYRIGHT),
+                            )
                         }),
                 )
         });

@@ -2,58 +2,59 @@
 // one for logs).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod alloc_stats;
 mod app;
+mod app_lock;
 mod archive;
 mod assets;
+mod bug_report;
 mod commands;
 mod compress;
 mod create;
 mod default_apps;
-mod dev_shell;
 mod delete;
+mod dev_shell;
 mod extensions;
 mod finder_tags;
 mod forks;
+mod head_tracking;
 mod host;
 mod keymap;
 mod licensing;
+mod memory_log;
+mod mp4_info;
 mod plugins;
 mod power;
+mod quick_actions;
 mod resources;
-mod mp4_info;
-mod app_lock;
+mod session;
 mod sound;
 mod spatial_player;
-mod head_tracking;
 mod storage;
-mod session;
-mod quick_actions;
-mod bug_report;
 mod uninstall;
-mod alloc_stats;
 
 #[cfg(debug_assertions)]
 #[global_allocator]
 static ALLOCATOR: alloc_stats::Counting = alloc_stats::Counting;
 mod desktop;
+mod ext_preview;
 mod instance;
 mod media_info;
-mod pe_info;
-mod tasks;
-mod pdf_pages;
-mod svg_stress;
-mod office_text;
-mod ext_preview;
-mod system_notify;
 mod media_keys;
 mod menu_colors;
 mod menus;
 mod model;
+mod office_text;
 mod palette;
+mod pdf_pages;
+mod pe_info;
 mod properties;
 mod settings;
 mod settings_window;
 mod ssh;
+mod svg_stress;
+mod system_notify;
+mod tasks;
 mod thumbnails;
 mod transfer;
 mod updates;
@@ -74,7 +75,12 @@ fn main() {
     desktop::hand_shell_folders_to_explorer();
     desktop::set_app_id();
     // DevTools → Tasks: how each kind of job runs again.
-    for kind in ["thumbnail", "quick look", "program icon", "image conversion"] {
+    for kind in [
+        "thumbnail",
+        "quick look",
+        "program icon",
+        "image conversion",
+    ] {
         tasks::on_retry(kind, thumbnails::retry);
     }
     tasks::on_retry("file details", media_info::retry);
@@ -114,6 +120,7 @@ fn main() {
         files_ext_music::set_streaming_enhance(loaded.extensions.music_enhance.strength());
         settings::apply_spatial(&loaded);
         app_lock::configure(&loaded.lock, true);
+        memory_log::start();
         power::refresh();
         cx.set_reduce_motion(loaded.accessibility.reduce_motion() || power::power_saving());
         palette::apply_motion(cx, loaded.look.motion);
@@ -145,7 +152,9 @@ fn main() {
         // The tabs of last time (unless started with a folder: that one shows).
         {
             let (handle, explorer) = window.clone();
-            let _ = handle.update(cx, |_, window, cx| explorer.update(cx, |explorer, cx| explorer.restore_session(window, cx)));
+            let _ = handle.update(cx, |_, window, cx| {
+                explorer.update(cx, |explorer, cx| explorer.restore_session(window, cx))
+            });
         }
         if single {
             instance::listen();
@@ -156,7 +165,9 @@ fn main() {
         // window closed, a new one opens for them.
         cx.spawn(async move |cx| {
             loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(300))
+                    .await;
                 // Scripts waiting for a dialog (libfiles `ask`).
                 for ask in quick_actions::take_asks() {
                     let _ = cx.update(|cx| {
@@ -166,7 +177,9 @@ fn main() {
                         };
                         let appearance = MAIN.with(|main| main.borrow().appearance.clone());
                         let _ = handle.update(cx, |_, window, cx| match appearance {
-                            Some(appearance) => views::quick_actions::ask_for_script(ask, appearance, window, cx),
+                            Some(appearance) => {
+                                views::quick_actions::ask_for_script(ask, appearance, window, cx)
+                            }
                             None => {
                                 let _ = ask.reply.send(None);
                             }
@@ -179,14 +192,21 @@ fn main() {
                     continue;
                 }
                 let _ = cx.update(|cx| {
-                    let Some((handle, explorer)) = main_window(cx).or_else(|| open_main_window(cx)) else { return };
+                    let Some((handle, explorer)) = main_window(cx).or_else(|| open_main_window(cx))
+                    else {
+                        return;
+                    };
                     cx.activate(true);
                     let _ = handle.update(cx, |_, window, cx| {
                         window.activate_window();
                         explorer.update(cx, |explorer, cx| {
                             for path in opened {
                                 if path.is_dir() {
-                                    explorer.open_in_new_tab(crate::model::Location::from_path(&path), window, cx);
+                                    explorer.open_in_new_tab(
+                                        crate::model::Location::from_path(&path),
+                                        window,
+                                        cx,
+                                    );
                                 } else {
                                     explorer.reveal_path(&path, window, cx);
                                 }
@@ -205,7 +225,11 @@ fn main() {
                 explorer.update(cx, |explorer, cx| {
                     // A new tab beside the restored ones.
                     if path.is_dir() {
-                        explorer.open_in_new_tab(crate::model::Location::from_path(&path), window, cx);
+                        explorer.open_in_new_tab(
+                            crate::model::Location::from_path(&path),
+                            window,
+                            cx,
+                        );
                     } else {
                         explorer.reveal_path(&path, window, cx);
                     }
@@ -220,7 +244,10 @@ fn main() {
 #[derive(Default)]
 struct Main {
     appearance: Option<gpui_kit::Entity<app::AppearanceSettings>>,
-    windows: Vec<(gpui_kit::AnyWindowHandle, gpui_kit::WeakEntity<FileExplorer>)>,
+    windows: Vec<(
+        gpui_kit::AnyWindowHandle,
+        gpui_kit::WeakEntity<FileExplorer>,
+    )>,
 }
 
 thread_local! {
@@ -228,20 +255,34 @@ thread_local! {
 }
 
 /// Opens a main window.
-fn open_main_window(cx: &mut gpui_kit::App) -> Option<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<FileExplorer>)> {
+fn open_main_window(
+    cx: &mut gpui_kit::App,
+) -> Option<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<FileExplorer>)> {
     let appearance = MAIN.with(|main| main.borrow().appearance.clone())?;
-    let (handle, explorer) = open_window(explorer_window_options(0), cx, move |window, cx| cx.new(|cx| FileExplorer::new(window, cx, appearance.clone()))).ok()?;
-    MAIN.with(|main| main.borrow_mut().windows.push((handle, explorer.downgrade())));
+    let (handle, explorer) = open_window(explorer_window_options(0), cx, move |window, cx| {
+        cx.new(|cx| FileExplorer::new(window, cx, appearance.clone()))
+    })
+    .ok()?;
+    MAIN.with(|main| {
+        main.borrow_mut()
+            .windows
+            .push((handle, explorer.downgrade()))
+    });
     Some((handle, explorer))
 }
 
 /// A main window still open.
-fn main_window(cx: &mut gpui_kit::App) -> Option<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<FileExplorer>)> {
+fn main_window(
+    cx: &mut gpui_kit::App,
+) -> Option<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<FileExplorer>)> {
     let open: Vec<gpui_kit::AnyWindowHandle> = cx.windows();
     MAIN.with(|main| {
         let mut main = main.borrow_mut();
-        main.windows.retain(|(handle, explorer)| open.contains(handle) && explorer.upgrade().is_some());
-        main.windows.first().and_then(|(handle, explorer)| Some((*handle, explorer.upgrade()?)))
+        main.windows
+            .retain(|(handle, explorer)| open.contains(handle) && explorer.upgrade().is_some());
+        main.windows
+            .first()
+            .and_then(|(handle, explorer)| Some((*handle, explorer.upgrade()?)))
     })
 }
 
@@ -255,6 +296,7 @@ pub(crate) fn explorer_window_options(index: usize) -> WindowOptions {
         }
     };
     let mut options = TitleBar::window_options();
+    options.inactive_frame_interval = None;
     options.window_bounds = Some(WindowBounds::Windowed(Bounds {
         origin,
         size: size(px(1360.), px(820.)),

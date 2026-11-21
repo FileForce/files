@@ -16,7 +16,12 @@ pub const APP_ID: &str = "dev.fileforce.files";
 pub fn launch_path(args: impl IntoIterator<Item = String>) -> Option<PathBuf> {
     let arg = args.into_iter().skip(1).find(|arg| !arg.starts_with('-'))?;
     let path = match arg.strip_prefix("file://") {
-        Some(rest) => PathBuf::from(url::Url::parse(&format!("file://{rest}")).ok()?.to_file_path().ok()?),
+        Some(rest) => PathBuf::from(
+            url::Url::parse(&format!("file://{rest}"))
+                .ok()?
+                .to_file_path()
+                .ok()?,
+        ),
         None => PathBuf::from(arg),
     };
     path.exists().then(|| path.canonicalize().unwrap_or(path))
@@ -28,12 +33,21 @@ static OPENED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new()
 
 /// The system's open-URL event: `file://` addresses become paths.
 pub fn opened_from_system(urls: Vec<String>) {
-    let paths = urls.into_iter().filter_map(|url| launch_path(["files".to_string(), url]));
-    OPENED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).extend(paths);
+    let paths = urls
+        .into_iter()
+        .filter_map(|url| launch_path(["files".to_string(), url]));
+    OPENED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .extend(paths);
 }
 
 pub fn take_opened() -> Vec<PathBuf> {
-    std::mem::take(&mut *OPENED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    std::mem::take(
+        &mut *OPENED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
 }
 
 /// Windows groups the taskbar button and shows toasts under this id; the
@@ -55,7 +69,9 @@ pub fn set_app_id() {
 /// from one (the binary inside is in a temporary mount).
 #[cfg(all(unix, not(target_os = "macos")))]
 fn program() -> Option<PathBuf> {
-    std::env::var_os("APPIMAGE").map(PathBuf::from).or_else(|| std::env::current_exe().ok())
+    std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -66,7 +82,11 @@ fn applications_dir() -> Option<PathBuf> {
 /// The desktop entry's text for `program`.
 #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
 pub fn desktop_entry(program: &std::path::Path) -> String {
-    let quoted = program.display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
+    let quoted = program
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     format!(
         "[Desktop Entry]\nType=Application\nName=file FORCE\nGenericName=File Manager\nComment=Files, Git, SSH, mail and music in one window\nExec=\"{quoted}\" %U\nIcon={APP_ID}\nTerminal=false\nCategories=Utility;FileManager;\nMimeType=inode/directory;\nStartupWMClass={APP_ID}\nX-GNOME-UsesNotifications=true\n"
     )
@@ -77,7 +97,9 @@ pub fn desktop_entry(program: &std::path::Path) -> String {
 pub fn install_desktop_entry() {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let (Some(program), Some(dir)) = (program(), applications_dir()) else { return };
+        let (Some(program), Some(dir)) = (program(), applications_dir()) else {
+            return;
+        };
         let entry = dir.join(format!("{APP_ID}.desktop"));
         let text = desktop_entry(&program);
         if std::fs::read_to_string(&entry).ok().as_deref() == Some(text.as_str()) {
@@ -88,10 +110,20 @@ pub fn install_desktop_entry() {
         }
         if let Some(icons) = dirs::data_dir().map(|data| data.join("icons/hicolor/scalable/apps")) {
             let _ = std::fs::create_dir_all(&icons);
-            let _ = std::fs::write(icons.join(format!("{APP_ID}.svg")), include_bytes!("../packaging/icon/icon.svg"));
+            let _ = std::fs::write(
+                icons.join(format!("{APP_ID}.svg")),
+                include_bytes!("../packaging/icon/icon.svg"),
+            );
         }
-        let _ = files_sdk::log::command("update-desktop-database").arg(&dir).status();
-        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, format!("Desktop entry written: {}", entry.display()), None);
+        let _ = files_sdk::log::command("update-desktop-database")
+            .arg(&dir)
+            .status();
+        files_sdk::log::record(
+            "desktop",
+            files_sdk::log::Kind::Setting,
+            format!("Desktop entry written: {}", entry.display()),
+            None,
+        );
     }
 }
 
@@ -102,8 +134,15 @@ mod mac {
 
     #[link(name = "CoreServices", kind = "framework")]
     unsafe extern "C" {
-        fn LSSetDefaultRoleHandlerForContentType(content_type: CFStringRef, role: u32, handler: CFStringRef) -> i32;
-        fn LSCopyDefaultRoleHandlerForContentType(content_type: CFStringRef, role: u32) -> CFStringRef;
+        fn LSSetDefaultRoleHandlerForContentType(
+            content_type: CFStringRef,
+            role: u32,
+            handler: CFStringRef,
+        ) -> i32;
+        fn LSCopyDefaultRoleHandlerForContentType(
+            content_type: CFStringRef,
+            role: u32,
+        ) -> CFStringRef;
     }
 
     /// kLSRolesViewer | kLSRolesEditor | …: every role.
@@ -112,15 +151,30 @@ mod mac {
     pub fn set_folder_handler(bundle: &str) -> std::io::Result<()> {
         let (kind, handler) = (CFString::new("public.folder"), CFString::new(bundle));
         // SAFETY: both strings live for the call; LaunchServices copies them.
-        let status = unsafe { LSSetDefaultRoleHandlerForContentType(kind.as_concrete_TypeRef(), ROLES_ALL, handler.as_concrete_TypeRef()) };
-        if status == 0 { Ok(()) } else { Err(std::io::Error::other(format!("LaunchServices refused ({status}): Files must run from its installed app"))) }
+        let status = unsafe {
+            LSSetDefaultRoleHandlerForContentType(
+                kind.as_concrete_TypeRef(),
+                ROLES_ALL,
+                handler.as_concrete_TypeRef(),
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "LaunchServices refused ({status}): Files must run from its installed app"
+            )))
+        }
     }
 
     pub fn folder_handler() -> Option<String> {
         let kind = CFString::new("public.folder");
         // SAFETY: a "copy" function: we own the returned string (or null).
-        let handler = unsafe { LSCopyDefaultRoleHandlerForContentType(kind.as_concrete_TypeRef(), ROLES_ALL) };
-        (!handler.is_null()).then(|| unsafe { CFString::wrap_under_create_rule(handler) }.to_string())
+        let handler = unsafe {
+            LSCopyDefaultRoleHandlerForContentType(kind.as_concrete_TypeRef(), ROLES_ALL)
+        };
+        (!handler.is_null())
+            .then(|| unsafe { CFString::wrap_under_create_rule(handler) }.to_string())
     }
 }
 
@@ -142,7 +196,9 @@ pub fn is_default_file_manager() -> bool {
         return files_sdk::log::command("xdg-mime")
             .args(["query", "default", "inode/directory"])
             .output()
-            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == format!("{APP_ID}.desktop"));
+            .is_ok_and(|output| {
+                String::from_utf8_lossy(&output.stdout).trim() == format!("{APP_ID}.desktop")
+            });
     }
     #[allow(unreachable_code)]
     false
@@ -159,35 +215,66 @@ pub fn make_default_file_manager() -> std::io::Result<()> {
         for classes in WINDOWS_CLASSES {
             let verb = format!(r"{classes}\{WINDOWS_VERB}");
             reg(&["add", &verb, "/ve", "/d", "Open in file FORCE", "/f"])?;
-            reg(&["add", &format!(r"{verb}\command"), "/ve", "/d", &command, "/f"])?;
+            reg(&[
+                "add",
+                &format!(r"{verb}\command"),
+                "/ve",
+                "/d",
+                &command,
+                "/f",
+            ])?;
             // The default verb: what a double-click runs.
             reg(&["add", classes, "/ve", "/d", WINDOWS_VERB, "/f"])?;
         }
-        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, "Files now opens folders instead of Explorer".to_string(), None);
+        files_sdk::log::record(
+            "desktop",
+            files_sdk::log::Kind::Setting,
+            "Files now opens folders instead of Explorer".to_string(),
+            None,
+        );
         return Ok(());
     }
     #[cfg(target_os = "macos")]
     {
         mac::set_folder_handler(APP_ID)?;
         // Cocoa apps' "Show in Finder" (NSWorkspace) asks this one.
-        let _ = files_sdk::log::command("defaults").args(["write", "-g", "NSFileViewer", "-string", APP_ID]).status();
+        let _ = files_sdk::log::command("defaults")
+            .args(["write", "-g", "NSFileViewer", "-string", APP_ID])
+            .status();
         // The terminal's `open <folder>` too (new terminal windows).
         set_open_script(true)?;
-        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, "Files now opens folders instead of Finder".to_string(), None);
+        files_sdk::log::record(
+            "desktop",
+            files_sdk::log::Kind::Setting,
+            "Files now opens folders instead of Finder".to_string(),
+            None,
+        );
         return Ok(());
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         install_desktop_entry();
-        let status = files_sdk::log::command("xdg-mime").args(["default", &format!("{APP_ID}.desktop"), "inode/directory"]).status()?;
+        let status = files_sdk::log::command("xdg-mime")
+            .args(["default", &format!("{APP_ID}.desktop"), "inode/directory"])
+            .status()?;
         if !status.success() {
-            return Err(std::io::Error::other("xdg-mime could not set the default file manager"));
+            return Err(std::io::Error::other(
+                "xdg-mime could not set the default file manager",
+            ));
         }
-        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, "Files is now the default file manager".to_string(), None);
+        files_sdk::log::record(
+            "desktop",
+            files_sdk::log::Kind::Setting,
+            "Files is now the default file manager".to_string(),
+            None,
+        );
         return Ok(());
     }
     #[allow(unreachable_code)]
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Only on Linux"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Only on Linux",
+    ))
 }
 
 // ------------------------------------------------------------ Windows
@@ -198,7 +285,10 @@ pub fn make_default_file_manager() -> std::io::Result<()> {
 #[cfg_attr(not(windows), allow(dead_code))]
 const WINDOWS_VERB: &str = "openinfiles";
 #[cfg_attr(not(windows), allow(dead_code))]
-const WINDOWS_CLASSES: [&str; 2] = [r"HKCU\Software\Classes\Directory\shell", r"HKCU\Software\Classes\Drive\shell"];
+const WINDOWS_CLASSES: [&str; 2] = [
+    r"HKCU\Software\Classes\Directory\shell",
+    r"HKCU\Software\Classes\Drive\shell",
+];
 
 /// The command a folder verb runs: `"C:\…\file-force.exe" --from-shell "%V"`.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -221,7 +311,11 @@ pub fn just_arrived(dir: &std::path::Path) -> Option<PathBuf> {
         .filter_map(|item| {
             let metadata = item.metadata().ok()?;
             let changed = metadata.created().ok().max(metadata.modified().ok())?;
-            (metadata.is_file() && now.duration_since(changed).is_ok_and(|age| age.as_secs() < 120)).then(|| (changed, item.path()))
+            (metadata.is_file()
+                && now
+                    .duration_since(changed)
+                    .is_ok_and(|age| age.as_secs() < 120))
+            .then(|| (changed, item.path()))
         })
         .max_by_key(|(changed, _)| *changed)
         .map(|(_, path)| path)
@@ -269,7 +363,14 @@ pub fn hand_shell_folders_to_explorer() {
 #[cfg(windows)]
 fn reg(args: &[&str]) -> std::io::Result<()> {
     let status = files_sdk::log::command("reg").args(args).status()?;
-    if status.success() { Ok(()) } else { Err(std::io::Error::other(format!("reg {} failed", args.first().copied().unwrap_or_default()))) }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "reg {} failed",
+            args.first().copied().unwrap_or_default()
+        )))
+    }
 }
 
 // ------------------------------------------------------- macOS `open`
@@ -335,7 +436,9 @@ pub fn with_profile_block(profile: &str, dir: Option<&std::path::Path>) -> Strin
 
 /// zsh (the default) and bash profiles in the home folder.
 fn profiles() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else { return Vec::new() };
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
     let mut list = vec![home.join(".zshrc")];
     let bash = home.join(".bash_profile");
     if bash.exists() {
@@ -434,8 +537,14 @@ pub fn install_cli() -> std::io::Result<String> {
         let program = if cfg!(target_os = "macos") {
             format!("exec /usr/bin/open -b {APP_ID} \"$@\"")
         } else {
-            let exe = std::env::var_os("APPIMAGE").map(PathBuf::from).or_else(|| std::env::current_exe().ok()).unwrap_or_default();
-            format!("exec \"{}\" \"$@\"", exe.display().to_string().replace('"', "\\\""))
+            let exe = std::env::var_os("APPIMAGE")
+                .map(PathBuf::from)
+                .or_else(|| std::env::current_exe().ok())
+                .unwrap_or_default();
+            format!(
+                "exec \"{}\" \"$@\"",
+                exe.display().to_string().replace('"', "\\\"")
+            )
         };
         std::fs::write(&file, files_script(&program))?;
         use std::os::unix::fs::PermissionsExt as _;
@@ -466,12 +575,22 @@ pub fn uninstall_cli() -> std::io::Result<()> {
 fn windows_user_path(dir: &std::path::Path, add: bool) -> std::io::Result<()> {
     let dir = dir.display().to_string().replace('\'', "''");
     let script = if add {
-        format!("$p=[Environment]::GetEnvironmentVariable('Path','User'); if (($p -split ';') -notcontains '{dir}') {{ [Environment]::SetEnvironmentVariable('Path', (($p.TrimEnd(';')) + ';{dir}').TrimStart(';'), 'User') }}")
+        format!(
+            "$p=[Environment]::GetEnvironmentVariable('Path','User'); if (($p -split ';') -notcontains '{dir}') {{ [Environment]::SetEnvironmentVariable('Path', (($p.TrimEnd(';')) + ';{dir}').TrimStart(';'), 'User') }}"
+        )
     } else {
-        format!("$p=[Environment]::GetEnvironmentVariable('Path','User'); [Environment]::SetEnvironmentVariable('Path', (($p -split ';') | Where-Object {{ $_ -and $_ -ne '{dir}' }}) -join ';', 'User')")
+        format!(
+            "$p=[Environment]::GetEnvironmentVariable('Path','User'); [Environment]::SetEnvironmentVariable('Path', (($p -split ';') | Where-Object {{ $_ -and $_ -ne '{dir}' }}) -join ';', 'User')"
+        )
     };
-    let status = files_sdk::log::command("powershell").args(["-NoProfile", "-Command", &script]).status()?;
-    if status.success() { Ok(()) } else { Err(std::io::Error::other("Could not change PATH")) }
+    let status = files_sdk::log::command("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("Could not change PATH"))
+    }
 }
 
 /// Windows: Explorer opens folders again.
@@ -482,30 +601,52 @@ pub fn restore_explorer() -> std::io::Result<()> {
             let _ = reg(&["delete", classes, "/ve", "/f"]);
             let _ = reg(&["delete", &format!(r"{classes}\{WINDOWS_VERB}"), "/f"]);
         }
-        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, "Explorer opens folders again".to_string(), None);
+        files_sdk::log::record(
+            "desktop",
+            files_sdk::log::Kind::Setting,
+            "Explorer opens folders again".to_string(),
+            None,
+        );
         return Ok(());
     }
     #[allow(unreachable_code)]
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Only on Windows"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Only on Windows",
+    ))
 }
 
 /// Gives folders back to the system's own manager (Finder, Explorer).
 pub fn restore_system_file_manager() -> std::io::Result<()> {
-    if cfg!(windows) { restore_explorer() } else { restore_finder() }
+    if cfg!(windows) {
+        restore_explorer()
+    } else {
+        restore_finder()
+    }
 }
 
 /// macOS: Finder opens folders again.
 pub fn restore_finder() -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        let _ = files_sdk::log::command("defaults").args(["delete", "-g", "NSFileViewer"]).status();
+        let _ = files_sdk::log::command("defaults")
+            .args(["delete", "-g", "NSFileViewer"])
+            .status();
         set_open_script(false)?;
         mac::set_folder_handler("com.apple.finder")?;
-        files_sdk::log::record("desktop", files_sdk::log::Kind::Setting, "Finder opens folders again".to_string(), None);
+        files_sdk::log::record(
+            "desktop",
+            files_sdk::log::Kind::Setting,
+            "Finder opens folders again".to_string(),
+            None,
+        );
         return Ok(());
     }
     #[allow(unreachable_code)]
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Only on macOS"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Only on macOS",
+    ))
 }
 
 #[cfg(test)]
@@ -517,22 +658,47 @@ mod tests {
         let dir = std::env::temp_dir();
         let plain = launch_path(["files".to_string(), dir.display().to_string()]).unwrap();
         assert_eq!(plain, dir.canonicalize().unwrap());
-        let url = url::Url::from_file_path(dir.canonicalize().unwrap()).unwrap().to_string();
-        assert_eq!(launch_path(["files".to_string(), "--flag".to_string(), url]).unwrap(), dir.canonicalize().unwrap());
+        let url = url::Url::from_file_path(dir.canonicalize().unwrap())
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            launch_path(["files".to_string(), "--flag".to_string(), url]).unwrap(),
+            dir.canonicalize().unwrap()
+        );
         assert_eq!(launch_path(["files".to_string()]), None);
-        assert_eq!(launch_path(["files".to_string(), "/no/such/folder".to_string()]), None);
+        assert_eq!(
+            launch_path(["files".to_string(), "/no/such/folder".to_string()]),
+            None
+        );
     }
 
     #[test]
     fn the_files_command_opens_its_arguments_or_the_current_folder() {
         let script = files_script("exec /usr/bin/open -b dev.fileforce.files \"$@\"");
-        assert!(script.starts_with("#!/bin/sh") && script.contains("set -- \"$PWD\"") && script.contains("open -b dev.fileforce.files"));
+        assert!(
+            script.starts_with("#!/bin/sh")
+                && script.contains("set -- \"$PWD\"")
+                && script.contains("open -b dev.fileforce.files")
+        );
         let path = std::env::temp_dir().join(format!("file-force-cli-{}.sh", std::process::id()));
         std::fs::write(&path, &script).unwrap();
-        assert!(std::process::Command::new("sh").arg("-n").arg(&path).status().unwrap().success(), "valid sh");
+        assert!(
+            std::process::Command::new("sh")
+                .arg("-n")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success(),
+            "valid sh"
+        );
         let _ = std::fs::remove_file(&path);
-        let cmd = files_cmd(std::path::Path::new(r"C:\Program Files\Files\file-force.exe"));
-        assert!(cmd.contains(r#"start "" "C:\Program Files\Files\file-force.exe" "%CD%""#) && cmd.contains("%*"));
+        let cmd = files_cmd(std::path::Path::new(
+            r"C:\Program Files\Files\file-force.exe",
+        ));
+        assert!(
+            cmd.contains(r#"start "" "C:\Program Files\Files\file-force.exe" "%CD%""#)
+                && cmd.contains("%*")
+        );
     }
 
     #[test]
@@ -540,9 +706,18 @@ mod tests {
         let dir = std::path::Path::new("/Users/me/Library/Application Support/file-force/bin");
         let profile = "export EDITOR=vim\n";
         let added = with_profile_block(profile, Some(dir));
-        assert!(added.starts_with("export EDITOR=vim\n") && added.contains("export PATH=\"/Users/me/Library/Application Support/file-force/bin:$PATH\""));
+        assert!(
+            added.starts_with("export EDITOR=vim\n")
+                && added.contains(
+                    "export PATH=\"/Users/me/Library/Application Support/file-force/bin:$PATH\""
+                )
+        );
         assert_eq!(with_profile_block(&added, Some(dir)), added, "added once");
-        assert_eq!(with_profile_block(&added, None).trim_end(), "export EDITOR=vim", "removed exactly");
+        assert_eq!(
+            with_profile_block(&added, None).trim_end(),
+            "export EDITOR=vim",
+            "removed exactly"
+        );
     }
 
     #[cfg(unix)]
@@ -550,10 +725,23 @@ mod tests {
     fn the_open_script_passes_everything_but_folders_on() {
         // A stand-in /usr/bin/open is not possible, so check the script with sh -n
         // and that packages and flags never count as folders.
-        let script = std::env::temp_dir().join(format!("file-force-open-script-{}.sh", std::process::id()));
+        let script =
+            std::env::temp_dir().join(format!("file-force-open-script-{}.sh", std::process::id()));
         std::fs::write(&script, OPEN_SCRIPT).unwrap();
-        assert!(std::process::Command::new("sh").arg("-n").arg(&script).status().unwrap().success(), "valid sh");
-        assert!(OPEN_SCRIPT.contains("*.app|") && OPEN_SCRIPT.contains("-*) folders=0") && OPEN_SCRIPT.contains("exec /usr/bin/open \"$@\""));
+        assert!(
+            std::process::Command::new("sh")
+                .arg("-n")
+                .arg(&script)
+                .status()
+                .unwrap()
+                .success(),
+            "valid sh"
+        );
+        assert!(
+            OPEN_SCRIPT.contains("*.app|")
+                && OPEN_SCRIPT.contains("-*) folders=0")
+                && OPEN_SCRIPT.contains("exec /usr/bin/open \"$@\"")
+        );
         let _ = std::fs::remove_file(&script);
     }
 
@@ -564,16 +752,38 @@ mod tests {
         std::fs::write(dir.join("report.pdf"), b"pdf").unwrap();
         let dir = dir.canonicalize().unwrap();
         let folder = dir.display().to_string();
-        let args = |extra: &[&str]| std::iter::once("files").chain(extra.iter().copied()).map(String::from).collect::<Vec<_>>();
-        assert_eq!(launch_target(args(&[FROM_SHELL, &folder])).and_then(|path| path.file_name().map(|name| name.to_owned())), Some("report.pdf".into()), "the download is selected");
-        assert_eq!(launch_target(args(&[&folder])), Some(dir.clone()), "a plain start opens the folder");
+        let args = |extra: &[&str]| {
+            std::iter::once("files")
+                .chain(extra.iter().copied())
+                .map(String::from)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            launch_target(args(&[FROM_SHELL, &folder]))
+                .and_then(|path| path.file_name().map(|name| name.to_owned())),
+            Some("report.pdf".into()),
+            "the download is selected"
+        );
+        assert_eq!(
+            launch_target(args(&[&folder])),
+            Some(dir.clone()),
+            "a plain start opens the folder"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn windows_folders_open_by_path_shell_folders_stay_explorer_s() {
-        assert_eq!(windows_command(std::path::Path::new(r"C:\Program Files\Files\file-force.exe")), r#""C:\Program Files\Files\file-force.exe" --from-shell "%V""#);
-        assert!(is_shell_folder("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}") && is_shell_folder("shell:Downloads"));
+        assert_eq!(
+            windows_command(std::path::Path::new(
+                r"C:\Program Files\Files\file-force.exe"
+            )),
+            r#""C:\Program Files\Files\file-force.exe" --from-shell "%V""#
+        );
+        assert!(
+            is_shell_folder("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}")
+                && is_shell_folder("shell:Downloads")
+        );
         assert!(!is_shell_folder(r"C:\Users\me"));
     }
 

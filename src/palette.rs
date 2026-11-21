@@ -39,32 +39,47 @@ use crate::settings::{IconTheme, ThemePreset};
 static LOOK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub fn set_look(theme: ThemePreset, icons: IconTheme) {
-    let theme = ThemePreset::ALL.iter().position(|preset| *preset == theme).unwrap_or(0) as u8;
-    let icons = IconTheme::ALL.iter().position(|style| *style == icons).unwrap_or(0) as u8;
+    let theme = ThemePreset::ALL
+        .iter()
+        .position(|preset| *preset == theme)
+        .unwrap_or(0) as u8;
+    let icons = IconTheme::ALL
+        .iter()
+        .position(|style| *style == icons)
+        .unwrap_or(0) as u8;
     LOOK.store(theme | icons << 4, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn look() -> (ThemePreset, IconTheme) {
     let value = LOOK.load(std::sync::atomic::Ordering::Relaxed);
-    (ThemePreset::ALL[(value & 0xf) as usize % ThemePreset::ALL.len()], IconTheme::ALL[(value >> 4) as usize % IconTheme::ALL.len()])
+    (
+        ThemePreset::ALL[(value & 0xf) as usize % ThemePreset::ALL.len()],
+        IconTheme::ALL[(value >> 4) as usize % IconTheme::ALL.len()],
+    )
 }
 
 /// Settings → Appearance → Font: the interface font chosen over the theme's.
 static FONT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Settings → Appearance → Corners, over the theme's radii.
-static CORNERS: std::sync::Mutex<crate::settings::Corners> = std::sync::Mutex::new(crate::settings::Corners::Theme);
+static CORNERS: std::sync::Mutex<crate::settings::Corners> =
+    std::sync::Mutex::new(crate::settings::Corners::Theme);
 
 pub fn set_corners(corners: crate::settings::Corners) {
-    *CORNERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = corners;
+    *CORNERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = corners;
 }
 
 pub fn set_font(font: Option<String>) {
-    *FONT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = font.filter(|font| !font.trim().is_empty());
+    *FONT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        font.filter(|font| !font.trim().is_empty());
 }
 
 fn chosen_font() -> Option<String> {
-    FONT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    FONT.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// Omarchy's terminal look is on: monospace, square, flat.
@@ -76,21 +91,30 @@ impl Palette {
     /// The palette for any window: theme, accent and Accessibility → High
     /// contrast. (Only the main window also applies Appearance opacity.)
     pub fn from_settings(settings: &crate::settings::AppSettings) -> Self {
-        let palette = Self::new(settings.scheme, settings.accent).with_accessibility(&settings.accessibility);
+        let palette =
+            Self::new(settings.scheme, settings.accent).with_accessibility(&settings.accessibility);
         let mut palette = if settings.accessibility.high_contrast() {
             palette.with_high_contrast(settings.scheme.is_dark())
         } else {
             palette
         };
-        palette.shimmer &= !crate::power::power_saving_for(settings.power_saving, settings.power_saving_below);
+        palette.shimmer &=
+            !crate::power::power_saving_for(settings.power_saving, settings.power_saving_below);
         palette
     }
 
     /// Text contrast and Shimmer from Accessibility.
-    pub fn with_accessibility(mut self, accessibility: &crate::settings::AccessibilitySettings) -> Self {
-        self.text_outline = accessibility
-            .text_contrast()
-            .then(|| if self.text.l < 0.5 { gpui_kit::white() } else { gpui_kit::black() });
+    pub fn with_accessibility(
+        mut self,
+        accessibility: &crate::settings::AccessibilitySettings,
+    ) -> Self {
+        self.text_outline = accessibility.text_contrast().then(|| {
+            if self.text.l < 0.5 {
+                gpui_kit::white()
+            } else {
+                gpui_kit::black()
+            }
+        });
         self.shimmer = accessibility.shimmer();
         self
     }
@@ -110,7 +134,12 @@ impl Palette {
     /// Makes the panel backgrounds see-through (1.0 = opaque).
     pub fn with_opacity(mut self, opacity: f32) -> Self {
         if opacity < 1. {
-            for color in [&mut self.window, &mut self.sidebar, &mut self.surface, &mut self.hover] {
+            for color in [
+                &mut self.window,
+                &mut self.sidebar,
+                &mut self.surface,
+                &mut self.hover,
+            ] {
                 color.a *= opacity;
             }
             // Raised surfaces (menus, cards) stay more solid for legibility.
@@ -209,7 +238,9 @@ impl Palette {
 /// Timing for every animated GPUI Kit component. Smooth and Relaxed ease in
 /// *and* out (the stock exit curve accelerates into the end, which reads as
 /// abrupt) and use slower, overshoot-free springs.
-pub fn motion_tokens(style: crate::settings::MotionStyle) -> gpui_kit::component::theme::MotionTokens {
+pub fn motion_tokens(
+    style: crate::settings::MotionStyle,
+) -> gpui_kit::component::theme::MotionTokens {
     use crate::settings::MotionStyle;
     use gpui_kit::base::{Easing, Spring};
     use std::time::Duration;
@@ -229,7 +260,9 @@ pub fn motion_tokens(style: crate::settings::MotionStyle) -> gpui_kit::component
         easing_exit: curve(0.33, 0.0, 0.2, 1.0),
         easing_move: curve(0.65, 0.0, 0.35, 1.0),
         spring_control: Spring::new(Duration::from_millis(spring)).with_damping(1.0),
-        spring_move: Spring::new(Duration::from_millis(travel)).with_damping(0.95).with_epsilon(0.1),
+        spring_move: Spring::new(Duration::from_millis(travel))
+            .with_damping(0.95)
+            .with_epsilon(0.1),
         ..stock
     }
 }
@@ -264,7 +297,9 @@ pub fn apply_theme(cx: &mut App, scheme: ColorScheme, accent: Accent) {
     });
     // The UI font before any theme changed it, for switching back.
     static UI_FONT: std::sync::OnceLock<gpui_kit::SharedString> = std::sync::OnceLock::new();
-    let ui_font = UI_FONT.get_or_init(|| cx.global::<Theme>().font_family.clone()).clone();
+    let ui_font = UI_FONT
+        .get_or_init(|| cx.global::<Theme>().font_family.clone())
+        .clone();
     let tui = terminal_look();
     let preset = look().0;
     // Corners: a terminal's none, Windows 11's 4/8, Finder's 6/10.
@@ -274,7 +309,11 @@ pub fn apply_theme(cx: &mut App, scheme: ColorScheme, accent: Accent) {
         ThemePreset::MacOs => (6., 10.),
         _ => (7., 11.),
     };
-    let (radius, radius_lg) = CORNERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).radii().unwrap_or((radius, radius_lg));
+    let (radius, radius_lg) = CORNERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .radii()
+        .unwrap_or((radius, radius_lg));
     // Segoe UI where it exists; elsewhere the system font stands in.
     let font: gpui_kit::SharedString = match preset {
         // The user's own choice wins over every theme's.
@@ -342,7 +381,17 @@ pub fn apply_theme(cx: &mut App, scheme: ColorScheme, accent: Accent) {
 /// A palette from its colors in order.
 #[allow(clippy::too_many_arguments)]
 fn palette(
-    [window, sidebar, surface, elevated, hover, border, text, muted, faint]: [u32; 9],
+    [
+        window,
+        sidebar,
+        surface,
+        elevated,
+        hover,
+        border,
+        text,
+        muted,
+        faint,
+    ]: [u32; 9],
     accent: Hsla,
     selection: Hsla,
     contrast: u32,
@@ -380,7 +429,10 @@ impl Palette {
     fn tokyo_night(dark: bool) -> Self {
         if dark {
             palette(
-                [0x1a1b26, 0x16161e, 0x1f2335, 0x24283b, 0x292e42, 0x414868, 0xc0caf5, 0xa9b1d6, 0x565f89],
+                [
+                    0x1a1b26, 0x16161e, 0x1f2335, 0x24283b, 0x292e42, 0x414868, 0xc0caf5, 0xa9b1d6,
+                    0x565f89,
+                ],
                 color(0x7aa2f7),
                 color(0x283457),
                 0x1a1b26,
@@ -388,7 +440,10 @@ impl Palette {
             )
         } else {
             palette(
-                [0xe1e2e7, 0xd0d5e3, 0xe9e9ed, 0xf2f2f5, 0xc4c8da, 0xa8aecb, 0x3760bf, 0x6172b0, 0x8990b3],
+                [
+                    0xe1e2e7, 0xd0d5e3, 0xe9e9ed, 0xf2f2f5, 0xc4c8da, 0xa8aecb, 0x3760bf, 0x6172b0,
+                    0x8990b3,
+                ],
                 color(0x2e7de9),
                 color(0xb7c1e3),
                 0xffffff,
@@ -407,7 +462,10 @@ impl Palette {
                 Accent::Amber => 0xffb557,
             });
             palette(
-                [0x202020, 0x1c1c1c, 0x2b2b2b, 0x2d2d2d, 0x353535, 0x3b3b3b, 0xffffff, 0xc5c5c5, 0x8a8a8a],
+                [
+                    0x202020, 0x1c1c1c, 0x2b2b2b, 0x2d2d2d, 0x353535, 0x3b3b3b, 0xffffff, 0xc5c5c5,
+                    0x8a8a8a,
+                ],
                 accent,
                 alpha(accent, 0.22),
                 0x000000,
@@ -420,7 +478,10 @@ impl Palette {
                 Accent::Amber => 0xc04d00,
             });
             palette(
-                [0xf3f3f3, 0xebebeb, 0xfbfbfb, 0xffffff, 0xe5e5e5, 0xe0e0e0, 0x1a1a1a, 0x5d5d5d, 0x8a8a8a],
+                [
+                    0xf3f3f3, 0xebebeb, 0xfbfbfb, 0xffffff, 0xe5e5e5, 0xe0e0e0, 0x1a1a1a, 0x5d5d5d,
+                    0x8a8a8a,
+                ],
                 accent,
                 alpha(accent, 0.14),
                 0xffffff,
@@ -439,7 +500,10 @@ impl Palette {
                 Accent::Amber => 0xff9f0a,
             });
             palette(
-                [0x1e1e1e, 0x282828, 0x232323, 0x2c2c2e, 0x323234, 0x3a3a3c, 0xf5f5f7, 0xa1a1a6, 0x6e6e73],
+                [
+                    0x1e1e1e, 0x282828, 0x232323, 0x2c2c2e, 0x323234, 0x3a3a3c, 0xf5f5f7, 0xa1a1a6,
+                    0x6e6e73,
+                ],
                 accent,
                 alpha(accent, 0.32),
                 0xffffff,
@@ -452,7 +516,10 @@ impl Palette {
                 Accent::Amber => 0xff9500,
             });
             palette(
-                [0xffffff, 0xf0f0f2, 0xfafafa, 0xffffff, 0xe8e8ed, 0xd8d8dc, 0x1d1d1f, 0x6e6e73, 0x98989d],
+                [
+                    0xffffff, 0xf0f0f2, 0xfafafa, 0xffffff, 0xe8e8ed, 0xd8d8dc, 0x1d1d1f, 0x6e6e73,
+                    0x98989d,
+                ],
                 accent,
                 alpha(accent, 0.2),
                 0xffffff,
@@ -471,7 +538,10 @@ impl Palette {
                 Accent::Amber => 0xfab387,
             });
             palette(
-                [0x1e1e2e, 0x181825, 0x313244, 0x313244, 0x45475a, 0x45475a, 0xcdd6f4, 0xa6adc8, 0x7f849c],
+                [
+                    0x1e1e2e, 0x181825, 0x313244, 0x313244, 0x45475a, 0x45475a, 0xcdd6f4, 0xa6adc8,
+                    0x7f849c,
+                ],
                 accent,
                 alpha(accent, 0.22),
                 0x11111b,
@@ -484,7 +554,10 @@ impl Palette {
                 Accent::Amber => 0xfe640b,
             });
             palette(
-                [0xeff1f5, 0xe6e9ef, 0xffffff, 0xffffff, 0xdce0e8, 0xccd0da, 0x4c4f69, 0x6c6f85, 0x8c8fa1],
+                [
+                    0xeff1f5, 0xe6e9ef, 0xffffff, 0xffffff, 0xdce0e8, 0xccd0da, 0x4c4f69, 0x6c6f85,
+                    0x8c8fa1,
+                ],
                 accent,
                 alpha(accent, 0.16),
                 0xffffff,
@@ -526,22 +599,54 @@ mod tests {
         assert!(snappy.duration_normal < smooth.duration_normal);
         assert!(smooth.duration_normal < relaxed.duration_normal);
         // The exit curve must decelerate into the end, not accelerate.
-        let exit = |tokens: &gpui_kit::component::theme::MotionTokens, t: f32| tokens.easing_exit.sample(t);
-        assert!(exit(&smooth, 0.9) > exit(&snappy, 0.9), "smooth exit should be nearly done near the end");
+        let exit = |tokens: &gpui_kit::component::theme::MotionTokens, t: f32| {
+            tokens.easing_exit.sample(t)
+        };
+        assert!(
+            exit(&smooth, 0.9) > exit(&snappy, 0.9),
+            "smooth exit should be nearly done near the end"
+        );
     }
 
     #[test]
     fn themes_have_light_and_dark_colors() {
         let omarchy = Palette::themed(ThemePreset::Omarchy, true, Accent::Amber);
-        assert_eq!((omarchy.window, omarchy.accent), (color(0x1a1b26), color(0x7aa2f7)), "Tokyo Night, its own blue");
-        assert_eq!(Palette::themed(ThemePreset::Omarchy, false, Accent::Iris).window, color(0xe1e2e7), "Tokyo Night Day");
+        assert_eq!(
+            (omarchy.window, omarchy.accent),
+            (color(0x1a1b26), color(0x7aa2f7)),
+            "Tokyo Night, its own blue"
+        );
+        assert_eq!(
+            Palette::themed(ThemePreset::Omarchy, false, Accent::Iris).window,
+            color(0xe1e2e7),
+            "Tokyo Night Day"
+        );
         let mocha = Palette::themed(ThemePreset::Catppuccin, true, Accent::Azure);
-        assert_eq!((mocha.window, mocha.accent), (color(0x1e1e2e), color(0x89b4fa)));
-        assert_eq!(Palette::themed(ThemePreset::Catppuccin, false, Accent::Iris).accent, color(0x8839ef), "Latte mauve");
-        assert_eq!(Palette::themed(ThemePreset::MacOs, false, Accent::Azure).accent, color(0x007aff), "system blue");
-        assert_eq!(Palette::themed(ThemePreset::Windows, true, Accent::Azure).window, color(0x202020), "Windows 11 dark");
+        assert_eq!(
+            (mocha.window, mocha.accent),
+            (color(0x1e1e2e), color(0x89b4fa))
+        );
+        assert_eq!(
+            Palette::themed(ThemePreset::Catppuccin, false, Accent::Iris).accent,
+            color(0x8839ef),
+            "Latte mauve"
+        );
+        assert_eq!(
+            Palette::themed(ThemePreset::MacOs, false, Accent::Azure).accent,
+            color(0x007aff),
+            "system blue"
+        );
+        assert_eq!(
+            Palette::themed(ThemePreset::Windows, true, Accent::Azure).window,
+            color(0x202020),
+            "Windows 11 dark"
+        );
         set_look(ThemePreset::Windows, IconTheme::Accent);
-        assert_eq!(look(), (ThemePreset::Windows, IconTheme::Accent), "five themes fit the packed setting");
+        assert_eq!(
+            look(),
+            (ThemePreset::Windows, IconTheme::Accent),
+            "five themes fit the packed setting"
+        );
         set_look(ThemePreset::Default, IconTheme::Colorful);
     }
 
@@ -551,7 +656,10 @@ mod tests {
         let glass = opaque.with_opacity(0.6);
         assert!((glass.window.a - 0.6).abs() < 1e-6);
         assert!((glass.sidebar.a - 0.6).abs() < 1e-6);
-        assert!(glass.elevated.a > glass.window.a, "raised surfaces stay more solid");
+        assert!(
+            glass.elevated.a > glass.window.a,
+            "raised surfaces stay more solid"
+        );
         assert_eq!(glass.text, opaque.text);
         assert_eq!(opaque.with_opacity(1.0).window, opaque.window);
     }

@@ -4,13 +4,13 @@
 use std::path::PathBuf;
 
 use gpui_kit::base::h_flex;
-use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
-use gpui_kit::component::Sizable as _;
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::{
-    AnyElement, App, Context, DragMoveEvent, Entity, EntityId, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Styled as _, Window, div, px,
+    AnyElement, App, Context, DragMoveEvent, Entity, EntityId, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, Styled as _, Window, div, px,
 };
 
 use crate::app::FileExplorer;
@@ -36,19 +36,33 @@ impl DraggedFile {
     /// Same as [`Self::paths`], for when the source explorer is the one being
     /// updated (a drop inside the same window) and cannot be read through `cx`.
     pub fn paths_from(&self, explorer: &FileExplorer) -> Vec<PathBuf> {
-        let selection = explorer.selected_entries();
-        let items: Vec<crate::model::Entry> = if selection.iter().any(|entry| entry.id == self.entry.id) {
+        dragged_paths(explorer, &self.entry)
+    }
+}
+
+/// A drag that starts on `entry` takes the whole selection when `entry` is
+/// in it, else `entry` alone.
+pub fn dragged_paths(explorer: &FileExplorer, entry: &crate::model::Entry) -> Vec<PathBuf> {
+    let selection = explorer.selected_entries();
+    let items: Vec<crate::model::Entry> =
+        if selection.iter().any(|selected| selected.id == entry.id) {
             selection
         } else {
-            vec![self.entry.clone()]
+            vec![entry.clone()]
         };
-        items.into_iter().filter_map(|entry| entry.path.as_deref().map(|path| path.to_path_buf())).collect()
-    }
+    items
+        .into_iter()
+        .filter_map(|entry| entry.path.as_deref().map(|path| path.to_path_buf()))
+        .collect()
 }
 
 /// What the platform gets when a drag leaves the window: the real files, so
 /// another window of this app (or Finder) can take them.
-pub fn native_payload(drag: &DraggedFile, _: &mut Window, cx: &mut App) -> Option<gpui_kit::ExternalDragPayload> {
+pub fn native_payload(
+    drag: &DraggedFile,
+    _: &mut Window,
+    cx: &mut App,
+) -> Option<gpui_kit::ExternalDragPayload> {
     let entries: Vec<(PathBuf, bool)> = drag
         .paths(cx)
         .into_iter()
@@ -57,10 +71,15 @@ pub fn native_payload(drag: &DraggedFile, _: &mut Window, cx: &mut App) -> Optio
             (path, folder)
         })
         .collect();
-    (!entries.is_empty()).then(|| gpui_kit::ExternalDragPayload::Files(gpui_kit::FileDragPaths::new(entries)))
+    (!entries.is_empty())
+        .then(|| gpui_kit::ExternalDragPayload::Files(gpui_kit::FileDragPaths::new(entries)))
 }
 
-pub fn dragged_file(entry: crate::model::Entry, palette: Palette, cx: &mut Context<FileExplorer>) -> DraggedFile {
+pub fn dragged_file(
+    entry: crate::model::Entry,
+    palette: Palette,
+    cx: &mut Context<FileExplorer>,
+) -> DraggedFile {
     DraggedFile {
         entry,
         palette,
@@ -111,28 +130,35 @@ impl Render for DragFilePreview {
                     .flex_col()
                     .gap_0p5()
                     .child(div().text_sm().truncate().child(name))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(self.palette.accent)
-                            .child(if window.modifiers().alt { "Copy (⌥)" } else { "Move or copy" }),
-                    ),
+                    .child(div().text_xs().text_color(self.palette.accent).child(
+                        if window.modifiers().alt {
+                            "Copy (⌥)"
+                        } else {
+                            "Move or copy"
+                        },
+                    )),
             )
     }
 }
 
 impl FileExplorer {
-    pub(crate) fn render_drop_area(&mut self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_drop_area(
+        &mut self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // Pictures decoded for this folder live in its own cache, freed
         // when another folder opens (the global one never lets go).
         let folder_key = format!("images-{}", self.active_location().label());
-        let content = gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(folder_key.into())))
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .min_w_0()
-            .child(self.render_mode_content(palette, cx));
+        let content = gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(
+            folder_key.into(),
+        )))
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        .child(self.render_mode_content(palette, cx));
         let window_id = cx.entity_id();
         let location = self.active_location();
         let accepts = location.path().is_some();
@@ -228,14 +254,23 @@ impl FileExplorer {
 
     /// A drop into this window's folder, following Settings → Behavior:
     /// Copy, Move or Finder's rule, optionally asking every time. ⌥ copies.
-    pub fn receive_files(&mut self, paths: Vec<PathBuf>, force_copy: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn receive_files(
+        &mut self,
+        paths: Vec<PathBuf>,
+        force_copy: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.active_location().is_remote() {
             let location = self.active_location();
             self.upload_remote(paths, location, cx);
             return;
         }
         let Some(target) = self.active_location().path() else {
-            self.notice = Some(format!("Cannot drop into {}", self.active_location().label()));
+            self.notice = Some(format!(
+                "Cannot drop into {}",
+                self.active_location().label()
+            ));
             cx.notify();
             return;
         };
@@ -251,7 +286,10 @@ impl FileExplorer {
             crate::settings::DropAction::Copy => Operation::Copy,
             crate::settings::DropAction::Move => Operation::Move,
             crate::settings::DropAction::Finder => {
-                if paths.first().is_some_and(|first| crate::transfer::same_volume(first, &target)) {
+                if paths
+                    .first()
+                    .is_some_and(|first| crate::transfer::same_volume(first, &target))
+                {
                     Operation::Move
                 } else {
                     Operation::Copy
@@ -280,7 +318,12 @@ impl FileExplorer {
         let explorer = cx.entity().downgrade();
         let palette = self.palette();
         let what = match paths.as_slice() {
-            [single] => format!("\"{}\"", single.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned())),
+            [single] => format!(
+                "\"{}\"",
+                single
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+            ),
             all => format!("{} items", all.len()),
         };
         let stop_asking = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -340,18 +383,32 @@ impl FileExplorer {
                                         .on_click(|_, window, cx| window.close_dialog(cx)),
                                 )
                                 .child({
-                                    let button = gpui_kit::component::button::Button::new("drop-move")
-                                        .small()
-                                        .label("Move")
-                                        .on_click(move |_, window, cx| move_(Operation::Move, window, cx));
-                                    if suggested == Operation::Move { button.primary() } else { button.secondary() }
+                                    let button =
+                                        gpui_kit::component::button::Button::new("drop-move")
+                                            .small()
+                                            .label("Move")
+                                            .on_click(move |_, window, cx| {
+                                                move_(Operation::Move, window, cx)
+                                            });
+                                    if suggested == Operation::Move {
+                                        button.primary()
+                                    } else {
+                                        button.secondary()
+                                    }
                                 })
                                 .child({
-                                    let button = gpui_kit::component::button::Button::new("drop-copy")
-                                        .small()
-                                        .label("Copy")
-                                        .on_click(move |_, window, cx| copy(Operation::Copy, window, cx));
-                                    if suggested == Operation::Copy { button.primary() } else { button.secondary() }
+                                    let button =
+                                        gpui_kit::component::button::Button::new("drop-copy")
+                                            .small()
+                                            .label("Copy")
+                                            .on_click(move |_, window, cx| {
+                                                copy(Operation::Copy, window, cx)
+                                            });
+                                    if suggested == Operation::Copy {
+                                        button.primary()
+                                    } else {
+                                        button.secondary()
+                                    }
                                 }),
                         ),
                 )
@@ -381,22 +438,47 @@ impl FileExplorer {
         }
         let settings = self.appearance.read(cx).clone();
         let home = crate::model::Location::Home.path().unwrap_or_default();
-        let verb = if operation == Operation::Move { "Moving" } else { "Copying" };
-        self.notice = Some(format!("{verb} {} item{}…", paths.len(), if paths.len() == 1 { "" } else { "s" }));
+        let verb = if operation == Operation::Move {
+            "Moving"
+        } else {
+            "Copying"
+        };
+        self.notice = Some(format!(
+            "{verb} {} item{}…",
+            paths.len(),
+            if paths.len() == 1 { "" } else { "s" }
+        ));
         cx.notify();
         let destination = target.clone();
         cx.spawn_in(window, async move |this, cx| {
             let report = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::transfer::transfer(&paths, &destination, operation, &settings.deletion.protected, &home)
+                    crate::transfer::transfer(
+                        &paths,
+                        &destination,
+                        operation,
+                        &settings.deletion.protected,
+                        &home,
+                    )
                 })
                 .await;
             let _ = this.update_in(cx, |this, _, cx| {
-                let verb = if operation == Operation::Move { "Moved" } else { "Copied" };
-                let mut notice = format!("{verb} {} item{}", report.done.len(), if report.done.len() == 1 { "" } else { "s" });
+                let verb = if operation == Operation::Move {
+                    "Moved"
+                } else {
+                    "Copied"
+                };
+                let mut notice = format!(
+                    "{verb} {} item{}",
+                    report.done.len(),
+                    if report.done.len() == 1 { "" } else { "s" }
+                );
                 if let Some((item, reason)) = report.skipped.first() {
-                    notice.push_str(&format!(" · {} skipped ({item}: {reason})", report.skipped.len()));
+                    notice.push_str(&format!(
+                        " · {} skipped ({item}: {reason})",
+                        report.skipped.len()
+                    ));
                 }
                 files_sdk::log::record(
                     "files",
@@ -406,15 +488,26 @@ impl FileExplorer {
                 );
                 // Big transfers finish while you do something else: tell when done.
                 if report.done.len() >= 20 || !report.skipped.is_empty() {
-                    let level = if report.skipped.is_empty() { files_sdk::log::Level::Success } else { files_sdk::log::Level::Warning };
-                    files_sdk::log::notify("files", level, notice.clone(), Some(target.display().to_string()));
+                    let level = if report.skipped.is_empty() {
+                        files_sdk::log::Level::Success
+                    } else {
+                        files_sdk::log::Level::Warning
+                    };
+                    files_sdk::log::notify(
+                        "files",
+                        level,
+                        notice.clone(),
+                        Some(target.display().to_string()),
+                    );
                 }
                 this.notice = Some(notice);
                 // Select what arrived.
                 let ids: Vec<gpui_kit::SharedString> = report
                     .done
                     .iter()
-                    .filter_map(|path| crate::model::entry(&path.to_string_lossy()).map(|entry| entry.id.clone()))
+                    .filter_map(|path| {
+                        crate::model::entry(&path.to_string_lossy()).map(|entry| entry.id.clone())
+                    })
                     .collect();
                 if let Some(last) = ids.last().cloned() {
                     this.selection = ids.clone();

@@ -1,11 +1,14 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::base::h_flex;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{AnyElement, AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, px};
+use gpui_kit::{
+    AnyElement, AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _,
+    StatefulInteractiveElement as _, Styled as _, div, px,
+};
 
 use crate::app::FileExplorer;
 use crate::model::Location;
@@ -16,6 +19,37 @@ impl FileExplorer {
         let active_tab = self.active_tab;
         let active_location = self.active_location();
         let tab_count = self.tabs.len();
+        let active_mode = self.mode;
+        // Every tab by its name, for the ▾ list (GPUI Kit's own says "Unnamed":
+        // our tabs draw their title themselves).
+        let names: Vec<(String, IconName)> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let location = if index == active_tab {
+                    active_location
+                } else {
+                    tab.location()
+                };
+                let mode = if index == active_tab {
+                    active_mode
+                } else {
+                    tab.mode
+                };
+                match tab.panel_icon {
+                    Some(icon) => (tab.panel_title.to_string(), icon),
+                    None => (
+                        format!(
+                            "{} · {}",
+                            crate::model::trim_middle(location.label(), 40),
+                            mode.label()
+                        ),
+                        location_icon(location),
+                    ),
+                }
+            })
+            .collect();
         let tabs = self.tabs.iter().enumerate().map(|(index, tab)| {
             let location = if index == active_tab {
                 active_location
@@ -25,9 +59,13 @@ impl FileExplorer {
             let active = index == active_tab;
             let (label, icon) = match tab.panel_icon {
                 Some(icon) => (tab.panel_title.to_string(), icon),
-                None => (crate::model::trim_middle(location.label(), 24).into_owned(), location_icon(location)),
+                None => (
+                    crate::model::trim_middle(location.label(), 24).into_owned(),
+                    location_icon(location),
+                ),
             };
             let pinned = tab.pinned;
+            let mode = if active { active_mode } else { tab.mode };
             let close = Button::new(("close-workspace-tab", tab.id))
                 .ghost()
                 .xsmall()
@@ -46,37 +84,177 @@ impl FileExplorer {
                 .debug_selector(move || format!("workspace-tab-{selector}"))
                 .gap_1p5()
                 .items_center()
-                .child(Icon::new(if pinned { IconName::Pin } else { icon }).xsmall().text_color(if active { palette.accent } else { palette.muted }))
+                .child(
+                    Icon::new(if pinned { IconName::Pin } else { icon })
+                        .xsmall()
+                        .text_color(if active {
+                            palette.accent
+                        } else {
+                            palette.muted
+                        }),
+                )
                 .child(label)
+                // The tab's view style: an icon, plus a short badge for the non-default ones.
+                .when(tab.panel_icon.is_none(), |title| {
+                    title.child(
+                        h_flex()
+                            .id(("workspace-tab-mode", tab.id))
+                            .gap_0p5()
+                            .items_center()
+                            .text_color(palette.faint)
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(format!(
+                                    "{} view",
+                                    mode.label()
+                                ))
+                                .build(window, cx)
+                            })
+                            .child(Icon::new(mode.icon()).xsmall())
+                            .when(mode != crate::model::ViewMode::Expressive, |badge| {
+                                badge.child(
+                                    div().text_size(px(9.)).child(mode.label().to_uppercase()),
+                                )
+                            }),
+                    )
+                })
                 // Drag a tab onto another to move it there.
-                .on_drag(DraggedTab { index, label: drag_label }, |tab, _, _, cx| cx.new(|_| tab.clone()))
-                .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(palette.accent_soft).rounded_md())
-                .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| this.move_tab(dragged.index, index, window, cx)))
+                .on_drag(
+                    DraggedTab {
+                        index,
+                        label: drag_label,
+                    },
+                    |tab, _, _, cx| cx.new(|_| tab.clone()),
+                )
+                .drag_over::<DraggedTab>(move |style, _, _, _| {
+                    style.bg(palette.accent_soft).rounded_md()
+                })
+                .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                    this.move_tab(dragged.index, index, window, cx)
+                }))
                 .context_menu(move |menu, window, cx| {
                     let settings = explorer.read(cx).appearance.read(cx).clone();
                     // Each item: its color from Appearance, its hotkey (grey) from the keymap.
-                    let item = |label: &'static str, icon: IconName, key: &str, action: Box<dyn gpui_kit::Action>| {
-                        crate::views::context_menu::tinted_item(label, icon, crate::menu_colors::color_for(&settings, key)).action(action)
+                    let item = |label: &'static str,
+                                icon: IconName,
+                                key: &str,
+                                action: Box<dyn gpui_kit::Action>| {
+                        crate::views::context_menu::tinted_item(
+                            label,
+                            icon,
+                            crate::menu_colors::color_for(&settings, key),
+                        )
+                        .action(action)
                     };
-                    menu.item(item("Close", IconName::X, "tab-close", Box::new(crate::app::CloseTab)).disabled(tab_count == 1).on_click(window.listener_for(
-                        &explorer,
-                        move |this, _, window, cx| this.close_tab(index, window, cx),
-                    )))
-                    .item(item("Close Tabs to the Left", IconName::ArrowLeftToLine, "tab-close-left", Box::new(crate::app::CloseTabsLeft)).disabled(index == 0).on_click(
-                        window.listener_for(&explorer, move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at < clicked, window, cx)),
-                    ))
-                    .item(item("Close Other Tabs", IconName::Copy, "tab-close-others", Box::new(crate::app::CloseOtherTabs)).disabled(tab_count == 1).on_click(
-                        window.listener_for(&explorer, move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at != clicked, window, cx)),
-                    ))
-                    .item(
-                        item("Close Tabs to the Right", IconName::ArrowRightToLine, "tab-close-right", Box::new(crate::app::CloseTabsRight))
+                    let menu = menu
+                        .item(
+                            item(
+                                "Close",
+                                IconName::X,
+                                "tab-close",
+                                Box::new(crate::app::CloseTab),
+                            )
+                            .disabled(tab_count == 1)
+                            .on_click(
+                                window.listener_for(&explorer, move |this, _, window, cx| {
+                                    this.close_tab(index, window, cx)
+                                }),
+                            ),
+                        )
+                        .item(
+                            item(
+                                "Close Tabs to the Left",
+                                IconName::ArrowLeftToLine,
+                                "tab-close-left",
+                                Box::new(crate::app::CloseTabsLeft),
+                            )
+                            .disabled(index == 0)
+                            .on_click(window.listener_for(
+                                &explorer,
+                                move |this, _, window, cx| {
+                                    this.close_tabs_where(
+                                        index,
+                                        |at, clicked| at < clicked,
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            )),
+                        )
+                        .item(
+                            item(
+                                "Close Other Tabs",
+                                IconName::Copy,
+                                "tab-close-others",
+                                Box::new(crate::app::CloseOtherTabs),
+                            )
+                            .disabled(tab_count == 1)
+                            .on_click(window.listener_for(
+                                &explorer,
+                                move |this, _, window, cx| {
+                                    this.close_tabs_where(
+                                        index,
+                                        |at, clicked| at != clicked,
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            )),
+                        )
+                        .item(
+                            item(
+                                "Close Tabs to the Right",
+                                IconName::ArrowRightToLine,
+                                "tab-close-right",
+                                Box::new(crate::app::CloseTabsRight),
+                            )
                             .disabled(index + 1 == tab_count)
-                            .on_click(window.listener_for(&explorer, move |this, _, window, cx| this.close_tabs_where(index, |at, clicked| at > clicked, window, cx))),
-                    )
-                    .separator()
-                    .item(
-                        item(if pinned { "Unpin Tab" } else { "Pin Tab" }, if pinned { IconName::PinOff } else { IconName::Pin }, "tab-pin", Box::new(crate::app::TogglePinTab))
-                            .on_click(window.listener_for(&explorer, move |this, _, _, cx| this.toggle_pin_tab(index, cx))),
+                            .on_click(window.listener_for(
+                                &explorer,
+                                move |this, _, window, cx| {
+                                    this.close_tabs_where(
+                                        index,
+                                        |at, clicked| at > clicked,
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            )),
+                        )
+                        .separator()
+                        .item(
+                            item(
+                                if pinned { "Unpin Tab" } else { "Pin Tab" },
+                                if pinned {
+                                    IconName::PinOff
+                                } else {
+                                    IconName::Pin
+                                },
+                                "tab-pin",
+                                Box::new(crate::app::TogglePinTab),
+                            )
+                            .on_click(
+                                window.listener_for(&explorer, move |this, _, _, cx| {
+                                    this.toggle_pin_tab(index, cx)
+                                }),
+                            ),
+                        );
+                    // The tab's view style, switched from here (selects the tab first).
+                    crate::model::ViewMode::ALL.into_iter().fold(
+                        menu.separator(),
+                        |menu, choice| {
+                            menu.item(
+                                PopupMenuItem::new(format!("{} View", choice.label()))
+                                    .icon(choice.icon())
+                                    .checked(choice == mode)
+                                    .on_click(window.listener_for(
+                                        &explorer,
+                                        move |this, _, window, cx| {
+                                            this.select_tab(index, window, cx);
+                                            this.set_mode(choice, cx);
+                                        },
+                                    )),
+                            )
+                        },
                     )
                 });
             Tab::new()
@@ -103,7 +281,6 @@ impl FileExplorer {
             .child(
                 TabBar::new("workspace-tabs")
                     .folder()
-                    .menu(true)
                     .max_width(px(190.))
                     .track_scroll(&self.tab_scroll)
                     .selected_index(active_tab)
@@ -118,6 +295,20 @@ impl FileExplorer {
                             .flex_shrink_0()
                             .items_center()
                             .gap_1()
+                            .child(Button::new("all-workspace-tabs").ghost().xsmall().dropdown_caret(true).tooltip("All tabs").dropdown_menu({
+                                let explorer = cx.entity();
+                                move |menu, window, _| {
+                                    let menu = menu.scrollable(true);
+                                    names.iter().enumerate().fold(menu, |menu, (index, (name, icon))| {
+                                        menu.item(
+                                            PopupMenuItem::new(name.clone())
+                                                .icon(*icon)
+                                                .checked(index == active_tab)
+                                                .on_click(window.listener_for(&explorer, move |this: &mut FileExplorer, _, window, cx| this.select_tab(index, window, cx))),
+                                        )
+                                    })
+                                }
+                            }))
                             .child(
                                 Button::new("new-workspace-tab")
                                     .ghost()
@@ -159,7 +350,13 @@ fn location_icon(location: Location) -> IconName {
         Location::Remote(_) => IconName::Cloud,
         Location::Trash => IconName::Trash,
         Location::Tag(_) => IconName::Tag,
-        Location::Dir(_) if location.path().and_then(|path| crate::forks::fork_of(&path)).is_some() => {
+        Location::Smart(folder) => folder.icon(),
+        Location::Dir(_)
+            if location
+                .path()
+                .and_then(|path| crate::forks::fork_of(&path))
+                .is_some() =>
+        {
             IconName::GitFork
         }
         Location::Dir(_) => IconName::Folder,
@@ -174,7 +371,18 @@ pub(crate) struct DraggedTab {
 }
 
 impl gpui_kit::Render for DraggedTab {
-    fn render(&mut self, _: &mut gpui_kit::Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
-        div().px_3().py_1().rounded_md().bg(gpui_kit::hsla(0., 0., 0.2, 0.9)).text_sm().text_color(gpui_kit::white()).child(self.label.clone())
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        _: &mut gpui_kit::Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_1()
+            .rounded_md()
+            .bg(gpui_kit::hsla(0., 0., 0.2, 0.9))
+            .text_sm()
+            .text_color(gpui_kit::white())
+            .child(self.label.clone())
     }
 }

@@ -133,11 +133,19 @@ pub fn commands() -> Vec<Command> {
 }
 
 /// The keystrokes a command answers to with `overrides` applied.
-pub fn effective(command: &Command, overrides: &BTreeMap<String, String>, mac: bool) -> Vec<String> {
+pub fn effective(
+    command: &Command,
+    overrides: &BTreeMap<String, String>,
+    mac: bool,
+) -> Vec<String> {
     match overrides.get(command.id) {
         Some(keys) if keys.trim().is_empty() => Vec::new(),
         Some(keys) => vec![keys.trim().to_string()],
-        None => command.defaults(mac).iter().map(|keys| keys.to_string()).collect(),
+        None => command
+            .defaults(mac)
+            .iter()
+            .map(|keys| keys.to_string())
+            .collect(),
     }
 }
 
@@ -154,7 +162,11 @@ fn binding(keys: &str, action: Box<dyn Action>, context: &str, cx: &App) -> Opti
 /// Binds every command, honouring `overrides`. Safe to call again after
 /// overrides change: later bindings win, and keys a command no longer uses
 /// are bound to `NoAction` in its context, so the old shortcut stops working.
-pub fn apply(cx: &mut App, previous: &BTreeMap<String, String>, overrides: &BTreeMap<String, String>) {
+pub fn apply(
+    cx: &mut App,
+    previous: &BTreeMap<String, String>,
+    overrides: &BTreeMap<String, String>,
+) {
     let mac = cx.platform_info().is_mac();
     let mut bindings = Vec::new();
     for command in commands() {
@@ -173,28 +185,46 @@ pub fn apply(cx: &mut App, previous: &BTreeMap<String, String>, overrides: &BTre
 
 /// Commands provided by one extension (by its catalog name).
 pub fn for_extension(name: &str) -> Vec<Command> {
-    commands().into_iter().filter(|command| command.extension == Some(name)).collect()
+    commands()
+        .into_iter()
+        .filter(|command| command.extension == Some(name))
+        .collect()
 }
 
 /// Commands other than `id` that already use `keys` in `id`'s context.
-pub fn clashes(id: &str, keys: &str, overrides: &BTreeMap<String, String>, mac: bool) -> Vec<&'static str> {
+pub fn clashes(
+    id: &str,
+    keys: &str,
+    overrides: &BTreeMap<String, String>,
+    mac: bool,
+) -> Vec<&'static str> {
     let all = commands();
     let Some(command) = all.iter().find(|command| command.id == id) else {
         return Vec::new();
     };
     all.iter()
         .filter(|other| other.id != id && other.context == command.context)
-        .filter(|other| effective(other, overrides, mac).iter().any(|other_keys| other_keys == keys))
+        .filter(|other| {
+            effective(other, overrides, mac)
+                .iter()
+                .any(|other_keys| other_keys == keys)
+        })
         .map(|other| other.label)
         .collect()
 }
 
 /// Commands that share a keystroke in the same context.
-pub fn conflicts(overrides: &BTreeMap<String, String>, mac: bool) -> BTreeMap<String, Vec<&'static str>> {
+pub fn conflicts(
+    overrides: &BTreeMap<String, String>,
+    mac: bool,
+) -> BTreeMap<String, Vec<&'static str>> {
     let mut by_key: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
     for command in commands() {
         for keys in effective(&command, overrides, mac) {
-            by_key.entry(format!("{}|{keys}", command.context)).or_default().push(command.id);
+            by_key
+                .entry(format!("{}|{keys}", command.context))
+                .or_default()
+                .push(command.id);
         }
     }
     by_key.retain(|_, ids| ids.len() > 1);
@@ -215,7 +245,11 @@ pub fn keystroke_text(keystroke: &gpui_kit::Keystroke) -> String {
         parts.push("shift");
     }
     if modifiers.platform {
-        parts.push(if cfg!(target_os = "macos") { "cmd" } else { "super" });
+        parts.push(if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "super"
+        });
     }
     if modifiers.function {
         parts.push("fn");
@@ -238,11 +272,35 @@ pub fn display(keys: &str, mac: bool) -> String {
                 None => ("", &[][..]),
             };
             let key = match key {
-                "space" => if mac { "Space" } else { "Space" },
-                "enter" => if mac { "↩" } else { "Enter" },
+                "space" => {
+                    if mac {
+                        "Space"
+                    } else {
+                        "Space"
+                    }
+                }
+                "enter" => {
+                    if mac {
+                        "↩"
+                    } else {
+                        "Enter"
+                    }
+                }
                 "escape" => "Esc",
-                "backspace" => if mac { "⌫" } else { "Backspace" },
-                "delete" => if mac { "⌦" } else { "Del" },
+                "backspace" => {
+                    if mac {
+                        "⌫"
+                    } else {
+                        "Backspace"
+                    }
+                }
+                "delete" => {
+                    if mac {
+                        "⌦"
+                    } else {
+                        "Del"
+                    }
+                }
                 "tab" => "Tab",
                 "up" => "↑",
                 "down" => "↓",
@@ -251,7 +309,11 @@ pub fn display(keys: &str, mac: bool) -> String {
                 other => other,
             }
             .to_string();
-            let key = if key.chars().count() == 1 { key.to_uppercase() } else { key };
+            let key = if key.chars().count() == 1 {
+                key.to_uppercase()
+            } else {
+                key
+            };
             let symbols: Vec<&str> = modifiers
                 .iter()
                 .map(|modifier| match (*modifier, mac) {
@@ -289,7 +351,11 @@ mod tests {
                 // Sequences are space-separated keystrokes; each must parse.
                 for stroke in keys.split(' ') {
                     let stroke: &'static str = Box::leak(stroke.to_string().into_boxed_str());
-                    assert!(gpui_kit::Keystroke::parse(stroke).is_ok(), "{}: {keys}", command.id);
+                    assert!(
+                        gpui_kit::Keystroke::parse(stroke).is_ok(),
+                        "{}: {keys}",
+                        command.id
+                    );
                 }
             }
         }
@@ -297,7 +363,10 @@ mod tests {
 
     #[test]
     fn overrides_replace_or_unbind_defaults() {
-        let new_tab = commands().into_iter().find(|command| command.id == "explorer.new_tab").unwrap();
+        let new_tab = commands()
+            .into_iter()
+            .find(|command| command.id == "explorer.new_tab")
+            .unwrap();
         let none = BTreeMap::new();
         assert_eq!(effective(&new_tab, &none, true), ["cmd-t"]);
         let rebound = BTreeMap::from([("explorer.new_tab".to_string(), "cmd-y".to_string())]);
@@ -308,19 +377,33 @@ mod tests {
 
     #[test]
     fn conflicts_are_per_context() {
-        assert!(conflicts(&BTreeMap::new(), true).is_empty(), "defaults must not clash");
+        assert!(
+            conflicts(&BTreeMap::new(), true).is_empty(),
+            "defaults must not clash"
+        );
         let clash = BTreeMap::from([("explorer.new_tab".to_string(), "cmd-w".to_string())]);
         let found = conflicts(&clash, true);
-        assert_eq!(found.get("FileExplorer|cmd-w").map(Vec::len), Some(2), "{found:?}");
+        assert_eq!(
+            found.get("FileExplorer|cmd-w").map(Vec::len),
+            Some(2),
+            "{found:?}"
+        );
     }
 
     #[test]
     fn extension_commands_are_tagged_and_clashes_are_found() {
         let archives = for_extension("Archives");
         assert_eq!(archives.len(), 2);
-        assert!(archives.iter().all(|command| command.group == "Extension · Archives"));
+        assert!(
+            archives
+                .iter()
+                .all(|command| command.group == "Extension · Archives")
+        );
         let none = BTreeMap::new();
-        assert_eq!(clashes("explorer.new_tab", "cmd-w", &none, true), ["Close tab"]);
+        assert_eq!(
+            clashes("explorer.new_tab", "cmd-w", &none, true),
+            ["Close tab"]
+        );
         assert!(clashes("explorer.new_tab", "cmd-y", &none, true).is_empty());
         // Same keys in another context are fine (Quick Look's Space vs the list's).
         assert!(clashes("quick_look.close", "cmd-w", &none, true).is_empty());
@@ -329,7 +412,11 @@ mod tests {
     #[test]
     fn displays_mac_symbols() {
         assert_eq!(display("cmd-shift-k", true), "⌘⇧K");
-        assert_eq!(display("cmd-n f f", true), "⌘N F F", "sequences show every step");
+        assert_eq!(
+            display("cmd-n f f", true),
+            "⌘N F F",
+            "sequences show every step"
+        );
         assert_eq!(display("ctrl-alt-p", false), "Ctrl+Alt+P");
         assert_eq!(display("space", true), "Space");
         assert_eq!(display("", true), "—");

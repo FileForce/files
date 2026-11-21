@@ -19,7 +19,15 @@ pub struct Applies {
 
 impl Applies {
     pub fn to(extensions: &[&str]) -> Self {
-        Self { extensions: extensions.iter().map(|extension| extension.to_string()).collect(), folders: false, min: 1, max: 0 }
+        Self {
+            extensions: extensions
+                .iter()
+                .map(|extension| extension.to_string())
+                .collect(),
+            folders: false,
+            min: 1,
+            max: 0,
+        }
     }
 
     /// Every selected item fits, and there are as many as wanted.
@@ -33,7 +41,11 @@ impl Applies {
                 return false;
             }
             self.extensions.is_empty()
-                || path.extension().is_some_and(|extension| self.extensions.iter().any(|wanted| wanted.eq_ignore_ascii_case(&extension.to_string_lossy())))
+                || path.extension().is_some_and(|extension| {
+                    self.extensions
+                        .iter()
+                        .any(|wanted| wanted.eq_ignore_ascii_case(&extension.to_string_lossy()))
+                })
         })
     }
 }
@@ -42,9 +54,21 @@ impl Applies {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Field {
     /// One of `options`, the first chosen to begin with.
-    Choice { key: String, label: String, options: Vec<String> },
-    Text { key: String, label: String, default: String },
-    Number { key: String, label: String, default: f64 },
+    Choice {
+        key: String,
+        label: String,
+        options: Vec<String>,
+    },
+    Text {
+        key: String,
+        label: String,
+        default: String,
+    },
+    Number {
+        key: String,
+        label: String,
+        default: f64,
+    },
 }
 
 impl Field {
@@ -79,24 +103,42 @@ pub trait QuickActionProvider: Send + Sync {
     /// Every action it has; Files keeps those that fit the selection.
     fn actions(&self) -> Vec<QuickAction>;
     /// Runs `id` on `selection` with the dialog's `answers` (off the UI thread).
-    fn run(&self, id: &str, selection: &[PathBuf], answers: &[(String, String)]) -> io::Result<Outcome>;
+    fn run(
+        &self,
+        id: &str,
+        selection: &[PathBuf],
+        answers: &[(String, String)],
+    ) -> io::Result<Outcome>;
 }
 
 /// The actions of `providers` that fit `selection`, in order then by title.
 pub fn fitting(actions: Vec<QuickAction>, selection: &[PathBuf]) -> Vec<QuickAction> {
-    let mut fitting: Vec<QuickAction> = actions.into_iter().filter(|action| action.applies.fits(selection)).collect();
-    fitting.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase())));
+    let mut fitting: Vec<QuickAction> = actions
+        .into_iter()
+        .filter(|action| action.applies.fits(selection))
+        .collect();
+    fitting.sort_by(|a, b| {
+        a.order
+            .cmp(&b.order)
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+    });
     fitting
 }
 
 /// The answer to `key`, if given.
 pub fn answer<'a>(answers: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    answers.iter().find(|(asked, _)| asked == key).map(|(_, value)| value.as_str())
+    answers
+        .iter()
+        .find(|(asked, _)| asked == key)
+        .map(|(_, value)| value.as_str())
 }
 
 /// `photo.heic` → `photo.png` beside it, never over an existing file.
 pub fn sibling_with_extension(path: &Path, extension: &str) -> PathBuf {
-    let stem = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let target = path.with_file_name(format!("{stem}.{extension}"));
     if !target.exists() {
         return target;
@@ -110,12 +152,35 @@ mod tests {
 
     #[test]
     fn only_actions_that_fit_the_selection_show_in_order() {
-        let action = |id: &str, extensions: &[&str], order| QuickAction { id: id.into(), title: id.into(), applies: Applies::to(extensions), order, ask: Vec::new() };
-        let all = vec![action("b-rotate", &["png", "jpg"], 20), action("a-convert", &["png", "jpg", "heic"], 10), action("pdf", &["pdf"], 0)];
+        let action = |id: &str, extensions: &[&str], order| QuickAction {
+            id: id.into(),
+            title: id.into(),
+            applies: Applies::to(extensions),
+            order,
+            ask: Vec::new(),
+        };
+        let all = vec![
+            action("b-rotate", &["png", "jpg"], 20),
+            action("a-convert", &["png", "jpg", "heic"], 10),
+            action("pdf", &["pdf"], 0),
+        ];
         let photos = [PathBuf::from("a.PNG"), PathBuf::from("b.jpg")];
-        let ids: Vec<String> = fitting(all.clone(), &photos).into_iter().map(|action| action.id).collect();
-        assert_eq!(ids, ["a-convert", "b-rotate"], "the pdf action is left out, the rest sorted by order");
-        assert!(fitting(all, &[PathBuf::from("a.png"), PathBuf::from("b.pdf")]).is_empty(), "every item must fit");
-        assert_eq!(sibling_with_extension(Path::new("/nowhere/photo.heic"), "png"), PathBuf::from("/nowhere/photo.png"));
+        let ids: Vec<String> = fitting(all.clone(), &photos)
+            .into_iter()
+            .map(|action| action.id)
+            .collect();
+        assert_eq!(
+            ids,
+            ["a-convert", "b-rotate"],
+            "the pdf action is left out, the rest sorted by order"
+        );
+        assert!(
+            fitting(all, &[PathBuf::from("a.png"), PathBuf::from("b.pdf")]).is_empty(),
+            "every item must fit"
+        );
+        assert_eq!(
+            sibling_with_extension(Path::new("/nowhere/photo.heic"), "png"),
+            PathBuf::from("/nowhere/photo.png")
+        );
     }
 }

@@ -1,7 +1,8 @@
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -73,12 +74,26 @@ impl FileExplorer {
             details = details
                 .child(
                     // Freed when another file is selected (the global cache never lets go).
-                    gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(format!("inspector-{:?}", file.path).into())))
-                        .w_full()
-                        .child(if look_inside { preview_block(file.clone(), palette, settings.image_fit) } else { file_thumbnail(&file, palette, 184.) }),
+                    gpui_kit::image_cache(gpui_kit::retain_all(gpui_kit::ElementId::Name(
+                        format!("inspector-{:?}", file.path).into(),
+                    )))
+                    .w_full()
+                    .child(if look_inside {
+                        preview_block(file.clone(), palette, settings.image_fit)
+                    } else {
+                        file_thumbnail(&file, palette, 184.)
+                    }),
                 )
                 .when(file.kind == crate::model::FileKind::Image, |this| {
-                    this.child(h_flex().justify_end().child(crate::views::quick_look::fit_button("inspector-fit", settings.image_fit, self.appearance.clone())))
+                    this.child(
+                        h_flex()
+                            .justify_end()
+                            .child(crate::views::quick_look::fit_button(
+                                "inspector-fit",
+                                settings.image_fit,
+                                self.appearance.clone(),
+                            )),
+                    )
                 })
                 .child(
                     v_flex()
@@ -121,8 +136,8 @@ impl FileExplorer {
                                 .on_click({
                                     let parent = file.parent;
                                     cx.listener(move |this, _, window, cx| {
-                                    this.navigate(parent, window, cx);
-                                })
+                                        this.navigate(parent, window, cx);
+                                    })
                                 }),
                         )
                         .child(
@@ -157,75 +172,178 @@ impl FileExplorer {
                         ))
                         .child(detail_row("Location", location, palette))
                         .children(match file.cloud {
-                            crate::model::CloudState::OnlineOnly => Some(detail_row(
-                                "Cloud",
-                                "Online only · not downloaded",
-                                palette,
-                            )),
+                            crate::model::CloudState::OnlineOnly => {
+                                Some(detail_row("Cloud", "Online only · not downloaded", palette))
+                            }
                             crate::model::CloudState::Downloaded => {
                                 Some(detail_row("Cloud", "Downloaded · kept in sync", palette))
                             }
                             crate::model::CloudState::Local => None,
                         })
                         .children(
-                            (file.is_folder() && file.path.as_deref().is_some_and(crate::forks::has_forks))
-                                .then(|| detail_row("Forks", "This folder has forks", palette)),
+                            (file.is_folder()
+                                && file.path.as_deref().is_some_and(crate::forks::has_forks))
+                            .then(|| detail_row("Forks", "This folder has forks", palette)),
                         ),
                 );
 
+            // Everything the file system says: dates, path, access, storage.
+            let info = crate::properties::full_info(&file, settings.language);
+            if !info.is_empty() {
+                details = details.child(
+                    v_flex()
+                        .gap_3()
+                        .child(inspector_section("INFO", palette))
+                        .children(
+                            info.into_iter()
+                                .map(|(label, value)| owned_row(label.to_string(), value, palette)),
+                        ),
+                );
+            }
+
             // Everything the file itself says: EXIF, streams, compression.
-            if let Some(path) = file.path.clone().filter(|path| look_inside && crate::media_info::applies(path)) {
+            if let Some(path) = file
+                .path
+                .clone()
+                .filter(|path| look_inside && crate::media_info::applies(path))
+            {
                 match crate::media_info::sections(&path) {
                     Some(sections) => {
                         for section in sections {
-                            details = details.child(
-                                v_flex()
-                                    .gap_3()
-                                    .child(inspector_section(section.title, palette))
-                                    .children(section.rows.into_iter().map(|(label, value)| owned_row(label, value, palette))),
-                            );
+                            details =
+                                details.child(
+                                    v_flex()
+                                        .gap_3()
+                                        .child(inspector_section(section.title, palette))
+                                        .children(section.rows.into_iter().map(
+                                            |(label, value)| owned_row(label, value, palette),
+                                        )),
+                                );
                         }
                     }
                     None => {
-                        details = details.child(div().text_xs().text_color(palette.faint).child("Reading details…"));
+                        details = details.child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.faint)
+                                .child("Reading details…"),
+                        );
                         self.redraw_when_details_arrive(cx);
                     }
                 }
             }
 
-            if !file.tags.is_empty() {
+            // Tags: shown, and (macOS) set here — × takes one off, + adds one.
+            let taggable = file
+                .path
+                .clone()
+                .filter(|_| crate::finder_tags::can_write());
+            if !file.tags.is_empty() || taggable.is_some() {
+                let chips = file.tags.iter().map(|tag| {
+                    let tag = tag.clone();
+                    // Finder's own color for the tag; accent when it has none.
+                    let color = crate::finder_tags::color_of(&tag)
+                        .hsla()
+                        .unwrap_or(palette.accent);
+                    h_flex()
+                        .id(gpui_kit::ElementId::Name(
+                            format!("inspector-tag-{tag}").into(),
+                        ))
+                        .px_2()
+                        .py_1()
+                        .gap_1p5()
+                        .rounded_md()
+                        .bg(palette.surface)
+                        .border_1()
+                        .border_color(palette.border)
+                        .text_xs()
+                        .text_color(palette.text)
+                        .cursor_pointer()
+                        .hover(|style| style.bg(palette.hover))
+                        .on_click(cx.listener({
+                            let tag = tag.clone();
+                            move |this, _, window, cx| {
+                                this.navigate(crate::model::Location::tag(&tag), window, cx);
+                            }
+                        }))
+                        .child(div().size(px(7.)).rounded_full().bg(color))
+                        .child(tag.clone())
+                        .when_some(taggable.clone(), |chip, path| {
+                            chip.child(
+                                Button::new(gpui_kit::ElementId::Name(
+                                    format!("inspector-untag-{tag}").into(),
+                                ))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::X)
+                                .tooltip("Remove Tag")
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.change_tag(&path, &tag, false, cx);
+                                    },
+                                )),
+                            )
+                        })
+                        .into_any_element()
+                });
+                let add = taggable.clone().map(|path| {
+                    let explorer = cx.entity();
+                    let on_file: Vec<String> =
+                        file.tags.iter().map(|tag| tag.to_string()).collect();
+                    Button::new("inspector-add-tag")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .tooltip("Add Tag")
+                        .dropdown_menu(move |menu, window, _| {
+                            let others: Vec<crate::finder_tags::TagSummary> =
+                                crate::finder_tags::all()
+                                    .into_iter()
+                                    .filter(|known| !on_file.contains(&known.name))
+                                    .take(20)
+                                    .collect();
+                            let menu = others.into_iter().fold(menu, |menu, known| {
+                                let (path, name) = (path.clone(), known.name.clone());
+                                menu.item(
+                                    gpui_kit::component::menu::PopupMenuItem::new(
+                                        known.name.clone(),
+                                    )
+                                    .on_click(
+                                        window.listener_for(
+                                            &explorer,
+                                            move |this: &mut FileExplorer, _, _, cx| {
+                                                this.change_tag(&path, &name, true, cx)
+                                            },
+                                        ),
+                                    ),
+                                )
+                            });
+                            let path = path.clone();
+                            menu.separator().item(
+                                gpui_kit::component::menu::PopupMenuItem::new("New Tag…")
+                                    .icon(IconName::Plus)
+                                    .on_click(window.listener_for(
+                                        &explorer,
+                                        move |this: &mut FileExplorer, _, window, cx| {
+                                            this.ask_new_tag(path.to_path_buf(), window, cx)
+                                        },
+                                    )),
+                            )
+                        })
+                });
                 details = details.child(
                     v_flex()
                         .gap_3()
                         .child(inspector_section("TAGS", palette))
-                        .child(h_flex().flex_wrap().gap_2().children(file.tags.iter().map(
-                            |tag| {
-                                let tag: &'static str = tag;
-                                // Finder's own color for the tag; accent when it has none.
-                                let color = crate::finder_tags::color_of(tag)
-                                    .hsla()
-                                    .unwrap_or(palette.accent);
-                                h_flex()
-                                    .id(gpui_kit::ElementId::Name(format!("inspector-tag-{tag}").into()))
-                                    .px_2()
-                                    .py_1()
-                                    .gap_1p5()
-                                    .rounded_md()
-                                    .bg(palette.surface)
-                                    .border_1()
-                                    .border_color(palette.border)
-                                    .text_xs()
-                                    .text_color(palette.text)
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(palette.hover))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.navigate(crate::model::Location::tag(tag), window, cx);
-                                    }))
-                                    .child(div().size(px(7.)).rounded_full().bg(color))
-                                    .child(tag)
-                                    .into_any_element()
-                            },
-                        ))),
+                        .child(
+                            h_flex()
+                                .flex_wrap()
+                                .gap_2()
+                                .items_center()
+                                .children(chips)
+                                .children(add),
+                        ),
                 );
             }
 
@@ -344,7 +462,11 @@ impl FileExplorer {
             .iter()
             .map(|(kind, count)| {
                 let label = kind.label().to_lowercase();
-                if *count == 1 { format!("1 {label}") } else { format!("{count} {label}s") }
+                if *count == 1 {
+                    format!("1 {label}")
+                } else {
+                    format!("{count} {label}s")
+                }
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -365,7 +487,13 @@ impl FileExplorer {
                 .items_center()
                 .text_xs()
                 .child(crate::views::files::file_icon(entry, palette, 14.))
-                .child(div().flex_1().min_w_0().truncate().child(entry.name.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(entry.name.clone()),
+                )
         });
         let more = entries.len().saturating_sub(SHOWN_NAMES);
 
@@ -388,7 +516,12 @@ impl FileExplorer {
             .child(inspector_section("SELECTION", palette))
             .child(detail_row("Total size", total, palette))
             .child(v_flex().gap_1p5().children(names).when(more > 0, |this| {
-                this.child(div().text_xs().text_color(palette.faint).child(format!("+{more} more")))
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(palette.faint)
+                        .child(format!("+{more} more")),
+                )
             }))
             .child(
                 h_flex()
@@ -399,7 +532,9 @@ impl FileExplorer {
                             .small()
                             .icon(IconName::Trash)
                             .label("Delete…")
-                            .on_click(cx.listener(|this, _, window, cx| this.open_delete_dialog(window, cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_delete_dialog(window, cx)
+                            })),
                     )
                     .child(
                         Button::new("multi-clear")
@@ -419,7 +554,11 @@ impl FileExplorer {
 
 /// The top of the preview: the beginning of a text or code file (as
 /// Quick Look shows it), a PDF's first page, else the thumbnail.
-fn preview_block(file: crate::model::Entry, palette: Palette, fit: crate::settings::ImageFit) -> AnyElement {
+fn preview_block(
+    file: crate::model::Entry,
+    palette: Palette,
+    fit: crate::settings::ImageFit,
+) -> AnyElement {
     use crate::model::FileKind;
     if let Some(path) = file.path.clone() {
         if matches!(file.kind, FileKind::Text | FileKind::Code)
@@ -434,7 +573,14 @@ fn preview_block(file: crate::model::Entry, palette: Palette, fit: crate::settin
                 .rounded_md()
                 .bg(palette.surface)
                 .overflow_y_scrollbar()
-                .child(div().text_size(px(11.)).font_family(crate::palette::terminal_font()).text_color(palette.text).whitespace_normal().child(text))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_family(crate::palette::terminal_font())
+                        .text_color(palette.text)
+                        .whitespace_normal()
+                        .child(text),
+                )
                 .into_any_element();
         }
         if crate::office_text::applies(&path)
@@ -450,7 +596,13 @@ fn preview_block(file: crate::model::Entry, palette: Palette, fit: crate::settin
                 .rounded_md()
                 .bg(palette.surface)
                 .overflow_y_scrollbar()
-                .child(div().text_xs().text_color(palette.text).whitespace_normal().child(excerpt))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette.text)
+                        .whitespace_normal()
+                        .child(excerpt),
+                )
                 .into_any_element();
         }
         if crate::pdf_pages::is_pdf(&path)
@@ -464,7 +616,9 @@ fn preview_block(file: crate::model::Entry, palette: Palette, fit: crate::settin
                 .bg(palette.surface)
                 .child({
                     use gpui_kit::StyledImage as _;
-                    gpui_kit::img(first).size_full().object_fit(gpui_kit::ObjectFit::Contain)
+                    gpui_kit::img(first)
+                        .size_full()
+                        .object_fit(gpui_kit::ObjectFit::Contain)
                 })
                 .into_any_element();
         }
@@ -475,7 +629,13 @@ fn preview_block(file: crate::model::Entry, palette: Palette, fit: crate::settin
 /// The start of a text file, kept for the file shown (the preview redraws
 /// often; the file is read once).
 fn cached_text(path: &std::path::Path, kind: crate::model::FileKind) -> Option<String> {
-    static LAST: std::sync::Mutex<Option<(std::path::PathBuf, Option<std::time::SystemTime>, Option<String>)>> = std::sync::Mutex::new(None);
+    static LAST: std::sync::Mutex<
+        Option<(
+            std::path::PathBuf,
+            Option<std::time::SystemTime>,
+            Option<String>,
+        )>,
+    > = std::sync::Mutex::new(None);
     let modified = std::fs::metadata(path).ok()?.modified().ok();
     let mut last = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((cached, when, text)) = &*last
@@ -485,7 +645,8 @@ fn cached_text(path: &std::path::Path, kind: crate::model::FileKind) -> Option<S
         return text.clone();
     }
     // A short excerpt: the panel is small; Quick Look shows more.
-    let text = crate::views::quick_look::read_text(path, kind).map(|text| text.lines().take(120).collect::<Vec<_>>().join("\n"));
+    let text = crate::views::quick_look::read_text(path, kind)
+        .map(|text| text.lines().take(120).collect::<Vec<_>>().join("\n"));
     *last = Some((path.to_path_buf(), modified, text.clone()));
     text
 }
@@ -502,7 +663,9 @@ impl FileExplorer {
         let seen = crate::media_info::generation();
         cx.spawn(async move |this, cx| {
             for _ in 0..80 {
-                cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(120))
+                    .await;
                 if crate::media_info::generation() != seen {
                     break;
                 }
@@ -521,8 +684,20 @@ fn owned_row(label: String, value: String, palette: Palette) -> AnyElement {
         .gap_3()
         .items_start()
         .text_xs()
-        .child(div().w(px(104.)).flex_shrink_0().text_color(palette.muted).child(label))
-        .child(div().flex_1().min_w_0().text_color(palette.text).child(value))
+        .child(
+            div()
+                .w(px(104.))
+                .flex_shrink_0()
+                .text_color(palette.muted)
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_color(palette.text)
+                .child(value),
+        )
         .into_any_element()
 }
 
@@ -543,4 +718,90 @@ fn detail_row(label: &'static str, value: impl Into<SharedString>, palette: Pale
         .child(div().w(px(68.)).text_color(palette.muted).child(label))
         .child(div().flex_1().text_color(palette.text).child(value.into()))
         .into_any_element()
+}
+
+impl FileExplorer {
+    /// Puts tag `name` on `path` (`add`) or takes it off, then shows it.
+    pub(crate) fn change_tag(
+        &mut self,
+        path: &std::path::Path,
+        name: &str,
+        add: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let result = if add {
+            crate::finder_tags::add(path, name)
+        } else {
+            crate::finder_tags::remove(path, name)
+        };
+        match result {
+            Ok(()) => {
+                crate::model::forget_entry(path);
+                self.notice = Some(format!(
+                    "{} tag {name}",
+                    if add { "Added" } else { "Removed" }
+                ));
+            }
+            Err(error) => self.notice = Some(format!("Tag not changed: {error}")),
+        }
+        cx.notify();
+    }
+
+    /// Asks for a new tag's name, then puts it on `path`.
+    pub(crate) fn ask_new_tag(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::WindowExt as _;
+        use gpui_kit::component::input::{Input, InputState};
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Tag name"));
+        let explorer = cx.entity();
+        let first = std::cell::Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first.replace(false) {
+                input.update(cx, |state, cx| state.focus(window, cx));
+            }
+            let add = {
+                let (input, explorer, path) = (input.clone(), explorer.clone(), path.clone());
+                move |window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
+                    let name = input.read(cx).value().trim().to_string();
+                    if name.is_empty() {
+                        return false;
+                    }
+                    explorer.update(cx, |this, cx| this.change_tag(&path, &name, true, cx));
+                    window.close_dialog(cx);
+                    true
+                }
+            };
+            let on_ok = add.clone();
+            dialog
+                .title("New Tag")
+                .centered()
+                .w(px(360.))
+                .overlay(true)
+                .overlay_closable(true)
+                .child(Input::new(&input))
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("new-tag-cancel")
+                                .ghost()
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(Button::new("new-tag-add").primary().label("Add").on_click(
+                            move |_, window, cx| {
+                                add(window, cx);
+                            },
+                        )),
+                )
+                .on_ok(move |_, window, cx| on_ok(window, cx))
+        });
+    }
 }

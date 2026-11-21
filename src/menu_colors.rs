@@ -7,7 +7,9 @@ use gpui_kit::{Hsla, rgb};
 use crate::settings::AppSettings;
 
 /// The swatches offered in Settings, in order.
-pub const PRESETS: [&str; 10] = ["red", "orange", "amber", "green", "teal", "blue", "indigo", "purple", "pink", "gray"];
+pub const PRESETS: [&str; 10] = [
+    "red", "orange", "amber", "green", "teal", "blue", "indigo", "purple", "pink", "gray",
+];
 
 /// `delete` is not an extension but is tinted the same way.
 pub const DELETE: &str = "delete";
@@ -25,9 +27,17 @@ pub const BASE: [(&str, &str, &str); 13] = [
     ("properties", "Properties", "info"),
     // The tab's own menu (right-click a tab).
     ("tab-close", "Tab: Close", "x"),
-    ("tab-close-left", "Tab: Close Tabs to the Left", "arrow-left-to-line"),
+    (
+        "tab-close-left",
+        "Tab: Close Tabs to the Left",
+        "arrow-left-to-line",
+    ),
     ("tab-close-others", "Tab: Close Other Tabs", "copy"),
-    ("tab-close-right", "Tab: Close Tabs to the Right", "arrow-right-to-line"),
+    (
+        "tab-close-right",
+        "Tab: Close Tabs to the Right",
+        "arrow-right-to-line",
+    ),
     ("tab-pin", "Tab: Pin / Unpin", "pin"),
 ];
 
@@ -61,7 +71,10 @@ pub fn default_for(key: &str) -> Option<&'static str> {
     if key == DELETE {
         return Some("red");
     }
-    crate::extensions::CATALOG.iter().find(|manifest| manifest.id == key).and_then(|manifest| manifest.menu_color)
+    crate::extensions::CATALOG
+        .iter()
+        .find(|manifest| manifest.id == key)
+        .and_then(|manifest| manifest.menu_color)
 }
 
 /// The setting as stored, or the default (`"none"` when there is none).
@@ -82,7 +95,9 @@ pub fn set(settings: &mut AppSettings, key: &str, value: &str) {
     if default_for(key).unwrap_or("none") == value {
         settings.menu_colors.remove(key);
     } else {
-        settings.menu_colors.insert(key.to_string(), value.to_string());
+        settings
+            .menu_colors
+            .insert(key.to_string(), value.to_string());
     }
 }
 
@@ -102,12 +117,21 @@ mod tests {
         set(&mut settings, "forks", "#112233");
         set(&mut settings, DELETE, "none");
         assert_eq!(color_for(&settings, "forks"), Some(rgb(0x112233).into()));
-        assert!(color_for(&settings, DELETE).is_none(), "red can be turned off");
+        assert!(
+            color_for(&settings, DELETE).is_none(),
+            "red can be turned off"
+        );
         set(&mut settings, "forks", "purple");
-        assert!(!settings.menu_colors.contains_key("forks"), "back to default: no override kept");
+        assert!(
+            !settings.menu_colors.contains_key("forks"),
+            "back to default: no override kept"
+        );
 
         let source = toml::to_string(&settings).unwrap();
-        assert!(source.contains("[menu_colors]") && source.contains("delete = \"none\""), "{source}");
+        assert!(
+            source.contains("[menu_colors]") && source.contains("delete = \"none\""),
+            "{source}"
+        );
         for name in PRESETS {
             assert!(parse(name).is_some(), "{name}");
         }

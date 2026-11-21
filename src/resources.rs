@@ -33,7 +33,11 @@ fn footprint() -> Option<u64> {
     // SAFETY: proc_pid_rusage fills the struct for our own pid.
     unsafe {
         let mut info: libc::rusage_info_v2 = std::mem::zeroed();
-        let result = libc::proc_pid_rusage(std::process::id() as i32, libc::RUSAGE_INFO_V2, (&mut info as *mut libc::rusage_info_v2).cast());
+        let result = libc::proc_pid_rusage(
+            std::process::id() as i32,
+            libc::RUSAGE_INFO_V2,
+            (&mut info as *mut libc::rusage_info_v2).cast(),
+        );
         (result == 0).then_some(info.ri_phys_footprint)
     }
 }
@@ -45,7 +49,9 @@ fn footprint() -> Option<u64> {
 
 /// Takes a sample (call every [`EVERY`]); CPU needs two to compare.
 pub fn sample() -> Sample {
-    let mut sampler = SAMPLER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut sampler = SAMPLER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let sampler = sampler.get_or_insert_with(|| Sampler {
         system: sysinfo::System::new(),
         pid: sysinfo::Pid::from_u32(std::process::id()),
@@ -57,7 +63,9 @@ pub fn sample() -> Sample {
     );
     let process = sampler.system.process(sampler.pid);
     let sample = Sample {
-        memory: footprint().or_else(|| process.map(|process| process.memory())).unwrap_or(0),
+        memory: footprint()
+            .or_else(|| process.map(|process| process.memory()))
+            .unwrap_or(0),
         cpu: process.map_or(0., |process| process.cpu_usage()),
     };
     if sampler.history.len() == KEPT {
@@ -69,7 +77,12 @@ pub fn sample() -> Sample {
 
 /// The samples so far, oldest first.
 pub fn history() -> Vec<Sample> {
-    SAMPLER.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref().map(|sampler| sampler.history.iter().copied().collect()).unwrap_or_default()
+    SAMPLER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|sampler| sampler.history.iter().copied().collect())
+        .unwrap_or_default()
 }
 
 /// One line of "what the app keeps".
@@ -112,7 +125,9 @@ pub fn parts() -> Vec<Part> {
     let notifications = files_sdk::log::notifications().len();
     let players = crate::video::OPEN_PLAYERS.load(std::sync::atomic::Ordering::Relaxed);
     let tracks = files_ext_music::local::library_len();
-    let thumbnails = crate::thumbnails::cache_dir().map(|dir| folder_size(&dir)).unwrap_or_default();
+    let thumbnails = crate::thumbnails::cache_dir()
+        .map(|dir| folder_size(&dir))
+        .unwrap_or_default();
     let music_cache = folder_size(&files_ext_music::cache_dir());
     vec![
         Part {
@@ -121,14 +136,54 @@ pub fn parts() -> Vec<Part> {
             bytes: Some(made * ENTRY_BYTES),
             note: "Kept until quit; \"made\" climbing fast while nothing is browsed is a leak",
         },
-        Part { name: "Folder listings", count: format!("{listings} folders"), bytes: None, note: "Cached briefly, then read again" },
-        Part { name: "Global search index", count: format!("{search} items"), bytes: Some(search as u64 * 8), note: "The ⌘K folder, a few levels deep" },
-        Part { name: "Mail in memory", count: format!("{mail} messages"), bytes: Some(mail_bytes), note: "Text and attachments of opened mail" },
-        Part { name: "Music library", count: format!("{tracks} tracks"), bytes: Some(tracks as u64 * 300), note: "Read when the Music tab opens" },
-        Part { name: "Media players", count: format!("{players} open"), bytes: None, note: "VLC: a video preview or the music player" },
-        Part { name: "Console journal", count: format!("{events} events · {notifications} notifications"), bytes: None, note: "Capped" },
-        Part { name: "Thumbnails on disk", count: format!("{} files", thumbnails.0), bytes: Some(thumbnails.1), note: "Disk, not memory" },
-        Part { name: "Music cache on disk", count: format!("{} files", music_cache.0), bytes: Some(music_cache.1), note: "Downloaded tracks and covers; disk, not memory" },
+        Part {
+            name: "Folder listings",
+            count: format!("{listings} folders"),
+            bytes: None,
+            note: "Cached briefly, then read again",
+        },
+        Part {
+            name: "Global search index",
+            count: format!("{search} items"),
+            bytes: Some(search as u64 * 8),
+            note: "The ⌘K folder, a few levels deep",
+        },
+        Part {
+            name: "Mail in memory",
+            count: format!("{mail} messages"),
+            bytes: Some(mail_bytes),
+            note: "Text and attachments of opened mail",
+        },
+        Part {
+            name: "Music library",
+            count: format!("{tracks} tracks"),
+            bytes: Some(tracks as u64 * 300),
+            note: "Read when the Music tab opens",
+        },
+        Part {
+            name: "Media players",
+            count: format!("{players} open"),
+            bytes: None,
+            note: "VLC: a video preview or the music player",
+        },
+        Part {
+            name: "Console journal",
+            count: format!("{events} events · {notifications} notifications"),
+            bytes: None,
+            note: "Capped",
+        },
+        Part {
+            name: "Thumbnails on disk",
+            count: format!("{} files", thumbnails.0),
+            bytes: Some(thumbnails.1),
+            note: "Disk, not memory",
+        },
+        Part {
+            name: "Music cache on disk",
+            count: format!("{} files", music_cache.0),
+            bytes: Some(music_cache.1),
+            note: "Downloaded tracks and covers; disk, not memory",
+        },
     ]
 }
 
@@ -148,7 +203,11 @@ mod tests {
     #[test]
     fn the_process_is_measured_and_parts_listed() {
         let first = sample();
-        assert!(first.memory > 1 << 20, "our own memory is known: {}", first.memory);
+        assert!(
+            first.memory > 1 << 20,
+            "our own memory is known: {}",
+            first.memory
+        );
         std::thread::sleep(Duration::from_millis(200));
         let second = sample();
         assert!(second.cpu >= 0.);
