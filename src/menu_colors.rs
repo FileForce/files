@@ -16,13 +16,14 @@ pub const DELETE: &str = "delete";
 
 /// The app's own menu items, set in Settings → Appearance (extensions set
 /// theirs on their own page): key, label, icon name.
-pub const BASE: [(&str, &str, &str); 13] = [
+pub const BASE: [(&str, &str, &str); 14] = [
     ("open", "Open", "folder-open"),
     ("quick-look", "Quick Look", "eye"),
     ("favorites", "Add to Favorites", "star"),
     ("new-folder", "New Folder…", "folder-plus"),
     ("new-file", "New File…", "file-plus"),
     ("terminal", "Open in Terminal", "square-terminal"),
+    ("rename", "Rename…", "pencil"),
     (DELETE, "Delete…", "trash"),
     ("properties", "Properties", "info"),
     // The tab's own menu (right-click a tab).

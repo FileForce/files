@@ -1060,13 +1060,13 @@ impl SettingsWindow {
                     .child(h_flex().gap_3().items_center()
                         .child(div().w(px(52.)).text_sm().child("FPS"))
                         .child(div().flex_1().child(gpui_kit::component::slider::Slider::new(&self.fps_slider)))
-                        .child(div().w(px(52.)).text_right().text_xs().text_color(palette.muted).child(format!("{} FPS", self.draft.frame_rate))))
+                        .child(div().w(px(80.)).text_right().text_xs().text_color(palette.muted).child(if self.draft.frame_rate == crate::settings::UNLIMITED_FRAME_RATE { tr(language, "Unlimited", "Без лимита").to_string() } else { format!("{} FPS", self.draft.frame_rate) })))
                     .child(h_flex().px(px(70.)).justify_between().children(crate::settings::FRAME_RATES.map(|fps| {
                         v_flex().items_center().gap_1()
                             .child(div().w(px(2.)).h(px(6.)).rounded_full().bg(if fps == self.draft.frame_rate { palette.accent } else { palette.border }))
-                            .child(div().text_size(px(10.)).text_color(palette.faint).child(fps.to_string()))
+                            .child(div().text_size(px(10.)).text_color(palette.faint).child(if fps == crate::settings::UNLIMITED_FRAME_RATE { "∞".to_string() } else { fps.to_string() }))
                     })))
-                    .child(note(tr(language, "Limits animation frames. 30 FPS is the default; higher values can use more power.", "Ограничивает частоту анимаций. По умолчанию 30 FPS; большие значения расходуют больше энергии."), palette)),
+                    .child(note(tr(language, "Limits animation frames. 30 FPS is the default; higher values can use more power. Unlimited follows the display without an application frame-rate cap.", "Ограничивает частоту анимаций. По умолчанию 30 FPS; большие значения расходуют больше энергии. Без лимита анимации следуют частоте дисплея без ограничения со стороны приложения."), palette)),
             ))
             .child(section(IconName::Languages, tr(language, "Language", "Язык"), palette))
             .child(setting_row(

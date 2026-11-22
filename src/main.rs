@@ -26,6 +26,7 @@ mod mp4_info;
 mod plugins;
 mod power;
 mod quick_actions;
+mod rename;
 mod resources;
 mod session;
 mod sound;

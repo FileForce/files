@@ -7,6 +7,13 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.35
+
+- **F2 renames** the selected local file or folder, also from right-click → Rename…. The name is ready to type (the file's extension is kept), invalid and already-used names are refused, and the renamed item stays selected. **F1 opens Properties**, like in Windows; both shortcuts are rebindable in Settings → Hotkeys.
+- Settings → General → Frame rate adds **Unlimited** (`frame_rate = 0`): no application FPS cap, drawing follows the display. The main and detached DevTools both support it.
+- Music's DevTools Audio meter follows the selected speaker layout: 3.1 shows four channels, 5.1 six and 7.1 eight, even when the physical device accepts only stereo (the sound is still downmixed for it). Applies from the next track.
+- Tabs keep their compact width: the title uses the small text size and the Pro/Dual mode is an icon with a tooltip instead of a wide text badge.
+
 ## 0.1.34
 
 - Windows: file lists scroll again, and tabs and the preview stay in place. The whole-window image cache added in 0.1.33 could leave the content without a bounded height; it has been removed on every platform.

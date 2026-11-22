@@ -455,6 +455,14 @@ pub(crate) fn file_context_menu(
             })
             .separator()
             .item(tinted_command_item(
+                "Rename…",
+                IconName::Pencil,
+                tint("rename"),
+                DemoCommand::Rename,
+                window,
+                &view,
+            ))
+            .item(tinted_command_item(
                 "Delete…",
                 IconName::Trash,
                 tint(crate::menu_colors::DELETE),
@@ -499,7 +507,9 @@ fn shortcut_action(command: DemoCommand) -> Option<Box<dyn gpui_kit::Action>> {
         DemoCommand::Compress => Box::new(CompressSelected),
         DemoCommand::Extract => Box::new(ExtractSelected),
         DemoCommand::CopyPath => Box::new(CopySelectedPath),
+        DemoCommand::Rename => Box::new(RenameSelected),
         DemoCommand::Delete => Box::new(DeleteSelected),
+        DemoCommand::Properties => Box::new(ShowProperties),
         _ => return None,
     })
 }

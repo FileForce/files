@@ -73,6 +73,8 @@ pub fn commands() -> Vec<Command> {
         command!("explorer.dev_tools", "DevTools (Developer mode)", "View", "FileExplorer", &["cmd-shift-d"], &["ctrl-shift-d"], ToggleDevTools),
         command!("explorer.quick_look", "Quick Look", "Files", "FileExplorer", &["space"], &["space"], QuickLook),
         command!("explorer.open", "Open selected", "Files", "FileExplorer", &["enter"], &["enter"], OpenSelected),
+        command!("explorer.rename", "Rename selected", "Files", "FileExplorer", &["f2"], &["f2"], RenameSelected),
+        command!("explorer.properties", "Properties", "Files", "FileExplorer", &["f1"], &["f1"], ShowProperties),
         command!("explorer.new_file", "New file", "Files", "FileExplorer", &["cmd-n"], &["ctrl-n"], NewFile),
         command!("explorer.new_folder", "New folder", "Files", "FileExplorer", &["cmd-n f", "cmd-n cmd-f"], &["ctrl-n f", "ctrl-n ctrl-f"], NewFolder),
         command!(extension "Forks", "forks.fork", "Fork selected folder", "FileExplorer", &["cmd-n f f", "cmd-n cmd-f cmd-f"], &["ctrl-n f f", "ctrl-n ctrl-f ctrl-f"], ForkHere),

@@ -103,6 +103,19 @@ pub fn target() -> Option<Target> {
     }
 }
 
+/// The selected processing layout when DevTools needs its channel meter even
+/// on a device that physically accepts only stereo.
+pub fn monitoring_target() -> Target {
+    monitoring_target_for(layout())
+}
+
+fn monitoring_target_for(layout: SpeakerLayout) -> Target {
+    match layout {
+        SpeakerLayout::Headphones => Target::Headphones,
+        speakers => Target::Speakers(crate::sound::speakers(speakers).len()),
+    }
+}
+
 /// The most channels the system's sound device takes.
 fn device_channels() -> usize {
     let Some(device) = cpal::default_host().default_output_device() else {
@@ -689,6 +702,21 @@ mod tests {
         assert_eq!(channel_levels(), vec![0.5, 0.25]);
         publish_channel_levels(&[0.0; 8], 2);
         assert_eq!(channel_levels(), vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn channel_meter_uses_every_selected_speaker_layout() {
+        for layout in SpeakerLayout::ALL {
+            assert_eq!(
+                monitoring_target_for(layout).channels(),
+                crate::sound::speakers(layout).len(),
+                "{layout:?}"
+            );
+        }
+        assert_eq!(
+            monitoring_target_for(SpeakerLayout::Surround31).channels(),
+            4
+        );
     }
 
     #[test]

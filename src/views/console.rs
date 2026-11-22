@@ -215,7 +215,7 @@ impl FileExplorer {
                     .update(cx, |this: &mut FileExplorer, cx| {
                         let settings = this.appearance.read(cx);
                         if settings.developer.show_fps_counter {
-                            if settings.frame_rate < 60 {
+                            if !crate::settings::uses_display_frame_rate(settings.frame_rate) {
                                 cx.notify();
                                 true
                             } else {
@@ -1073,7 +1073,8 @@ impl Render for DetachedConsole {
         let palette = explorer.read(cx).palette();
         let settings = explorer.read(cx).appearance.read(cx);
         let show_fps_counter = settings.developer.show_fps_counter;
-        let native_frame_rate = show_fps_counter && settings.frame_rate >= 60;
+        let native_frame_rate =
+            show_fps_counter && crate::settings::uses_display_frame_rate(settings.frame_rate);
         if native_frame_rate {
             window.request_animation_frame();
         }

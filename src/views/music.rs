@@ -493,7 +493,7 @@ impl Jukebox {
         let target = crate::spatial_player::target().or_else(|| {
             DEVTOOLS_CHANNELS
                 .load(std::sync::atomic::Ordering::Relaxed)
-                .then_some(files_ext_music::spatial::Target::Speakers(2))
+                .then(crate::spatial_player::monitoring_target)
         });
         if let Some(target) = target
             && self.start_spatial(index, &track, target, cx)

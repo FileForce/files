@@ -46,6 +46,8 @@ actions!(
         FocusPrevious,
         NewWindow,
         DeleteSelected,
+        RenameSelected,
+        ShowProperties,
         ExtendSelectionUp,
         ExtendSelectionDown,
         SelectAll,
@@ -1752,6 +1754,24 @@ impl FileExplorer {
         window.focus_prev(cx);
     }
 
+    fn on_rename_selected(
+        &mut self,
+        _: &RenameSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_demo_command(crate::commands::DemoCommand::Rename, window, cx);
+    }
+
+    fn on_show_properties(
+        &mut self,
+        _: &ShowProperties,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_demo_command(crate::commands::DemoCommand::Properties, window, cx);
+    }
+
     fn on_delete_selected(
         &mut self,
         _: &DeleteSelected,
@@ -2221,7 +2241,9 @@ impl Render for FileExplorer {
         let has_panel = panel.is_some();
         let inspector_visible = self.show_inspector && !has_panel;
         let appearance = self.appearance.read(cx);
-        if appearance.developer.show_fps_counter && appearance.frame_rate >= 60 {
+        if appearance.developer.show_fps_counter
+            && crate::settings::uses_display_frame_rate(appearance.frame_rate)
+        {
             window.request_animation_frame();
         }
 
@@ -2254,6 +2276,8 @@ impl Render for FileExplorer {
             .on_action(cx.listener(Self::on_focus_previous))
             .on_action(cx.listener(Self::on_new_window))
             .on_action(cx.listener(Self::on_delete_selected))
+            .on_action(cx.listener(Self::on_rename_selected))
+            .on_action(cx.listener(Self::on_show_properties))
             .on_action(cx.listener(Self::on_extend_up))
             .on_action(cx.listener(Self::on_extend_down))
             .on_action(cx.listener(Self::on_select_all))
@@ -2821,6 +2845,41 @@ mod tests {
                 Some(name)
             );
         }
+    }
+
+    #[test]
+    fn f2_renames_the_selected_file_and_f1_opens_properties() {
+        let dir = std::env::temp_dir().join(format!("file-force-rename-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("draft.txt"), "keep").unwrap();
+        let (view, cx) = rooted_window(&dir);
+        let id = cx.read(|app| view.read(app).current_entries()[0].id.clone());
+        view.update(cx, |this, cx| this.select_entry(&id, cx));
+
+        cx.simulate_keystrokes("f2");
+        cx.run_until_parked();
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(cx.debug_bounds("rename-dialog").is_some());
+        cx.simulate_input("final");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("final.txt")).unwrap(),
+            "keep"
+        );
+        assert!(!dir.join("draft.txt").exists());
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+
+        let windows = cx.windows().len();
+        cx.simulate_keystrokes("f1");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.windows().len(),
+            windows + 1,
+            "F1 did not open Properties"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

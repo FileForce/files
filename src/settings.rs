@@ -55,7 +55,7 @@ pub struct AppSettings {
     pub license: LicenseSettings,
     /// Update checks.
     pub updates: UpdateSettings,
-    /// Maximum animation frame rate: 24, 30, 45, 60, 90 or 120 FPS.
+    /// Maximum animation frame rate, or 0 for the display's unlimited rate.
     #[serde(default = "default_frame_rate")]
     pub frame_rate: u8,
     /// Reduce background work and animation, automatically or on demand.
@@ -82,7 +82,8 @@ pub struct AppSettings {
     pub system_notifications: SystemNotificationSettings,
 }
 
-pub const FRAME_RATES: [u8; 6] = [24, 30, 45, 60, 90, 120];
+pub const UNLIMITED_FRAME_RATE: u8 = 0;
+pub const FRAME_RATES: [u8; 7] = [24, 30, 45, 60, 90, 120, UNLIMITED_FRAME_RATE];
 
 const fn default_frame_rate() -> u8 {
     30
@@ -104,16 +105,23 @@ pub fn set_frame_rate(frame_rate: u8) {
     );
 }
 
+pub fn uses_display_frame_rate(frame_rate: u8) -> bool {
+    frame_rate == UNLIMITED_FRAME_RATE || frame_rate >= 60
+}
+
 pub fn frame_duration() -> std::time::Duration {
-    std::time::Duration::from_secs_f64(
-        1.0 / FRAME_RATE.load(std::sync::atomic::Ordering::Relaxed) as f64,
-    )
+    let fps = FRAME_RATE.load(std::sync::atomic::Ordering::Relaxed);
+    if fps == UNLIMITED_FRAME_RATE as u32 {
+        std::time::Duration::from_millis(250)
+    } else {
+        std::time::Duration::from_secs_f64(1.0 / fps as f64)
+    }
 }
 
 pub fn animation(duration: std::time::Duration) -> gpui_kit::Animation {
     let animation = gpui_kit::Animation::new(duration);
     let fps = FRAME_RATE.load(std::sync::atomic::Ordering::Relaxed);
-    if fps >= 60 {
+    if uses_display_frame_rate(fps as u8) {
         animation
     } else {
         animation.with_max_fps(fps as f32)
@@ -1672,6 +1680,25 @@ mod deletion_tests {
         let loaded: AppSettings = toml::from_str(&source).unwrap();
         assert_eq!(loaded.power_saving, PowerSavingMode::On);
         assert_eq!(loaded.frame_rate, 120);
+    }
+
+    #[test]
+    fn unlimited_frame_rate_round_trips_and_uses_the_display() {
+        assert_eq!(FRAME_RATES.last(), Some(&UNLIMITED_FRAME_RATE));
+        assert_eq!(
+            frame_rate_index(UNLIMITED_FRAME_RATE),
+            FRAME_RATES.len() - 1
+        );
+        assert!(uses_display_frame_rate(UNLIMITED_FRAME_RATE));
+        assert!(uses_display_frame_rate(120));
+        assert!(!uses_display_frame_rate(30));
+
+        let mut settings = AppSettings::default();
+        settings.frame_rate = UNLIMITED_FRAME_RATE;
+        let source = toml::to_string_pretty(&settings).unwrap();
+        assert!(source.contains("frame_rate = 0"), "{source}");
+        let loaded: AppSettings = toml::from_str(&source).unwrap();
+        assert_eq!(loaded.frame_rate, UNLIMITED_FRAME_RATE);
     }
 
     #[test]

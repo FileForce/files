@@ -17,6 +17,7 @@ pub(crate) mod mail;
 pub(crate) mod music;
 pub(crate) mod quick_actions;
 pub(crate) mod quick_look;
+mod rename_dialog;
 mod shell;
 pub(crate) mod ssh;
 mod tabs;

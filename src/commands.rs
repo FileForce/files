@@ -18,6 +18,7 @@ pub enum DemoCommand {
     CopyPath,
     CopyReference,
     BrowseArchive,
+    Rename,
     Delete,
     Properties,
 }
@@ -107,6 +108,10 @@ impl FileExplorer {
             DemoCommand::BrowseArchive => {
                 crate::archive::open_archive(file, self.appearance.clone(), cx);
                 self.notice = None;
+            }
+            DemoCommand::Rename => {
+                self.open_rename_dialog(file, window, cx);
+                return;
             }
             DemoCommand::Delete => {
                 self.open_delete_dialog(window, cx);

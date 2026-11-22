@@ -82,8 +82,11 @@ impl FileExplorer {
             let title = h_flex()
                 .id(("workspace-tab-title", tab.id))
                 .debug_selector(move || format!("workspace-tab-{selector}"))
+                .min_w_0()
+                .overflow_hidden()
                 .gap_1p5()
                 .items_center()
+                .text_sm()
                 .child(
                     Icon::new(if pinned { IconName::Pin } else { icon })
                         .xsmall()
@@ -94,7 +97,7 @@ impl FileExplorer {
                         }),
                 )
                 .child(label)
-                // The tab's view style: an icon, plus a short badge for the non-default ones.
+                // The tab's view style, named in the icon's tooltip.
                 .when(tab.panel_icon.is_none(), |title| {
                     title.child(
                         h_flex()
@@ -109,12 +112,7 @@ impl FileExplorer {
                                 ))
                                 .build(window, cx)
                             })
-                            .child(Icon::new(mode.icon()).xsmall())
-                            .when(mode != crate::model::ViewMode::Expressive, |badge| {
-                                badge.child(
-                                    div().text_size(px(9.)).child(mode.label().to_uppercase()),
-                                )
-                            }),
+                            .child(Icon::new(mode.icon()).xsmall()),
                     )
                 })
                 // Drag a tab onto another to move it there.
