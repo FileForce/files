@@ -18,7 +18,6 @@ use crate::settings::ListColumn;
 use crate::views::context_menu::file_context_menu;
 use crate::views::drag_drop::{DragFilePreview, dragged_file};
 
-
 /// Width kept free at the right of a list for its scrollbar.
 const SCROLLBAR_GUTTER: f32 = 10.;
 impl FileExplorer {
@@ -123,20 +122,24 @@ impl FileExplorer {
                 });
         }
 
-        div()
-            .id("expressive-scroll")
+        v_flex()
+            .relative()
             .flex_1()
             .min_h_0()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event, _, cx| {
-                    this.clear_selection_on_background(event, None, cx)
-                }),
+            .child(
+                div()
+                    .id("expressive-scroll")
+                    .size_full()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event, _, cx| {
+                            this.clear_selection_on_background(event, None, cx)
+                        }),
+                    )
+                    .overflow_y_scroll()
+                    .track_scroll(&self.list_scroll)
+                    .child(div().pr(px(SCROLLBAR_GUTTER)).child(content)),
             )
-            .overflow_y_scroll()
-            .track_scroll(&self.list_scroll)
-            .child(div().pr(px(SCROLLBAR_GUTTER)).child(content))
-            // After the content, so it paints on top of the cards.
             .vertical_scrollbar(&self.list_scroll)
             .into_any_element()
     }
@@ -570,21 +573,28 @@ impl FileExplorer {
                     .context_menu(column_menu(columns.clone(), cx.entity())),
             )
             .child(
-                div()
-                    .id("pro-scroll")
+                v_flex()
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .on_mouse_down(MouseButton::Left, clear_on_background)
-                    .overflow_y_scroll()
-                    .track_scroll(&list_scroll)
-                    .child({
-                        // Room on the right for the always-shown scrollbar: it never covers the last column.
-                        let list = v_flex().pr(px(SCROLLBAR_GUTTER)).children(parent).child(rows);
-                        #[cfg(test)]
-                        let list = list.debug_selector(|| "pro-scroll-probe".into());
-                        list
-                    })
-                    // After the rows, so it paints on top of them.
+                    .child(
+                        div()
+                            .id("pro-scroll")
+                            .size_full()
+                            .on_mouse_down(MouseButton::Left, clear_on_background)
+                            .overflow_y_scroll()
+                            .track_scroll(&list_scroll)
+                            .child({
+                                // Room on the right for the always-shown scrollbar: it never covers the last column.
+                                let list = v_flex()
+                                    .pr(px(SCROLLBAR_GUTTER))
+                                    .children(parent)
+                                    .child(rows);
+                                #[cfg(test)]
+                                let list = list.debug_selector(|| "pro-scroll-probe".into());
+                                list
+                            }),
+                    )
                     .vertical_scrollbar(&list_scroll),
             )
             .into_any_element()

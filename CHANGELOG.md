@@ -7,6 +7,11 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.36
+
+- Expressive and Pro keep their scrollbar inside the viewport while the list scrolls. The thumb and track can be used with the mouse again, including in long folders.
+- File lists keep a bounded scroll area with DevTools and the FPS counter open; the folder-level image cache no longer interferes with their layout.
+
 ## 0.1.35
 
 - **F2 renames** the selected local file or folder, also from right-click → Rename…. The name is ready to type (the file's extension is kept), invalid and already-used names are refused, and the renamed item stays selected. **F1 opens Properties**, like in Windows; both shortcuts are rebindable in Settings → Hotkeys.

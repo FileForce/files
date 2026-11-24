@@ -2745,6 +2745,69 @@ mod tests {
             after.origin.y < before.origin.y,
             "list did not scroll: {before:?} -> {after:?}"
         );
+
+        let viewport = cx.read(|app| view.read(app).list_scroll.bounds());
+        let scrollbar = cx
+            .debug_bounds("scrollbar-overlay")
+            .expect("scrollbar rendered");
+        assert_eq!(scrollbar, viewport, "scrollbar scrolled with the content");
+        let track = point(viewport.right() - px(5.), viewport.bottom() - px(2.));
+        cx.simulate_mouse_move(track, None, Default::default());
+        cx.run_until_parked();
+        cx.simulate_click(track, Default::default());
+        cx.run_until_parked();
+        let offset = cx.read(|app| view.read(app).list_scroll.offset().y);
+        assert!(
+            offset < px(-2000.),
+            "clicking the scrollbar track at {track:?} in {viewport:?} did not scroll: {offset:?}"
+        );
+    }
+
+    #[test]
+    fn expressive_list_scrolls_in_large_folder_with_fps_counter() {
+        let dir =
+            std::env::temp_dir().join(format!("file-force-grid-scroll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for index in 0..300 {
+            std::fs::write(dir.join(format!("file-{index:03}.txt")), "x").unwrap();
+        }
+        let (view, cx) = rooted_window(&dir);
+        view.update(cx, |this, cx| {
+            this.appearance.update(cx, |settings, _| {
+                settings.developer.enabled = true;
+                settings.developer.show_fps_counter = true;
+                settings.developer.show_console = true;
+            });
+            this.console_open = true;
+            this.set_mode(ViewMode::Expressive, cx);
+        });
+        cx.run_until_parked();
+        let before = cx.read(|app| view.read(app).list_scroll.bounds());
+        let overflow = cx.read(|app| view.read(app).list_scroll.max_offset().y);
+        assert!(before.size.height > px(0.), "list not laid out");
+        assert!(overflow > px(0.), "grid has no bounded scrollable overflow");
+        cx.simulate_event(gpui_kit::ScrollEvent {
+            position: point(before.center().x, before.center().y),
+            delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        let offset = cx.read(|app| view.read(app).list_scroll.offset().y);
+        assert!(offset < px(0.), "grid did not scroll: {offset:?}");
+
+        let viewport = cx.read(|app| view.read(app).list_scroll.bounds());
+        let track = point(viewport.right() - px(5.), viewport.bottom() - px(2.));
+        cx.simulate_mouse_move(track, None, Default::default());
+        cx.run_until_parked();
+        cx.simulate_click(track, Default::default());
+        cx.run_until_parked();
+        let after_click = cx.read(|app| view.read(app).list_scroll.offset().y);
+        assert!(
+            after_click < offset,
+            "clicking the scrollbar track did not scroll: {offset:?} -> {after_click:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
