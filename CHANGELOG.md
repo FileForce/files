@@ -7,6 +7,11 @@ version's notes under "Unreleased", then rename it when you tag.
 
 ## Unreleased
 
+## 0.1.37
+
+- macOS: multi-image HEIC and AVIF previews now include every frame instead of only the first. Existing previews are regenerated automatically.
+- Music: interrupted Yandex Music downloads resume where they stopped instead of ending playback early, and incomplete tracks are no longer saved as complete cache files.
+
 ## 0.1.36
 
 - Expressive and Pro keep their scrollbar inside the viewport while the list scrolls. The thumb and track can be used with the mouse again, including in long folders.

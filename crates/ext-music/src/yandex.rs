@@ -2,8 +2,8 @@
 //! so it may change). Sign-in is an OAuth token; tracks are downloaded to a
 //! cache and played in the app.
 
-use std::io;
-use std::path::PathBuf;
+use std::io::{self, Read as _, Write as _};
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -541,6 +541,84 @@ pub fn fetch(id: &str, url: &str, progress: &Progress) -> io::Result<PathBuf> {
     fetch_with(id, url, progress, |_| {})
 }
 
+fn download_parts(
+    url: &str,
+    partial: &Path,
+    progress: &Progress,
+    piece: &mut impl FnMut(&[u8]),
+) -> io::Result<()> {
+    use std::sync::atomic::Ordering;
+    const ATTEMPTS: usize = 4;
+    let mut total = 0u64;
+    let mut received = 0u64;
+    let mut output = std::fs::File::create(partial)?;
+    let mut last = None;
+    for attempt in 0..ATTEMPTS {
+        let request = agent().get(url);
+        let response = if received == 0 {
+            request.call()
+        } else {
+            request.header("Range", format!("bytes={received}-")).call()
+        };
+        let response = match response.map_err(http_error).and_then(|response| {
+            if received > 0 && response.status().as_u16() != 206 {
+                return Err(io::Error::other(
+                    "Yandex Music could not resume an interrupted download",
+                ));
+            }
+            check(response, "Yandex Music")
+        }) {
+            Ok(response) => response,
+            Err(error) => {
+                last = Some(error);
+                continue;
+            }
+        };
+        if received == 0 {
+            total = response
+                .headers()
+                .get("content-length")
+                .and_then(|value| value.to_str().ok()?.parse().ok())
+                .unwrap_or(0);
+            progress.total.store(total, Ordering::Relaxed);
+        }
+        let mut body = response.into_body();
+        let mut reader = body.as_reader();
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            let read = match reader.read(&mut buffer) {
+                Ok(read) => read,
+                Err(error) => {
+                    last = Some(error);
+                    break;
+                }
+            };
+            if read == 0 {
+                break;
+            }
+            output.write_all(&buffer[..read])?;
+            piece(&buffer[..read]);
+            received += read as u64;
+            progress.received.store(received, Ordering::Relaxed);
+            if total > 0 && received == total {
+                return Ok(());
+            }
+        }
+        if total == 0 || received >= total {
+            return Ok(());
+        }
+        if attempt + 1 == ATTEMPTS {
+            break;
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("Yandex Music sent {received} of {total} bytes"),
+        )
+    }))
+}
+
 /// [`fetch`], handing each piece to `piece` as it arrives (the whole file
 /// at once when it is cached already).
 pub fn fetch_with(
@@ -549,7 +627,6 @@ pub fn fetch_with(
     progress: &Progress,
     mut piece: impl FnMut(&[u8]),
 ) -> io::Result<PathBuf> {
-    use std::io::{Read as _, Write as _};
     use std::sync::atomic::Ordering;
     let file = cached_file(id);
     if file.is_file() {
@@ -559,29 +636,9 @@ pub fn fetch_with(
         piece(&std::fs::read(&file)?);
         return Ok(file);
     }
-    let response = check(agent().get(url).call().map_err(http_error)?, "Yandex Music")?;
-    let total = response
-        .headers()
-        .get("content-length")
-        .and_then(|value| value.to_str().ok()?.parse().ok())
-        .unwrap_or(0);
-    progress.total.store(total, Ordering::Relaxed);
     std::fs::create_dir_all(cache_dir())?;
     let partial = file.with_extension(format!("partial-{}", std::process::id()));
-    let mut output = std::fs::File::create(&partial)?;
-    let mut body = response.into_body();
-    let mut reader = body.as_reader();
-    let mut buffer = vec![0u8; 64 * 1024];
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        output.write_all(&buffer[..read])?;
-        piece(&buffer[..read]);
-        progress.received.fetch_add(read as u64, Ordering::Relaxed);
-    }
-    drop(output);
+    download_parts(url, &partial, progress, &mut piece)?;
     std::fs::rename(&partial, &file)?;
     log("Yandex Music", format!("cached track {id}"));
     Ok(file)
@@ -637,6 +694,73 @@ mod tests {
             file
         );
         assert_eq!(again.fraction(), 1.);
+        std::fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn an_interrupted_download_resumes_where_it_stopped() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = first.read(&mut request);
+            write!(
+                first,
+                "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n01234"
+            )
+            .unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let read = second.read(&mut request).unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..read])
+                    .to_ascii_lowercase()
+                    .contains("range: bytes=5-")
+            );
+            write!(second, "HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\nConnection: close\r\n\r\n56789").unwrap();
+        });
+        let file = std::env::temp_dir().join(format!("files-yandex-resume-{}", std::process::id()));
+        let progress = Progress::default();
+        let mut streamed = Vec::new();
+        download_parts(
+            &format!("http://127.0.0.1:{port}/track.mp3"),
+            &file,
+            &progress,
+            &mut |bytes| streamed.extend_from_slice(bytes),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"0123456789");
+        assert_eq!(streamed, b"0123456789", "no repeated bytes for the player");
+        assert_eq!(progress.fraction(), 1.);
+        std::fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn a_short_download_is_not_cached_as_a_complete_track() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nshort"
+                )
+                .unwrap();
+            }
+        });
+        let file = std::env::temp_dir().join(format!("files-yandex-short-{}", std::process::id()));
+        let result = download_parts(
+            &format!("http://127.0.0.1:{port}/track.mp3"),
+            &file,
+            &Progress::default(),
+            &mut |_| {},
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), 5);
         std::fs::remove_file(file).unwrap();
     }
 

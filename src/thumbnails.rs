@@ -433,6 +433,10 @@ fn cache_path(path: &Path) -> Option<PathBuf> {
     let metadata = std::fs::metadata(path).ok()?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut hasher);
+    if needs_conversion(path) {
+        // Multi-image previews include every frame; older caches held only the first.
+        2u8.hash(&mut hasher);
+    }
     metadata.len().hash(&mut hasher);
     metadata.modified().ok().hash(&mut hasher);
     Some(cache_dir()?.join(format!("{:016x}.jpg", hasher.finish())))
@@ -471,6 +475,10 @@ fn convert(source: &Path, target: &Path) -> std::io::Result<()> {
         return crate::pe_info::save_icon(source, target, 256);
     }
     let partial = target.with_extension("partial.jpg");
+    #[cfg(target_os = "macos")]
+    if multi_image_preview(source, &partial)? {
+        return std::fs::rename(&partial, target);
+    }
     let output = converter(source, &partial)?;
     if !output.status.success() || !partial.is_file() {
         let _ = std::fs::remove_file(&partial);
@@ -651,6 +659,103 @@ fn converter(source: &Path, target: &Path) -> std::io::Result<std::process::Outp
     files_sdk::log::run_with_timeout(SOURCE, &mut sips, TIMEOUT)
 }
 
+#[cfg(target_os = "macos")]
+fn image_source(
+    path: &Path,
+) -> std::io::Result<objc2_core_foundation::CFRetained<objc2_image_io::CGImageSource>> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let bytes = path.as_os_str().as_bytes();
+    let url = unsafe {
+        objc2_core_foundation::CFURL::from_file_system_representation(
+            None,
+            bytes.as_ptr(),
+            bytes.len() as isize,
+            false,
+        )
+    }
+    .ok_or_else(|| std::io::Error::other("invalid image path"))?;
+    unsafe { objc2_image_io::CGImageSource::with_url(&url, None) }
+        .ok_or_else(|| std::io::Error::other("ImageIO cannot read this image"))
+}
+
+#[cfg(target_os = "macos")]
+fn decode_image_at(
+    source: &objc2_image_io::CGImageSource,
+    index: usize,
+    options: &objc2_core_foundation::CFDictionary,
+) -> std::io::Result<image::DynamicImage> {
+    use objc2_image_io::CGImageDestination;
+
+    let data = objc2_core_foundation::CFMutableData::new(None, 0)
+        .ok_or_else(|| std::io::Error::other("cannot allocate an image preview"))?;
+    let jpeg = objc2_core_foundation::CFString::from_static_str("public.jpeg");
+    let image = unsafe { source.thumbnail_at_index(index, Some(options)) }
+        .ok_or_else(|| std::io::Error::other(format!("cannot decode image {index}")))?;
+    let destination = unsafe { CGImageDestination::with_data(&data, &jpeg, 1, None) }
+        .ok_or_else(|| std::io::Error::other("cannot create a JPEG preview"))?;
+    // SAFETY: all Core Foundation objects are live, and the destination takes
+    // a CGImage obtained from this ImageIO source.
+    let encoded = unsafe {
+        destination.add_image(&image, None);
+        destination.finalize()
+    };
+    if !encoded {
+        return Err(std::io::Error::other("cannot encode an image preview"));
+    }
+    image::load_from_memory(&data.to_vec()).map_err(std::io::Error::other)
+}
+
+/// Every still in a multi-image HEIC, not just its primary image.
+#[cfg(target_os = "macos")]
+fn multi_image_preview(source: &Path, target: &Path) -> std::io::Result<bool> {
+    use objc2_core_foundation::{CFDictionary, CFNumber, CFString, CFType, kCFBooleanTrue};
+    use objc2_image_io::{
+        kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform,
+        kCGImageSourceThumbnailMaxPixelSize,
+    };
+
+    let source = image_source(source)?;
+    let count = unsafe { source.count() };
+    if count <= 1 {
+        return Ok(false);
+    }
+    let cell = if count <= 6 { 512 } else { 256 };
+    let size = CFNumber::new_i32(cell);
+    let yes = unsafe { kCFBooleanTrue }.expect("Core Foundation boolean");
+    let options = CFDictionary::<CFString, CFType>::from_slices(
+        &[
+            unsafe { kCGImageSourceThumbnailMaxPixelSize },
+            unsafe { kCGImageSourceCreateThumbnailFromImageAlways },
+            unsafe { kCGImageSourceCreateThumbnailWithTransform },
+        ],
+        &[size.as_ref(), yes.as_ref(), yes.as_ref()],
+    );
+    let mut frames = Vec::with_capacity(count);
+    for index in 0..count {
+        frames.push(decode_image_at(&source, index, options.as_ref())?);
+    }
+
+    let columns = (count as f64).sqrt().ceil() as u32;
+    let rows = (count as u32).div_ceil(columns);
+    let gap = 4;
+    let width = columns * (cell as u32) + (columns - 1) * gap;
+    let height = rows * (cell as u32) + (rows - 1) * gap;
+    let mut sheet = image::RgbImage::from_pixel(width, height, image::Rgb([24, 24, 27]));
+    for (index, frame) in frames.into_iter().enumerate() {
+        let frame = frame.thumbnail(cell as u32, cell as u32);
+        let column = index as u32 % columns;
+        let row = index as u32 / columns;
+        let x = column * (cell as u32 + gap) + (cell as u32 - frame.width()) / 2;
+        let y = row * (cell as u32 + gap) + (cell as u32 - frame.height()) / 2;
+        image::imageops::overlay(&mut sheet, &frame.to_rgb8(), x.into(), y.into());
+    }
+    image::DynamicImage::ImageRgb8(sheet)
+        .save_with_format(target, image::ImageFormat::Jpeg)
+        .map_err(std::io::Error::other)?;
+    Ok(true)
+}
+
 /// Linux: libheif's `heif-convert` (package libheif-examples / libheif-tools).
 #[cfg(all(unix, not(target_os = "macos")))]
 fn converter(source: &Path, target: &Path) -> std::io::Result<std::process::Output> {
@@ -722,6 +827,62 @@ mod tests {
         assert_eq!(&bytes[..3], &[0xFF, 0xD8, 0xFF], "cached preview is a JPEG");
         assert!(generation() > 0);
         let _ = std::fs::remove_file(cached);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn multi_image_heic_preview_includes_every_frame() {
+        use objc2_core_foundation::{CFString, CFURL, CFURLPathStyle};
+        use objc2_image_io::CGImageDestination;
+
+        let dir =
+            std::env::temp_dir().join(format!("file-force-multi-heic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let heic = dir.join("three.heic");
+        let jpg = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/images/facade.jpg");
+        let source = image_source(&jpg).unwrap();
+        let path = CFString::from_str(&heic.to_string_lossy());
+        let url = CFURL::with_file_system_path(
+            None,
+            Some(&path),
+            CFURLPathStyle::CFURLPOSIXPathStyle,
+            false,
+        )
+        .unwrap();
+        let destination = unsafe {
+            CGImageDestination::with_url(&url, &CFString::from_static_str("public.heic"), 3, None)
+        }
+        .unwrap();
+        unsafe {
+            for _ in 0..3 {
+                destination.add_image_from_source(&source, 0, None);
+            }
+            assert!(destination.finalize());
+        }
+        assert_eq!(unsafe { image_source(&heic).unwrap().count() }, 3);
+
+        let output = dir.join("preview.jpg");
+        assert!(multi_image_preview(&heic, &output).unwrap());
+        let preview = image::open(&output).unwrap();
+        assert_eq!((preview.width(), preview.height()), (1028, 1028));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn multi_image_heic_on_a_real_file() {
+        let path = std::env::var_os("FILES_MULTI_HEIC").expect("FILES_MULTI_HEIC");
+        let output = std::env::temp_dir().join("file-force-multi-heic-preview.jpg");
+        assert!(multi_image_preview(Path::new(&path), &output).unwrap());
+        let preview = image::open(&output).unwrap();
+        println!(
+            "{}x{}: {}",
+            preview.width(),
+            preview.height(),
+            output.display()
+        );
     }
 
     /// The smallest valid one-page PDF.

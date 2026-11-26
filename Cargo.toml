@@ -3,7 +3,7 @@ members = ["crates/*"]
 
 [package]
 name = "file-force"
-version = "0.1.36"
+version = "0.1.37"
 edition = "2024"
 description = "Files: a fast file explorer for macOS and Linux with Git, SSH, AI agents and extensions."
 license = "FSL-1.1-MIT"
@@ -59,6 +59,7 @@ objc2-core-media = "0.3"
 objc2-core-motion = { version = "0.3.2", features = ["CMHeadphoneMotionManager", "CMDeviceMotion", "CMAttitude", "CMLogItem"] }
 objc2-core-video = "0.3"
 objc2-foundation = "0.3"
+objc2-image-io = "0.3"
 objc2-local-authentication = { version = "0.3.2", features = ["LAContext", "LAError", "block2"] }
 plist = "1"
 xattr = "1"
